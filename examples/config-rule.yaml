@@ -1,0 +1,37 @@
+backends:
+  infini:
+    base_url: https://cloud.infini-ai.com/maas
+    url_path_chat: /v1/chat/completions
+
+models:
+  kimi-k2-instruct:
+    access: public
+    # use default_rules to deny stream request
+    default_rules:
+      - name: deny_stream
+        match: "RawReq.stream == true"
+        deny:
+          reason_text: "stream is not allowed"
+          http_status_code: 403
+    backends:
+      default:1: 
+        use: infini
+      force_stream:
+        use: infini
+        request_rewrites:
+          set_keys:
+            stream: true
+
+users:
+  org1:
+    api_keys:
+      user1: octo-12345
+    models:
+      kimi-k2-instruct:
+        # allow users in org1 to use force_stream backend
+        rules:
+          - name: allow_force_stream
+            match: "RawReq.force_stream == true"
+            forward_weights:
+              force_stream: 10
+              non_exist: 20

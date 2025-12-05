@@ -1,0 +1,39 @@
+backends:
+  infini:
+    base_url: https://cloud.infini-ai.com/maas
+    url_path_chat: /v1/chat/completions
+    # if not set, read from env var OCTOLLM_API_KEY
+    # api_key: sk-xxxx
+
+models:
+  kimi-k2-instruct:
+    # public model, can be accessed by all users without authentication
+    backends:
+      default:1: 
+        use: infini
+        request_rewrites:
+  deepseek-v3:
+    access: internal
+    backends:
+      default:1: 
+        use: infini
+  deepseek-v3-private:
+    access: private
+    backends:
+      default:1: 
+        use: infini
+        request_rewrites:
+          set_keys:
+            model: "deepseek-v3"
+
+users:
+  # can access deepseek-v3 and deepseek-v3-private
+  org1:
+    api_keys:
+      user1: octo-12345
+    models:
+      deepseek-v3-private:
+  # can access deepseek-v3 but not deepseek-v3-private
+  org2:
+    api_keys:
+      user2: octo-67890

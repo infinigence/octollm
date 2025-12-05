@@ -1,0 +1,57 @@
+backends:
+  infini:
+    base_url: https://cloud.infini-ai.com/maas
+    url_path_chat: /v1/chat/completions
+
+models:
+  kimi-k2-instruct-public:
+    access: public
+    backends:
+      default:1: 
+        use: infini
+        request_rewrites:
+          set_keys:
+            model: "kimi-k2-instruct"
+  kimi-k2-instruct-internal:
+    access: internal
+    backends:
+      default:1: 
+        use: infini
+        request_rewrites:
+          set_keys:
+            model: "kimi-k2-instruct"
+      special:
+        use: infini
+        request_rewrites:
+          set_keys:
+            model: "kimi-k2-instruct"
+            stream: true
+
+  kimi-k2-instruct-private:
+    access: private
+    backends:
+      default:1: 
+        use: infini
+        request_rewrites:
+          set_keys:
+            model: "kimi-k2-instruct"
+
+users:
+  org1:
+    api_keys:
+      user1: octo-12345
+    models:
+      kimi-k2-instruct-private:
+      kimi-k2-instruct-internal:
+        rules:
+          - name: rule1
+            match: "RawReq.stream == true"
+            deny:
+              reason_text: "stream is not allowed"
+              http_status_code: 403
+          - name: rule2
+            match: "RawReq.test == '111'"
+            forward_weights:
+              default:1: 1
+              special: 10
+              special2: 20
