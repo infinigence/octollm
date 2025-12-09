@@ -55,7 +55,9 @@ func (r *RuleComposerFileBased) getEngine(orgName, modelName string) (octollm.En
 
 	model, ok := conf.Models[modelName]
 	if !ok {
-		return nil, fmt.Errorf("model %s not found", modelName)
+		return nil, errutils.NewHandlerError(
+			fmt.Errorf("model %s not found", modelName),
+			http.StatusNotFound, "Model Not Found")
 	}
 
 	var orgModelConf *UserOrgModelConfig
