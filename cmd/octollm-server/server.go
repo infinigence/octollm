@@ -43,3 +43,14 @@ func (s *Server) ChatCompletionsHandler() gin.HandlerFunc {
 		handler(c.Writer, c.Request)
 	}
 }
+
+func (s *Server) MessagesHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		orgName := c.GetString("org")
+		userName := c.GetString("user")
+
+		engine := s.ruleComposer.GetEngine(userName, orgName, "")
+		handler := octollm.MessagesHandler(engine)
+		handler(c.Writer, c.Request)
+	}
+}

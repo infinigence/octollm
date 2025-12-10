@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/openai/openai-go/v3"
 	"github.com/sirupsen/logrus"
@@ -26,11 +27,10 @@ func (s *Server) SetEngine(ep Engine) {
 	s.engine = ep
 }
 
-// ChatCompletionsHandler handles OpenAI /v1/chat/completions requests
-func ChatCompletionsHandler(engine Engine) http.HandlerFunc {
+func httpHandler(engine Engine, format APIFormat, parser Parser) http.HandlerFunc {
 	return errutils.ErrorHandlingMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		u := NewRequest(r, APIFormatChatCompletions)
-		u.Body.SetParser(&JSONParser[openai.ChatCompletionNewParams]{})
+		u := NewRequest(r, format)
+		u.Body.SetParser(parser)
 		resp, err := engine.Process(u)
 		if err != nil {
 			logrus.WithContext(r.Context()).Errorf("Do error: %v", err)
@@ -67,13 +67,20 @@ func ChatCompletionsHandler(engine Engine) http.HandlerFunc {
 		if resp.Stream != nil {
 			defer resp.Stream.Close()
 			for chunk := range resp.Stream.Chan() {
-				w.Write([]byte("data: "))
 				b, err := chunk.Body.Bytes()
 				if err != nil {
 					logrus.WithContext(r.Context()).Errorf("Read chunk error: %v", err)
 					*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error")
 					return
 				}
+
+				if event, ok := chunk.Metadata["event"]; ok {
+					w.Write([]byte("event: " + event + "\n"))
+				}
+				if id, ok := chunk.Metadata["id"]; ok {
+					w.Write([]byte("id: " + id + "\n"))
+				}
+				w.Write([]byte("data: "))
 				w.Write(b)
 				w.Write([]byte("\n\n"))
 				if flusher, ok := w.(http.Flusher); ok {
@@ -94,6 +101,14 @@ func ChatCompletionsHandler(engine Engine) http.HandlerFunc {
 	})
 }
 
+// ChatCompletionsHandler handles OpenAI /v1/chat/completions requests
+func ChatCompletionsHandler(engine Engine) http.HandlerFunc {
+	return httpHandler(engine, APIFormatChatCompletions, &JSONParser[openai.ChatCompletionNewParams]{})
+}
+
 // LegacyCompletionsHandler handles OpenAI /v1/completions requests
 
 // MessagesHandler handles Anthropic /v1/messages requests
+func MessagesHandler(engine Engine) http.HandlerFunc {
+	return httpHandler(engine, APIFormatClaudeMessages, &JSONParser[anthropic.MessageNewParams]{})
+}

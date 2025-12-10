@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	loadbalancer "github.com/infinigence/octollm/pkg/engines/load-balancer"
 	ruleengine "github.com/infinigence/octollm/pkg/engines/rule-engine"
 	"github.com/infinigence/octollm/pkg/errutils"
@@ -267,6 +268,8 @@ func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, e
 		switch body := body.(type) {
 		case *openai.ChatCompletionNewParams:
 			r.Model = body.Model
+		case *anthropic.MessageNewParams:
+			r.Model = string(body.Model)
 		default:
 			return nil, fmt.Errorf("unsupported model request type: %T", body)
 		}

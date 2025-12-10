@@ -28,14 +28,15 @@ type Model struct {
 }
 
 type Backend struct {
-	Use             string            `json:"use" yaml:"use"` // references a global backend config
-	BaseURL         string            `json:"base_url" yaml:"base_url"`
-	HTTPProxy       string            `json:"http_proxy" yaml:"http_proxy"`
-	APIKey          string            `json:"api_key" yaml:"api_key"`
-	ExtraHeaders    map[string]string `json:"extra_headers" yaml:"extra_headers"`
-	URLPathChat     string            `json:"url_path_chat" yaml:"url_path_chat"`
-	URLPathMessages string            `json:"url_path_messages" yaml:"url_path_messages"`
-	URLPathVertex   string            `json:"url_path_vertex" yaml:"url_path_vertex"`
+	Use                     string            `json:"use" yaml:"use"` // references a global backend config
+	BaseURL                 string            `json:"base_url" yaml:"base_url"`
+	HTTPProxy               *string           `json:"http_proxy" yaml:"http_proxy"`
+	APIKey                  *string           `json:"api_key" yaml:"api_key"`
+	AnthropicAPIKeyAsBearer *bool             `json:"anthropic_api_key_as_bearer" yaml:"anthropic_api_key_as_bearer"`
+	ExtraHeaders            map[string]string `json:"extra_headers" yaml:"extra_headers"`
+	URLPathChat             *string           `json:"url_path_chat" yaml:"url_path_chat"`
+	URLPathMessages         *string           `json:"url_path_messages" yaml:"url_path_messages"`
+	URLPathVertex           *string           `json:"url_path_vertex" yaml:"url_path_vertex"`
 
 	RequestRewrites     *engines.RewritePolicy `json:"request_rewrites" yaml:"request_rewrites"`
 	ResponseRewrites    *engines.RewritePolicy `json:"response_rewrites" yaml:"response_rewrites"`

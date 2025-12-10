@@ -2,6 +2,8 @@ backends:
   infini:
     base_url: https://cloud.infini-ai.com/maas
     url_path_chat: /v1/chat/completions
+    url_path_messages: /v1/messages
+    anthropic_api_key_as_bearer: true
     # if not set, read from env var OCTOLLM_API_KEY
     # api_key: sk-xxxx
 
@@ -25,7 +27,13 @@ models:
         request_rewrites:
           set_keys:
             model: "deepseek-v3"
-
+  claude-sonnet-4:
+    backends:
+      default:1: 
+        use: infini
+        request_rewrites:
+          set_keys:
+            model: "claude-sonnet-4-20250514"
 users:
   # can access deepseek-v3 and deepseek-v3-private
   org1:

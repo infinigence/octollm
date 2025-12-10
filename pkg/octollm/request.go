@@ -185,7 +185,8 @@ type StreamChan struct {
 }
 
 type StreamChunk struct {
-	Body *UnifiedBody
+	Metadata map[string]string // optionally contains id or event fields from SSE
+	Body     *UnifiedBody
 }
 
 func NewStreamChan(ch <-chan *StreamChunk, closeFunc func()) *StreamChan {

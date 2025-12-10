@@ -61,6 +61,7 @@ func main() {
 	// Register routes
 	r.Use(auth.Handle())
 	r.POST("/v1/chat/completions", s.ChatCompletionsHandler())
+	r.POST("/v1/messages", s.MessagesHandler())
 
 	log.Println("listening :8080")
 	log.Fatal(http.ListenAndServe(":8080", r))

@@ -48,11 +48,14 @@ func (m *ModelRepoFileBased) UpdateFromConfig(conf *ConfigFile) error {
 			if backend.BaseURL != "" {
 				finalBackend.BaseURL = backend.BaseURL
 			}
-			if backend.HTTPProxy != "" {
+			if backend.HTTPProxy != nil {
 				finalBackend.HTTPProxy = backend.HTTPProxy
 			}
-			if backend.APIKey != "" {
+			if backend.APIKey != nil {
 				finalBackend.APIKey = backend.APIKey
+			}
+			if backend.AnthropicAPIKeyAsBearer != nil {
+				finalBackend.AnthropicAPIKeyAsBearer = backend.AnthropicAPIKeyAsBearer
 			}
 			if backend.ExtraHeaders != nil {
 				if finalBackend.ExtraHeaders == nil {
@@ -62,13 +65,13 @@ func (m *ModelRepoFileBased) UpdateFromConfig(conf *ConfigFile) error {
 					finalBackend.ExtraHeaders[k] = v
 				}
 			}
-			if backend.URLPathChat != "" {
+			if backend.URLPathChat != nil {
 				finalBackend.URLPathChat = backend.URLPathChat
 			}
-			if backend.URLPathMessages != "" {
+			if backend.URLPathMessages != nil {
 				finalBackend.URLPathMessages = backend.URLPathMessages
 			}
-			if backend.URLPathVertex != "" {
+			if backend.URLPathVertex != nil {
 				finalBackend.URLPathVertex = backend.URLPathVertex
 			}
 
@@ -138,11 +141,32 @@ func (m *ModelRepoFileBased) GetEngine(modelName, backendName string) (octollm.E
 func (m *ModelRepoFileBased) BuildEngineByBackend(b *Backend) (octollm.Engine, error) {
 	var llmEngine octollm.Engine
 
-	// TODO: other API formats
-	httpCli := m.cliManager.GetClient(b.HTTPProxy)
-	llmCli := client.NewOpenAIChatCompletionsEndpoint(b.BaseURL, b.URLPathChat, b.APIKey)
-	llmCli.WithClient(httpCli)
-	llmEngine = llmCli
+	generalConf := &client.GeneralEndpointConfig{
+		BaseURL:   b.BaseURL,
+		Endpoints: make(map[octollm.APIFormat]string),
+	}
+	if b.APIKey != nil {
+		generalConf.APIKey = *b.APIKey
+	}
+	if b.AnthropicAPIKeyAsBearer != nil {
+		generalConf.AnthropicAPIKeyAsBearer = *b.AnthropicAPIKeyAsBearer
+	}
+	if b.URLPathChat != nil {
+		generalConf.Endpoints[octollm.APIFormatChatCompletions] = *b.URLPathChat
+	}
+	if b.URLPathMessages != nil {
+		generalConf.Endpoints[octollm.APIFormatClaudeMessages] = *b.URLPathMessages
+	}
+	if len(generalConf.Endpoints) == 0 {
+		return nil, fmt.Errorf("backend must specify either URLPathChat, URLPathMessages or URLPathVertex")
+	}
+
+	llmGE := client.NewGeneralEndpoint(*generalConf)
+	llmEngine = llmGE
+	if b.HTTPProxy != nil {
+		httpCli := m.cliManager.GetClient(*b.HTTPProxy)
+		llmEngine = llmGE.WithClient(httpCli)
+	}
 
 	if len(b.ExtraHeaders) > 0 {
 		llmEngine = &engines.AddHeaderEngine{
