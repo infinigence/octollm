@@ -13,7 +13,7 @@ models:
     backends:
       default:1: 
         use: infini
-        request_rewrites:
+        convert_to_messages: from_chat
   deepseek-v3:
     access: internal
     backends:

@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/openai/openai-go/v3"
+	"github.com/infinigence/octollm/pkg/types/anthropic"
+	"github.com/infinigence/octollm/pkg/types/openai"
 	"github.com/sirupsen/logrus"
 )
 

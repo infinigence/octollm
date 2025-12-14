@@ -5,3 +5,9 @@ type Engine interface {
 	// The Endpoint determines whether to return a stream channel based on the request.
 	Process(req *Request) (*Response, error)
 }
+
+type EngineFunc func(req *Request) (*Response, error)
+
+func (f EngineFunc) Process(req *Request) (*Response, error) {
+	return f(req)
+}

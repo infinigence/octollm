@@ -6,6 +6,7 @@ import (
 
 	"github.com/infinigence/octollm/pkg/engines"
 	"github.com/infinigence/octollm/pkg/engines/client"
+	"github.com/infinigence/octollm/pkg/engines/converter"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
@@ -73,6 +74,15 @@ func (m *ModelRepoFileBased) UpdateFromConfig(conf *ConfigFile) error {
 			}
 			if backend.URLPathVertex != nil {
 				finalBackend.URLPathVertex = backend.URLPathVertex
+			}
+			if backend.ConvertToChat != "" {
+				finalBackend.ConvertToChat = backend.ConvertToChat
+			}
+			if backend.ConvertToMessages != "" {
+				finalBackend.ConvertToMessages = backend.ConvertToMessages
+			}
+			if backend.ConvertToVertex != "" {
+				finalBackend.ConvertToVertex = backend.ConvertToVertex
 			}
 
 			finalBackend.RequestRewrites = finalBackend.RequestRewrites.Merge(backend.RequestRewrites)
@@ -166,6 +176,23 @@ func (m *ModelRepoFileBased) BuildEngineByBackend(b *Backend) (octollm.Engine, e
 	if b.HTTPProxy != nil {
 		httpCli := m.cliManager.GetClient(*b.HTTPProxy)
 		llmEngine = llmGE.WithClient(httpCli)
+	}
+
+	if b.ConvertToMessages != "" {
+		oriEngine := llmEngine
+		var convEngine octollm.Engine
+		if b.ConvertToMessages == "from_chat" {
+			convEngine = converter.NewChatCompletionsToClaudeMessages(oriEngine)
+		}
+		if convEngine != nil {
+			conv := func(req *octollm.Request) (*octollm.Response, error) {
+				if req.Format != octollm.APIFormatClaudeMessages {
+					return oriEngine.Process(req)
+				}
+				return convEngine.Process(req)
+			}
+			llmEngine = octollm.EngineFunc(conv)
+		}
 	}
 
 	if len(b.ExtraHeaders) > 0 {
