@@ -1,8 +1,8 @@
 backends:
   infini:
     base_url: https://cloud.infini-ai.com/maas
-    url_path_chat: /v1/chat/completions
-    url_path_messages: /v1/messages
+    # url_path_chat: /v1/chat/completions
+    # url_path_messages: /v1/messages
     anthropic_api_key_as_bearer: true
     # if not set, read from env var OCTOLLM_API_KEY
     # api_key: sk-xxxx

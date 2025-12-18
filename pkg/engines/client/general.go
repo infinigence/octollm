@@ -25,6 +25,9 @@ type GeneralEndpointConfig struct {
 	AnthropicAPIKeyAsBearer bool
 }
 
+var DefaultURLPathChatCompletions = "/v1/chat/completions"
+var DefaultURLPathClaudeMessages = "/v1/messages"
+
 func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 	apiKey := conf.APIKey
 	if apiKey == "" {
