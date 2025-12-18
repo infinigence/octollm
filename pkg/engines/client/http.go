@@ -157,6 +157,7 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 			if len(line) == 0 {
 				// dispatch the event and continue
 				body := octollm.NewBodyFromBytes(bodyBuffer, e.streamParser(req))
+				bodyLen := len(bodyBuffer)
 				bodyBuffer = make([]byte, 0, 512)
 				chunk := &octollm.StreamChunk{Body: body}
 				if len(metaBuffer) > 0 {
@@ -165,7 +166,7 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 				}
 				select {
 				case ch <- chunk:
-					logrus.WithContext(ctx).Debugf("[http-endpoint] pushed stream chunk: len=%d", len(line))
+					logrus.WithContext(ctx).Debugf("[http-endpoint] pushed stream chunk: len=%d", bodyLen)
 				case <-ctx.Done():
 					logrus.WithContext(ctx).Infof("[http-endpoint] context error during stream response: %v", ctx.Err())
 					return

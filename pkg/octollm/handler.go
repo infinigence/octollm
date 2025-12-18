@@ -69,7 +69,7 @@ func httpHandler(engine Engine, format APIFormat, parser Parser) http.HandlerFun
 			for chunk := range resp.Stream.Chan() {
 				b, err := chunk.Body.Bytes()
 				if err != nil {
-					logrus.WithContext(r.Context()).Errorf("Read chunk error: %v", err)
+					logrus.WithContext(r.Context()).Errorf("[httpHandler] Read chunk error: %v", err)
 					*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error")
 					return
 				}
@@ -86,13 +86,13 @@ func httpHandler(engine Engine, format APIFormat, parser Parser) http.HandlerFun
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
 				}
-				logrus.WithContext(r.Context()).Debugf("Write chunk: len=%d", len(b))
+				logrus.WithContext(r.Context()).Debugf("[httpHandler] Write chunk: len=%d", len(b))
 			}
 		} else if resp.Body != nil {
 			defer resp.Body.Close()
 			rd, err := resp.Body.Reader()
 			if err != nil {
-				logrus.WithContext(r.Context()).Errorf("Read body error: %v", err)
+				logrus.WithContext(r.Context()).Errorf("[httpHandler] Read body error: %v", err)
 				*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error")
 				return
 			}
