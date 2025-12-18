@@ -3,16 +3,22 @@ package octollm
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type JSONParser[T any] struct{}
 
 var _ Parser = (*JSONParser[string])(nil)
 
+var ErrStreamDone = fmt.Errorf("stream done")
+
 func (p *JSONParser[T]) Parse(data []byte) (any, error) {
 	var v T
 	err := json.Unmarshal(data, &v)
 	if err != nil {
+		if strings.TrimSpace(string(data)) == "[DONE]" {
+			return nil, fmt.Errorf("%w", ErrStreamDone)
+		}
 		return nil, err
 	}
 	return &v, nil

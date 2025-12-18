@@ -3,11 +3,13 @@ package converter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	anthropicSDK "github.com/anthropics/anthropic-sdk-go"
 	openaiSDK "github.com/openai/openai-go/v3"
 	"github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/anthropic"
@@ -26,25 +28,10 @@ func NewChatCompletionsToClaudeMessages(next octollm.Engine) *ChatCompletionsToC
 }
 
 func (e *ChatCompletionsToClaudeMessages) Process(req *octollm.Request) (*octollm.Response, error) {
-	// 1. Parse Input as Anthropic Request
-	anthropicReq, err := req.Body.Parsed()
+	newBody, err := e.convertRequestBody(req.Context(), req.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse request body: %w", err)
+		return nil, fmt.Errorf("failed to convert request body: %w", err)
 	}
-
-	anthropicMsgReq, ok := anthropicReq.(*anthropic.MessageNewParams)
-	if !ok {
-		// Fallback for when parsed type isn't what we expect
-		return nil, fmt.Errorf("parsed body is not *anthropic.MessageNewParams, got %T", anthropicReq)
-	}
-
-	// 2. Convert to OpenAI Request
-	openaiReqStruct := e.convertRequest(anthropicMsgReq)
-
-	// 3. Create new Body with OpenAI Request
-	newBody := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionNewParams]{})
-	newBody.SetParsed(openaiReqStruct)
-
 	req.Format = octollm.APIFormatChatCompletions
 	req.Body = newBody
 
@@ -56,12 +43,35 @@ func (e *ChatCompletionsToClaudeMessages) Process(req *octollm.Request) (*octoll
 
 	// 5. Convert Response
 	if resp.Stream != nil {
-		return e.handleStreamResponse(req.Context(), resp)
+		newStream, err := e.convertStreamResponse(req.Context(), resp.Stream)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert stream response body: %w", err)
+		}
+		resp.Stream = newStream
+	} else {
+		nonStreamResp, err := e.convertNonStreamResponseBody(req.Context(), resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert non-stream response body: %w", err)
+		}
+		resp.Body = nonStreamResp
 	}
-	return e.handleNonStreamResponse(resp)
+
+	return resp, nil
 }
 
-func (e *ChatCompletionsToClaudeMessages) convertRequest(src *anthropic.MessageNewParams) *openai.ChatCompletionNewParams {
+func (e *ChatCompletionsToClaudeMessages) convertRequestBody(ctx context.Context, srcBody *octollm.UnifiedBody) (*octollm.UnifiedBody, error) {
+	// Parse Input as Anthropic Request
+	anthropicReq, err := srcBody.Parsed()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse request body: %w", err)
+	}
+
+	src, ok := anthropicReq.(*anthropic.MessageNewParams)
+	if !ok {
+		// Fallback for when parsed type isn't what we expect
+		return nil, fmt.Errorf("parsed body is not *anthropic.MessageNewParams, got %T", anthropicReq)
+	}
+
 	dst := &openai.ChatCompletionNewParams{}
 
 	if src.Stream.Valid() {
@@ -123,14 +133,30 @@ func (e *ChatCompletionsToClaudeMessages) convertRequest(src *anthropic.MessageN
 						URL: url,
 					}
 					contentParts = append(contentParts, openaiSDK.ImageContentPart(part))
+				} else if block.OfToolResult != nil {
+					// Tool Result
+					var contentParts []openaiSDK.ChatCompletionContentPartTextParam
+					for _, content := range block.OfToolResult.Content {
+						if content.OfText == nil {
+							return nil, fmt.Errorf("tool result content is not text")
+						}
+						part := openaiSDK.ChatCompletionContentPartTextParam{
+							Text: content.OfText.Text,
+						}
+						contentParts = append(contentParts, part)
+					}
+					messages = append(messages, openaiSDK.ToolMessage(contentParts, block.OfToolResult.ToolUseID))
 				}
 				// TODO: other block types
 			}
 
-			messages = append(messages, openaiSDK.UserMessage(contentParts))
+			if len(contentParts) > 0 {
+				messages = append(messages, openaiSDK.UserMessage(contentParts))
+			}
 
 		} else if role == anthropicSDK.MessageParamRoleAssistant {
 			var contentParts []openaiSDK.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion
+			var toolCalls []openaiSDK.ChatCompletionMessageToolCallUnionParam
 			for _, block := range msg.Content {
 				// block is anthropic.ContentBlockParamUnion
 				if block.OfText != nil {
@@ -139,11 +165,29 @@ func (e *ChatCompletionsToClaudeMessages) convertRequest(src *anthropic.MessageN
 						Text: block.OfText.Text,
 					}
 					contentParts = append(contentParts, openaiSDK.ChatCompletionAssistantMessageParamContentArrayOfContentPartUnion{OfText: &part})
+				} else if block.OfToolUse != nil {
+					inputs, err := json.Marshal(block.OfToolUse.Input)
+					if err != nil {
+						return nil, fmt.Errorf("failed to marshal tool use input: %w", err)
+					}
+					// Tool Use
+					toolCall := &openaiSDK.ChatCompletionMessageFunctionToolCallParam{
+						ID: block.OfToolUse.ID,
+						Function: openaiSDK.ChatCompletionMessageFunctionToolCallFunctionParam{
+							Name:      block.OfToolUse.Name,
+							Arguments: string(inputs),
+						},
+					}
+					toolCalls = append(toolCalls, openaiSDK.ChatCompletionMessageToolCallUnionParam{OfFunction: toolCall})
 				}
 				// Assistant messages do not support images in OpenAI
 			}
 
-			messages = append(messages, openaiSDK.AssistantMessage(contentParts))
+			assistantMsg := openaiSDK.AssistantMessage(contentParts)
+			if len(toolCalls) > 0 {
+				assistantMsg.OfAssistant.ToolCalls = toolCalls
+			}
+			messages = append(messages, assistantMsg)
 		}
 	}
 	dst.Messages = messages
@@ -166,24 +210,27 @@ func (e *ChatCompletionsToClaudeMessages) convertRequest(src *anthropic.MessageN
 		dst.Tools = append(dst.Tools, openaiSDK.ChatCompletionFunctionTool(fdp))
 	}
 
-	return dst
+	// Convert to UnifiedBody
+	newBody := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionNewParams]{})
+	newBody.SetParsed(dst)
+
+	return newBody, nil
 }
 
-func (e *ChatCompletionsToClaudeMessages) handleNonStreamResponse(resp *octollm.Response) (*octollm.Response, error) {
-	// Parse OpenAI Response
-	parsed, err := resp.Body.Parsed()
+func (e *ChatCompletionsToClaudeMessages) convertNonStreamResponseBody(ctx context.Context, srcBody *octollm.UnifiedBody) (*octollm.UnifiedBody, error) {
+	// Parse Input as OpenAI Response
+	parsed, err := srcBody.Parsed()
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse upstream response: %w", err)
+		return nil, fmt.Errorf("failed to parse request body: %w", err)
 	}
 
-	// Assert to *openai.ChatCompletion
 	openaiResp, ok := parsed.(*openaiSDK.ChatCompletion)
 	if !ok {
-		return nil, fmt.Errorf("parsed body is not *openai.ChatCompletion, got %T", parsed)
+		return nil, fmt.Errorf("parsed body is not *openaiSDK.ChatCompletion, got %T", parsed)
 	}
 
 	// Construct Claude Response
-	claudeResp := anthropic.MessageSimple{
+	claudeResp := &anthropic.MessageSimple{
 		ID:    openaiResp.ID,
 		Type:  "message",
 		Role:  "assistant",
@@ -211,6 +258,10 @@ func (e *ChatCompletionsToClaudeMessages) handleNonStreamResponse(resp *octollm.
 			})
 		}
 		for _, toolCall := range msg.ToolCalls {
+			if !gjson.Valid(toolCall.Function.Arguments) {
+				logrus.WithContext(ctx).Warnf("invalid tool call arguments: %s", toolCall.Function.Arguments)
+				continue
+			}
 			claudeResp.Content = append(claudeResp.Content, anthropic.ContentBlockToolUse{
 				Type:  "tool_use",
 				ID:    toolCall.ID,
@@ -228,34 +279,95 @@ func (e *ChatCompletionsToClaudeMessages) handleNonStreamResponse(resp *octollm.
 
 	newBody := octollm.NewBodyFromBytes(claudeBytes, &octollm.JSONParser[anthropicSDK.Message]{})
 
-	resp.Body = newBody
-	return resp, nil
+	return newBody, nil
 }
 
-func (e *ChatCompletionsToClaudeMessages) handleStreamResponse(ctx context.Context, resp *octollm.Response) (*octollm.Response, error) {
-	inCh := resp.Stream.Chan()
+func (e *ChatCompletionsToClaudeMessages) convertStreamResponse(ctx context.Context, src *octollm.StreamChan) (*octollm.StreamChan, error) {
+	inCh := src.Chan()
 	outCh := make(chan *octollm.StreamChunk)
 
 	intPtr := func(i int) *int { return &i }
 
 	go func() {
 		defer close(outCh)
-		defer resp.Stream.Close()
+		defer src.Close()
 
 		started := false
 		msgID := ""
 		model := ""
+		currentBlockIndex := -1 // Start at -1, will increment to 0 for first block
+
+		// Track current block state
+		type blockType int
+		const (
+			blockTypeNone blockType = iota
+			blockTypeText
+			blockTypeTool
+		)
+		currentBlockType := blockTypeNone
+		currentToolCallIndex := int64(-1) // Track which OpenAI tool call index is in current block
+
+		var pendingFinishReason *string
+		var pendingUsage *openaiSDK.CompletionUsage
 
 		for chunk := range inCh {
 			if ctx.Err() != nil {
-				return
+				break
 			}
 
 			// Parse Chunk
 			parsed, err := chunk.Body.Parsed()
 			if err != nil {
-				logrus.WithContext(ctx).Errorf("failed to parse stream chunk: %v", err)
-				continue
+				if !errors.Is(err, octollm.ErrStreamDone) {
+					logrus.WithContext(ctx).Errorf("failed to parse stream chunk: %v", err)
+					continue
+				}
+
+				// [DONE]
+
+				// Send content_block_stop for current block if one exists
+				if currentBlockType != blockTypeNone {
+					blockStop := &anthropic.MessageStreamEvent{
+						Type:  "content_block_stop",
+						Index: intPtr(currentBlockIndex),
+					}
+					if err := e.sendEvent(outCh, blockStop); err != nil {
+						logrus.WithContext(ctx).Errorf("failed to send content_block_stop event: %v", err)
+						break
+					}
+					currentBlockType = blockTypeNone
+				}
+
+				// When we have both finish_reason and usage, send message_delta and message_stop
+				if pendingFinishReason != nil {
+					mappedFr := e.mapFinishReason(*pendingFinishReason)
+					msgDelta := &anthropic.MessageStreamEvent{
+						Type: "message_delta",
+						Delta: &anthropic.MessageDelta{
+							StopReason: &mappedFr,
+						},
+					}
+					if pendingUsage != nil {
+						msgDelta.Usage = &anthropic.MessageUsage{
+							InputTokens:  int(pendingUsage.PromptTokens),
+							OutputTokens: int(pendingUsage.CompletionTokens),
+						}
+					}
+					if err := e.sendEvent(outCh, msgDelta); err != nil {
+						logrus.WithContext(ctx).Errorf("failed to send message_delta event: %v", err)
+						break
+					}
+					pendingFinishReason = nil
+				}
+
+				// Send message_stop
+				msgStop := &anthropic.MessageStreamEvent{
+					Type: "message_stop",
+				}
+				if err := e.sendEvent(outCh, msgStop); err != nil {
+					logrus.WithContext(ctx).Errorf("failed to send message_stop event: %v", err)
+				}
+				break
 			}
 
 			// Assert to *openaiSDK.ChatCompletionChunk
@@ -272,49 +384,90 @@ func (e *ChatCompletionsToClaudeMessages) handleStreamResponse(ctx context.Conte
 				msgStart := &anthropic.MessageStreamEvent{
 					Type: "message_start",
 					Message: &anthropic.MessageSimple{
-						ID:    msgID,
-						Type:  "message",
-						Role:  "assistant",
-						Model: model,
-						Usage: &anthropic.MessageUsage{InputTokens: 0, OutputTokens: 0}, // Placeholder
+						ID:      msgID,
+						Type:    "message",
+						Role:    "assistant",
+						Model:   model,
+						Content: []anthropic.ContentBlock{},
+						Usage:   &anthropic.MessageUsage{InputTokens: 0, OutputTokens: 0}, // Placeholder
 					},
 				}
 				if err := e.sendEvent(outCh, msgStart); err != nil {
 					logrus.WithContext(ctx).Errorf("failed to send message_start event: %v", err)
 					continue
 				}
-
-				// Send content_block_start
-				blockStart := &anthropic.MessageStreamEvent{
-					Type:  "content_block_start",
-					Index: intPtr(0),
-					ContentBlock: &anthropic.ContentBlockText{
-						Type: "text",
-						Text: "",
-					},
-				}
-				e.sendEvent(outCh, blockStart)
 				started = true
 			}
 
 			// Extract Delta
 			var deltaContent string
-			var finishReason *string
+			var toolCalls []openaiSDK.ChatCompletionChunkChoiceDeltaToolCall
 
 			if len(openaiChunk.Choices) > 0 {
 				choice := openaiChunk.Choices[0]
 				deltaContent = choice.Delta.Content
-				fr := string(choice.FinishReason)
-				if fr != "" {
-					finishReason = &fr
+				toolCalls = choice.Delta.ToolCalls
+				if finishReason := choice.FinishReason; finishReason != "" {
+					// record first finish reason
+					pendingFinishReason = &finishReason
 				}
 			}
 
-			// Send content_block_delta
+			// Check if this chunk has usage info
+			if openaiChunk.JSON.Usage.Valid() && openaiChunk.Usage.JSON.PromptTokens.Valid() {
+				pendingUsage = &openaiChunk.Usage
+			}
+
+			// Handle text content
 			if deltaContent != "" {
+				// Check if we need to start a new block
+				needNewBlock := false
+				switch currentBlockType {
+				case blockTypeNone:
+					// No current block, need to start one
+					needNewBlock = true
+				case blockTypeTool:
+					// Switching from tool to text, need new block
+					needNewBlock = true
+				}
+				// If currentBlockType == blockTypeText, continue with existing text block
+
+				if needNewBlock {
+					// Close previous block if exists
+					if currentBlockType != blockTypeNone {
+						blockStop := &anthropic.MessageStreamEvent{
+							Type:  "content_block_stop",
+							Index: intPtr(currentBlockIndex),
+						}
+						if err := e.sendEvent(outCh, blockStop); err != nil {
+							logrus.WithContext(ctx).Errorf("failed to send content_block_stop event: %v", err)
+							continue
+						}
+					}
+
+					// Create new text block
+					currentBlockIndex++
+
+					// Start text block
+					blockStart := &anthropic.MessageStreamEvent{
+						Type:  "content_block_start",
+						Index: intPtr(currentBlockIndex),
+						ContentBlock: &anthropic.ContentBlockText{
+							Type: "text",
+							Text: "",
+						},
+					}
+					if err := e.sendEvent(outCh, blockStart); err != nil {
+						logrus.WithContext(ctx).Errorf("failed to send content_block_start for text event: %v", err)
+						continue
+					}
+					currentBlockType = blockTypeText
+				}
+
+				// Send text delta
 				deltaEvent := &anthropic.MessageStreamEvent{
 					Type:  "content_block_delta",
-					Index: intPtr(0),
+					Index: intPtr(currentBlockIndex),
 					Delta: &anthropic.ContentBlockTextDelta{
 						Type: "text_delta",
 						Text: deltaContent,
@@ -326,47 +479,82 @@ func (e *ChatCompletionsToClaudeMessages) handleStreamResponse(ctx context.Conte
 				}
 			}
 
-			// Handle Finish
-			if finishReason != nil {
-				// Send content_block_stop
-				blockStop := &anthropic.MessageStreamEvent{
-					Type:  "content_block_stop",
-					Index: intPtr(0),
-				}
-				if err := e.sendEvent(outCh, blockStop); err != nil {
-					logrus.WithContext(ctx).Errorf("failed to send content_block_stop event: %v", err)
-					continue
-				}
+			// Handle tool calls
+			if len(toolCalls) > 0 {
+				for _, toolCall := range toolCalls {
+					// Check if we need to start a new block
+					needNewBlock := false
+					switch currentBlockType {
+					case blockTypeNone:
+						// No current block, need to start one
+						needNewBlock = true
+					case blockTypeText:
+						// Switching from text to tool, need new block
+						needNewBlock = true
+					case blockTypeTool:
+						if currentToolCallIndex != toolCall.Index {
+							// Switching to different tool call, need new block
+							needNewBlock = true
+						}
+					}
 
-				// Send message_delta
-				mappedFr := e.mapFinishReason(*finishReason)
-				msgDelta := &anthropic.MessageStreamEvent{
-					Type: "message_delta",
-					Delta: &anthropic.MessageDelta{
-						StopReason: &mappedFr,
-					},
-					Usage: &anthropic.MessageUsage{OutputTokens: 0}, // Placeholder as we don't track count yet
-				}
-				if err := e.sendEvent(outCh, msgDelta); err != nil {
-					logrus.WithContext(ctx).Errorf("failed to send message_delta event: %v", err)
-					continue
-				}
+					if needNewBlock {
+						// Close previous block if exists
+						if currentBlockType != blockTypeNone {
+							blockStop := &anthropic.MessageStreamEvent{
+								Type:  "content_block_stop",
+								Index: intPtr(currentBlockIndex),
+							}
+							if err := e.sendEvent(outCh, blockStop); err != nil {
+								logrus.WithContext(ctx).Errorf("failed to send content_block_stop event: %v", err)
+								continue
+							}
+						}
 
-				// Send message_stop
-				msgStop := &anthropic.MessageStreamEvent{
-					Type: "message_stop",
-				}
-				if err := e.sendEvent(outCh, msgStop); err != nil {
-					logrus.WithContext(ctx).Errorf("failed to send message_stop event: %v", err)
-					continue
+						// Create new block for this tool call
+						currentBlockIndex++
+
+						// Start tool_use block
+						blockStart := &anthropic.MessageStreamEvent{
+							Type:  "content_block_start",
+							Index: intPtr(currentBlockIndex),
+							ContentBlock: &anthropic.ContentBlockToolUse{
+								Type:  "tool_use",
+								ID:    toolCall.ID,
+								Name:  toolCall.Function.Name,
+								Input: json.RawMessage("{}"),
+							},
+						}
+						if err := e.sendEvent(outCh, blockStart); err != nil {
+							logrus.WithContext(ctx).Errorf("failed to send content_block_start for tool_use event: %v", err)
+							continue
+						}
+						currentBlockType = blockTypeTool
+						currentToolCallIndex = toolCall.Index
+					}
+
+					// Send input_json_delta for tool call arguments
+					if toolCall.Function.Arguments != "" {
+						deltaEvent := &anthropic.MessageStreamEvent{
+							Type:  "content_block_delta",
+							Index: intPtr(currentBlockIndex),
+							Delta: &anthropic.ContentBlockInputJSONDelta{
+								Type:        "input_json_delta",
+								PartialJSON: toolCall.Function.Arguments,
+							},
+						}
+						if err := e.sendEvent(outCh, deltaEvent); err != nil {
+							logrus.WithContext(ctx).Errorf("failed to send input_json_delta event: %v", err)
+							continue
+						}
+					}
 				}
 			}
 		}
 	}()
 
 	newStream := octollm.NewStreamChan(outCh, nil)
-	resp.Stream = newStream
-	return resp, nil
+	return newStream, nil
 }
 
 func (e *ChatCompletionsToClaudeMessages) sendEvent(ch chan<- *octollm.StreamChunk, event *anthropic.MessageStreamEvent) error {
