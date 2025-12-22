@@ -166,14 +166,14 @@ func (m *ModelRepoFileBased) BuildEngineByBackend(b *Backend) (octollm.Engine, e
 			generalConf.Endpoints[octollm.APIFormatChatCompletions] = *b.URLPathChat
 		}
 	} else {
-		generalConf.Endpoints[octollm.APIFormatChatCompletions] = client.DefaultURLPathChatCompletions
+		generalConf.Endpoints[octollm.APIFormatChatCompletions] = "" // will use default
 	}
 	if b.URLPathMessages != nil {
 		if *b.URLPathMessages != "" {
 			generalConf.Endpoints[octollm.APIFormatClaudeMessages] = *b.URLPathMessages
 		}
 	} else {
-		generalConf.Endpoints[octollm.APIFormatClaudeMessages] = client.DefaultURLPathClaudeMessages
+		generalConf.Endpoints[octollm.APIFormatClaudeMessages] = "" // will use default
 	}
 	if len(generalConf.Endpoints) == 0 {
 		return nil, fmt.Errorf("backend must specify either URLPathChat, URLPathMessages or URLPathVertex")

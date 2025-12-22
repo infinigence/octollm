@@ -41,6 +41,16 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 			if !ok {
 				return "", fmt.Errorf("invalid format: %s", req.Format)
 			}
+			if endpoint == "" {
+				switch req.Format {
+				case octollm.APIFormatClaudeMessages:
+					endpoint = DefaultURLPathClaudeMessages
+				case octollm.APIFormatChatCompletions:
+					endpoint = DefaultURLPathChatCompletions
+				default:
+					return "", fmt.Errorf("invalid format: %s", req.Format)
+				}
+			}
 			return conf.BaseURL + endpoint, nil
 		}).
 		WithRequestModifier(func(req *octollm.Request, httpReq *http.Request) *http.Request {
