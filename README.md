@@ -29,6 +29,19 @@ Here is an example of how to use OctoLLM Engines as the building blocks of a cus
 
 
 ```golang
+package main
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+
+	"github.com/infinigence/octollm/pkg/engines"
+	"github.com/infinigence/octollm/pkg/engines/client"
+	"github.com/infinigence/octollm/pkg/engines/converter"
+	"github.com/infinigence/octollm/pkg/octollm"
+)
+
 func main() {
 	mux := http.NewServeMux()
 
