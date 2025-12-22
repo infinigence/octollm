@@ -1,0 +1,15 @@
+backends:
+  # define an OpenAI-compatible model API provider
+  infini:
+    base_url: https://cloud.infini-ai.com/maas
+    # if not set, read from env var OCTOLLM_API_KEY
+    # api_key: sk-xxxx
+    # override the default URL path for chat completions
+    # url_path_chat: /v1/chat/completions
+
+models:
+  kimi-k2-instruct:
+    backends:
+      default:1: 
+        use: infini
+        convert_to_messages: from_chat

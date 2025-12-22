@@ -9,19 +9,114 @@ OctoLLM serves two main purposes:
 ## ✨ Features & Roadmap
 
 ### Implemented Features
-- [x] **Protocol Support**: Supports OpenAI-compatible `chat/completions` interface forwarding.
+- [x] **Multi-Protocol Support**: Supports OpenAI-compatible `chat/completions` and Claude `messages` interface forwarding.
 - [x] **Load Balancing**: Configurable weighted round-robin load balancing across multiple backends.
 - [x] **Rule Engine**: Powerful routing and logic based on expressions (e.g., checking request parameters).
 - [x] **Security**: API Key authentication and authorization, integratable with the rule engine for granular control.
 - [x] **Traffic Body Rewrite**: Request and response rewriting and transformation capabilities.
 - [x] **Extensible Design**: Modular `Engine` interface allowing arbitrary nesting and composition of features.
+- [x] **Protocol Conversion**: Support serving Claude `messages` protocol from OpenAI `chat/completions` backend.
 
 ### Planned Features
 - [ ] **Content Moderation**: Integration with external services for content safety.
 - [ ] **Advanced Rate Limiting**: Distributed rate limiting capabilities (e.g., Redis-based).
-- [ ] **Multi-protocol Support**: Support for additional LLM protocols and protocol translation.
 - [ ] **Comprehensive Unit Tests**: Expanding test coverage for stability.
 - [ ] **Dynamic Configuration**: Loading configuration from relational databases.
+
+## 🔧 Getting Started
+
+Here is an example of how to use OctoLLM Engines as the building blocks of a custom LLM gateway. If you are looking for a ready-to-use gateway, please refer to the [Standalone Gateway](#🚀-using-the-standalone-gateway) section.
+
+
+```golang
+func main() {
+	mux := http.NewServeMux()
+
+	// Create a general endpoint to access an OpenAI-compatible API
+	ep := client.NewGeneralEndpoint(client.GeneralEndpointConfig{
+		BaseURL: "https://cloud.infini-ai.com/maas",
+		Endpoints: map[octollm.APIFormat]string{
+			octollm.APIFormatChatCompletions: "/v1/chat/completions",
+		},
+		APIKey: os.Getenv("OCTOLLM_API_KEY"),
+	})
+	mux.Handle("/v1/chat/completions", octollm.ChatCompletionsHandler(ep))
+
+	// Create a converter to convert OpenAI-compatible API to Claude messages API
+	conv := converter.NewChatCompletionsToClaudeMessages(ep)
+	mux.Handle("/v1/messages", octollm.MessagesHandler(conv))
+
+	// Create a rewrite engine to force the model to use kimi-k2-instruct
+	rewrite := engines.NewRewriteEngine(conv, &engines.RewritePolicy{
+		SetKeys: map[string]any{"stream": true},
+	}, nil, nil)
+	mux.Handle("/force-stream/v1/messages", octollm.MessagesHandler(rewrite))
+
+	// Start the server
+	if err := http.ListenAndServe(":8080", mux); err != nil {
+		fmt.Printf("failed to start server: %v", err)
+	}
+}
+```
+
+The complete example code is available in the [examples](examples) directory.
+
+## 🚀 Using the Standalone Gateway
+
+### Building the Standalone Gateway
+
+To build the standalone gateway:
+
+```bash
+go build -o . ./cmd/...
+```
+
+### Configuration
+
+The standalone gateway uses a YAML configuration file (`config.yaml`) to define backends, models, and user access policies.
+
+*   **Example Configuration**: See [examples/config-rule.yaml](examples/config-rule.yaml) for a starter template.
+*   **Detailed Documentation**: Read the full [Configuration Guide](docs/config.md) for in-depth explanation of all options.
+
+Copy an example configuration file from the `examples` directory:
+
+```bash
+cp examples/config-minimal.yaml ./config.yaml
+# Edit config.yaml and set an API key for the infini backend
+```
+
+### Running the Standalone Gateway
+
+```bash
+./octollm-server
+```
+
+### Using Claude Code with OpenAI-compatible Services
+
+Here is an example of how to use the standalone gateway to serve Claude `messages` protocol from OpenAI `chat/completions` backend, so that you can use Claude CLI.
+
+Copy the protocol conversion example config:
+
+```bash
+cp examples/config-protocol-conversion.yaml ./config.yaml
+# Edit config.yaml and set an API key for the infini backend
+```
+
+To run the gateway:
+
+```bash
+./octollm-server
+```
+
+Config and run Claude CLI to use the OctoLLM gateway:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8080
+export ANTHROPIC_AUTH_TOKEN=xxx # any non-empty value works, since octollm auth is disabled in the config
+claude --model kimi-k2-instruct # or other models defined in your config.yaml
+```
+
+For persistent configuration of Claude CLI, edit `~/.claude/settings.json`.
 
 ## 🏗 Architecture
 
@@ -36,40 +131,6 @@ OctoLLM serves two main purposes:
 *   **Lazy Parsing**: Requests and responses use lazy parsing. Content is parsed only when accessed, minimizing memory usage and CPU cycles. Unused content remains as an `io.Reader`, avoiding unnecessary copying.
 *   **Modularity**: Engines can be nested arbitrarily. Each Engine implements a specific function (e.g., authentication, logging, routing) without needing to know the details of others.
 *   **Lightweight Core**: The `octollm` package is minimal, containing only essential interfaces and structs. Implementations reside in the `engines` directory.
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-*   Go 1.25 or higher
-
-### Configuration
-
-OctoLLM uses a YAML configuration file (`config.yaml`) to define backends, models, and user access policies.
-
-*   **Example Configuration**: See [examples/config-rule.yaml](examples/config-rule.yaml) for a starter template.
-*   **Detailed Documentation**: Read the full [Configuration Guide](docs/config.md) for in-depth explanation of all options.
-
-### Building and Running the Standalone Gateway
-
-To build the standalone gateway:
-
-```bash
-go build -o . ./cmd/...
-```
-
-Copy an example configuration file from the `examples` directory:
-
-```bash
-cp examples/config.yaml .
-# Edit config.yaml as needed
-```
-
-To run the gateway:
-
-```bash
-./octollm-server
-```
 
 ## 🔌 Development & Extensions
 
