@@ -15,6 +15,22 @@ var (
 	ErrModeratorInternalError = errors.New("moderator internal error")
 )
 
+const (
+	SpamServiceNameAliyun  = "Aliyun"
+	SpamServiceNameNetease = "Netease"
+
+	SpamNeteaseSuggestionRisk    = 2 // 有风险
+	SpamNeteaseSuggestionSuspect = 1 // 嫌疑
+	SpamNeteaseSuggestionSafe    = 0 // 安全
+
+	SpamLabelResultIsSpam    = "is_spam"
+	SpamLabelResultIsNotSpam = "is_not_spam"
+	SpamLabelResultNil       = "nil"
+
+	SpamLabelRequestFailed  = "failed"
+	SpamLabelRequestSuccess = "success"
+)
+
 type TextModeratorService interface {
 	Allow(ctx context.Context, text []rune) error
 	MaxRuneLen() int
