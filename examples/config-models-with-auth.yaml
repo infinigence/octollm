@@ -6,6 +6,15 @@ backends:
     anthropic_api_key_as_bearer: true
     # if not set, read from env var OCTOLLM_API_KEY
     # api_key: sk-xxxx
+    limiter:
+      tpm: 1000
+      rpm: 1000
+      tpd: 1000
+      rpd: 1000
+      # concurrency: 10
+      # concurrency_marker_rates: [1000, 2000, 3000]
+      concurrency_limiter_rates: [1000, 2000, 3000]
+      # deny_when_exceeding: true
 
 models:
   kimi-k2-instruct:
@@ -14,6 +23,15 @@ models:
       default:1: 
         use: infini
         convert_to_messages: from_chat
+    default_org_limits:
+      tpm: 1000
+      rpm: 1000
+      tpd: 1000
+      rpd: 1000
+      # concurrency: 10
+      concurrency_marker_rates: [1000, 2000, 3000]
+      # concurrency_limiter_rates: [1000, 2000, 3000]
+      # deny_when_exceeding: true
   deepseek-v3:
     access: internal
     backends:

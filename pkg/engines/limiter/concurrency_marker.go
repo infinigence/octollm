@@ -12,10 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type contextKey string
-
-const priorityColorKey contextKey = "priority_color"
-const priorityPrefix = "priority_"
+// 使用统一的priority context key
 
 var errRateLimitReached = fmt.Errorf("rate limit reached")
 
@@ -24,6 +21,7 @@ type ConcurrencyMarkerEngine struct {
 	key           string
 	rates         []int
 	timeout       time.Duration
+	needMarker    bool
 	acquireScript *redis.Script
 	releaseScript *redis.Script
 	renewScript   *redis.Script
@@ -32,10 +30,23 @@ type ConcurrencyMarkerEngine struct {
 
 var _ octollm.Engine = (*ConcurrencyMarkerEngine)(nil)
 
-func NewConcurrencyMarkerEngine(redisClient *redis.Client, key string, rates []int, timeout time.Duration, next octollm.Engine) (*ConcurrencyMarkerEngine, error) {
-	if len(rates) == 0 {
-		return nil, fmt.Errorf("rates must not be empty")
+func NewConcurrencyMarkerEngine(redisClient *redis.Client, config *ConcurrencyMarkerConfig, key string, timeout time.Duration, next octollm.Engine) (*ConcurrencyMarkerEngine, error) {
+	// 如果配置不存在或 rates 为空，返回一个直接放过的 engine
+	if config == nil || len(config.Rates) == 0 {
+		return &ConcurrencyMarkerEngine{
+			redisClient:   redisClient,
+			key:           key,
+			rates:         nil,
+			timeout:       timeout,
+			needMarker:    false,
+			acquireScript: nil,
+			releaseScript: nil,
+			renewScript:   nil,
+			next:          next,
+		}, nil
 	}
+
+	rates := config.Rates
 	if timeout <= 0 {
 		return nil, fmt.Errorf("timeout must be positive")
 	}
@@ -53,6 +64,7 @@ func NewConcurrencyMarkerEngine(redisClient *redis.Client, key string, rates []i
 		key:           key,
 		rates:         filteredRates,
 		timeout:       timeout,
+		needMarker:    config.NeedMark,
 		acquireScript: acquireScript,
 		releaseScript: releaseScript,
 		renewScript:   renewScript,
@@ -62,6 +74,11 @@ func NewConcurrencyMarkerEngine(redisClient *redis.Client, key string, rates []i
 
 // allow 尝试允许请求通过，进行染色并计数
 func (e *ConcurrencyMarkerEngine) allow(ctx context.Context) (newCtx context.Context, done func(), err error) {
+	// 如果 rates 为空，直接放过
+	if len(e.rates) == 0 || e.acquireScript == nil {
+		return ctx, func() {}, nil
+	}
+
 	nowUnix := time.Now().Unix()
 	expireBefore := nowUnix - int64(e.timeout.Seconds())
 	memberID := uuid.New().String()
@@ -87,7 +104,11 @@ func (e *ConcurrencyMarkerEngine) allow(ctx context.Context) (newCtx context.Con
 		return ctx, func() {}, errRateLimitReached
 	}
 	priority := calculatePriority(int(currentValue), e.rates)
-	newCtx = setPriorityToContext(ctx, priority)
+	if e.needMarker {
+		newCtx = setPriorityToContext(ctx, priority)
+	} else {
+		newCtx = ctx
+	}
 
 	// 启动续期协程
 	renewCtx, renewCancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -100,13 +121,19 @@ func (e *ConcurrencyMarkerEngine) allow(ctx context.Context) (newCtx context.Con
 		<-renewDone
 
 		// 释放 member
-		c1 := context.WithoutCancel(ctx)
-		_, err := e.releaseScript.Run(c1, e.redisClient, []string{e.key}, memberID).Result()
-		if err != nil {
-			logrus.WithContext(ctx).Errorf("failed to remove member from set: %v, key: %s", err, e.key)
+		if e.releaseScript != nil {
+			c1 := context.WithoutCancel(ctx)
+			_, err := e.releaseScript.Run(c1, e.redisClient, []string{e.key}, memberID).Result()
+			if err != nil {
+				logrus.WithContext(ctx).Errorf("failed to remove member from set: %v, key: %s", err, e.key)
+			}
 		}
 	}
-	logrus.WithContext(ctx).Debugf("current concurrency: key=%s, val=%d, priority=%d", e.key, currentValue, priority)
+	if e.needMarker {
+		logrus.WithContext(ctx).Debugf("current concurrency: key=%s, val=%d, priority=%d (marker on)", e.key, currentValue, priority)
+	} else {
+		logrus.WithContext(ctx).Debugf("current concurrency: key=%s, val=%d (marker off)", e.key, currentValue)
+	}
 	return newCtx, done, nil
 }
 
@@ -152,17 +179,17 @@ func calculatePriority(value int, rates []int) int {
 }
 
 func setPriorityToContext(ctx context.Context, priority int) context.Context {
-	priorityStr := fmt.Sprintf("%s%d", priorityPrefix, priority)
-	return context.WithValue(ctx, priorityColorKey, priorityStr)
+	priorityStr := fmt.Sprintf("%s%d", ContextValuePrefixConcurrencyPriority, priority)
+	return context.WithValue(ctx, ContextKeyConcurrencyPriority, priorityStr)
 }
 
 func getPriorityFromContext(ctx context.Context) (int, bool) {
-	priorityStr, ok := ctx.Value(priorityColorKey).(string)
+	priorityStr, ok := ctx.Value(ContextKeyConcurrencyPriority).(string)
 	if !ok {
 		return 0, false
 	}
 	var priority int
-	_, err := fmt.Sscanf(priorityStr, priorityPrefix+"%d", &priority)
+	_, err := fmt.Sscanf(priorityStr, ContextValuePrefixConcurrencyPriority+"%d", &priority)
 	if err != nil {
 		return 0, false
 	}

@@ -12,7 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type ConcurrencyRateLimiterEngine struct {
+type ConcurrencyLimiterEngine struct {
 	redisClient      *redis.Client
 	key              string
 	concurrencyRates []int
@@ -23,12 +23,24 @@ type ConcurrencyRateLimiterEngine struct {
 	next             octollm.Engine
 }
 
-var _ octollm.Engine = (*ConcurrencyRateLimiterEngine)(nil)
+var _ octollm.Engine = (*ConcurrencyLimiterEngine)(nil)
 
-func NewConcurrencyRateLimiterEngine(redisClient *redis.Client, key string, concurrencyRates []int, timeout time.Duration, next octollm.Engine) (*ConcurrencyRateLimiterEngine, error) {
-	if len(concurrencyRates) == 0 {
-		return nil, fmt.Errorf("concurrency_rates must not be empty")
+func NewConcurrencyLimiterEngine(redisClient *redis.Client, config *ConcurrencyLimiterConfig, key string, timeout time.Duration, next octollm.Engine) (*ConcurrencyLimiterEngine, error) {
+	// 如果配置不存在或 rates 为空，返回一个直接放过的 engine
+	if config == nil || len(config.Rates) == 0 {
+		return &ConcurrencyLimiterEngine{
+			redisClient:      redisClient,
+			key:              key,
+			concurrencyRates: nil,
+			timeout:          timeout,
+			acquireScript:    nil,
+			releaseScript:    nil,
+			renewScript:      nil,
+			next:             next,
+		}, nil
 	}
+
+	concurrencyRates := config.Rates
 	if timeout <= 0 {
 		return nil, fmt.Errorf("timeout must be positive")
 	}
@@ -40,7 +52,7 @@ func NewConcurrencyRateLimiterEngine(redisClient *redis.Client, key string, conc
 	releaseScript := redis.NewScript(releaseLuaScript)
 	renewScript := redis.NewScript(renewLuaScript)
 
-	return &ConcurrencyRateLimiterEngine{
+	return &ConcurrencyLimiterEngine{
 		redisClient:      redisClient,
 		key:              key,
 		concurrencyRates: filteredRates,
@@ -53,7 +65,12 @@ func NewConcurrencyRateLimiterEngine(redisClient *redis.Client, key string, conc
 }
 
 // allow 尝试允许请求通过，进行限流检查
-func (e *ConcurrencyRateLimiterEngine) allow(ctx context.Context) (done func(), err error) {
+func (e *ConcurrencyLimiterEngine) allow(ctx context.Context) (done func(), err error) {
+	// 如果 concurrencyRates 为空，直接放过
+	if len(e.concurrencyRates) == 0 || e.acquireScript == nil {
+		return func() {}, nil
+	}
+
 	priority := 0
 	if p, ok := getPriorityFromContext(ctx); ok {
 		priority = p
@@ -116,10 +133,12 @@ func (e *ConcurrencyRateLimiterEngine) allow(ctx context.Context) (done func(), 
 		<-renewDone
 
 		// 释放 member
-		c1 := context.WithoutCancel(ctx)
-		_, err := e.releaseScript.Run(c1, e.redisClient, []string{priorityKey, totalKey}, memberID).Result()
-		if err != nil {
-			logrus.WithContext(ctx).Errorf("failed to release member from sets: %v,key: %s,%s", err, priorityKey, totalKey)
+		if e.releaseScript != nil {
+			c1 := context.WithoutCancel(ctx)
+			_, err := e.releaseScript.Run(c1, e.redisClient, []string{priorityKey, totalKey}, memberID).Result()
+			if err != nil {
+				logrus.WithContext(ctx).Errorf("failed to release member from sets: %v,key: %s,%s", err, priorityKey, totalKey)
+			}
 		}
 	}
 
@@ -129,7 +148,7 @@ func (e *ConcurrencyRateLimiterEngine) allow(ctx context.Context) (done func(), 
 	return done, nil
 }
 
-func (e *ConcurrencyRateLimiterEngine) Process(req *octollm.Request) (*octollm.Response, error) {
+func (e *ConcurrencyLimiterEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	ctx := req.Context()
 
 	// 使用 allow 方法进行限流
@@ -239,7 +258,7 @@ end
 `
 
 // renewMember 定期续期 member 的 score
-func (e *ConcurrencyRateLimiterEngine) renewMember(ctx context.Context, priorityKey, totalKey, memberID string, done chan struct{}) {
+func (e *ConcurrencyLimiterEngine) renewMember(ctx context.Context, priorityKey, totalKey, memberID string, done chan struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
