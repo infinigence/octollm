@@ -1,6 +1,9 @@
 # IDE files
 .idea/
 *.iml
+.vscode/
+.claude/*.local.*
+.cursor/
 
 # Build artifacts
 main
@@ -8,3 +11,7 @@ octollm-server
 
 # Config files
 config.yaml
+
+# Misc
+*.log
+.DS_Store
