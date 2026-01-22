@@ -9,93 +9,65 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// LimiterComposerConfig 限流器组合器配置
-type LimiterComposerConfig struct {
-	RPMMarkerKey   string `json:"rpm_marker_key" yaml:"rpm_marker_key"`
-	RpmMarkerRates []int  `json:"rpm_marker_rates" yaml:"rpm_marker_rates"`
-	RpmNeedMark    bool   `json:"rpm_need_mark" yaml:"rpm_need_mark"`
-
-	RPMLimiterKey   string `json:"rpm_limiter_key" yaml:"rpm_limiter_key"`
-	RpmLimiterRates []int  `json:"rpm_limiter_rates" yaml:"rpm_limiter_rates"`
-
-	ConcurrencyMarkerKey   string `json:"concurrency_marker_key" yaml:"concurrency_marker_key"`
-	ConcurrencyMarkerRates []int  `json:"concurrency_marker_rates" yaml:"concurrency_marker_rates"`
-	ConcurrencyNeedMark    bool   `json:"concurrency_need_mark" yaml:"concurrency_need_mark"`
-
-	ConcurrencyLimiterKey   string `json:"concurrency_limiter_key" yaml:"concurrency_limiter_key"`
-	ConcurrencyLimiterRates []int  `json:"concurrency_limiter_rates" yaml:"concurrency_limiter_rates"`
-
-	ConcurrencyMarkerTimeout  time.Duration `json:"concurrency_marker_timeout" yaml:"concurrency_marker_timeout"`
-	ConcurrencyLimiterTimeout time.Duration `json:"concurrency_limiter_timeout" yaml:"concurrency_limiter_timeout"`
+func NewTenantRpmLimiterMarker(redisClient *redis.Client, tenantId string, rates []int, next octollm.Engine) (octollm.Engine, error) {
+	composerConfig := &limiter.RpmMarkerConfig{
+		Key:      fmt.Sprintf("tenant:%s:rpm_marker", tenantId),
+		Rates:    rates,
+		NeedMark: true,
+	}
+	return limiter.NewRpmMarkerEngine(redisClient, composerConfig, next)
 }
 
-// NewLimiterComposer 根据配置创建限流器组合器，并链式组合引擎
-// redisClient: Redis 客户端
-// composerConfig: 限流器组合器配置
-// next: 下一个 engine
-// 返回链式组合后的 engine: RPM Marker -> Concurrency Marker -> RPM Limiter -> Concurrency Limiter -> next
-func NewLimiterComposer(redisClient *redis.Client, composerConfig *LimiterComposerConfig, next octollm.Engine) (octollm.Engine, error) {
-	if redisClient == nil {
-		return nil, fmt.Errorf("redis client must not be nil")
+func NewTenantRpmLimiterMarkerWithoutMark(redisClient *redis.Client, tenantId string, rates []int, next octollm.Engine) (octollm.Engine, error) {
+	composerConfig := &limiter.RpmMarkerConfig{
+		Key:      fmt.Sprintf("tenant:%s:rpm_marker", tenantId),
+		Rates:    rates,
+		NeedMark: false,
 	}
-	if next == nil {
-		return nil, fmt.Errorf("next engine must not be nil")
-	}
+	return limiter.NewRpmMarkerEngine(redisClient, composerConfig, next)
+}
 
-	current := next
+func NewApiKeyRpmLimiterMarker(redisClient *redis.Client, apiKey string, rates []int, next octollm.Engine) (octollm.Engine, error) {
+	composerConfig := &limiter.RpmMarkerConfig{
+		Key:      fmt.Sprintf("api_key:%s:rpm_marker", apiKey),
+		Rates:    rates,
+		NeedMark: true,
+	}
+	return limiter.NewRpmMarkerEngine(redisClient, composerConfig, next)
+}
 
-	// 构造 limiter 配置
-	rpmMarkerConfig := &limiter.RpmMarkerConfig{
-		Rates:    composerConfig.RpmMarkerRates,
-		NeedMark: composerConfig.RpmNeedMark,
+func NewApiKeyRpmLimiterMarkerWithoutMark(redisClient *redis.Client, apiKey string, rates []int, next octollm.Engine) (octollm.Engine, error) {
+	composerConfig := &limiter.RpmMarkerConfig{
+		Key:      fmt.Sprintf("api_key:%s:rpm_marker", apiKey),
+		Rates:    rates,
+		NeedMark: false,
 	}
-	concurrencyMarkerConfig := &limiter.ConcurrencyMarkerConfig{
-		Rates:    composerConfig.ConcurrencyMarkerRates,
-		NeedMark: composerConfig.ConcurrencyNeedMark,
-	}
-	concurrencyLimiterConfig := &limiter.ConcurrencyLimiterConfig{
-		Rates: composerConfig.ConcurrencyLimiterRates,
-	}
-	rpmLimiterConfig := &limiter.RpmLimiterConfig{
-		Rates: composerConfig.RpmLimiterRates,
-	}
+	return limiter.NewRpmMarkerEngine(redisClient, composerConfig, next)
+}
 
-	// 从内到外链式组合：
-	// 1. ConcurrencyLimiterEngine (最内层)
-	if composerConfig.ConcurrencyLimiterKey != "" {
-		concurrencyLimiter, err := limiter.NewConcurrencyLimiterEngine(redisClient, concurrencyLimiterConfig, composerConfig.ConcurrencyLimiterKey, composerConfig.ConcurrencyLimiterTimeout, current)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create concurrency limiter engine: %w", err)
-		}
-		current = concurrencyLimiter
+func NewRuleConcurrencyMarker(redisClient *redis.Client, ruleName string, rates []int, timeout time.Duration, next octollm.Engine) (octollm.Engine, error) {
+	composerConfig := &limiter.ConcurrencyMarkerConfig{
+		Key:      fmt.Sprintf("rule:%s:concurrency_marker", ruleName),
+		Rates:    rates,
+		NeedMark: true,
+		Timeout:  timeout,
 	}
+	return limiter.NewConcurrencyMarkerEngine(redisClient, composerConfig, next)
+}
 
-	// 2. RPM Limiter
-	if composerConfig.RPMLimiterKey != "" {
-		rpmLimiter, err := limiter.NewRpmLimiterEngine(redisClient, rpmLimiterConfig, composerConfig.RPMLimiterKey, current)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create rpm limiter engine: %w", err)
-		}
-		current = rpmLimiter
+func NewBackendConcurrencyLimiter(redisClient *redis.Client, backendName string, rates []int, timeout time.Duration, next octollm.Engine) (octollm.Engine, error) {
+	composerConfig := &limiter.ConcurrencyLimiterConfig{
+		Key:     fmt.Sprintf("backend:%s:concurrency_limiter", backendName),
+		Rates:   rates,
+		Timeout: timeout,
 	}
+	return limiter.NewConcurrencyLimiterEngine(redisClient, composerConfig, next)
+}
 
-	// 3. ConcurrencyMarkerEngine
-	if composerConfig.ConcurrencyMarkerKey != "" {
-		concurrencyMarker, err := limiter.NewConcurrencyMarkerEngine(redisClient, concurrencyMarkerConfig, composerConfig.ConcurrencyMarkerKey, composerConfig.ConcurrencyMarkerTimeout, current)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create concurrency marker engine: %w", err)
-		}
-		current = concurrencyMarker
+func NewBackendRpmLimiter(redisClient *redis.Client, backendName string, rates []int, next octollm.Engine) (octollm.Engine, error) {
+	composerConfig := &limiter.RpmLimiterConfig{
+		Key:   fmt.Sprintf("backend:%s:rpm_limiter", backendName),
+		Rates: rates,
 	}
-
-	// 4. RPM Marker (最外层)
-	if composerConfig.RPMMarkerKey != "" {
-		rpmMarker, err := limiter.NewRpmMarkerEngine(redisClient, rpmMarkerConfig, composerConfig.RPMMarkerKey, current)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create rpm marker engine: %w", err)
-		}
-		current = rpmMarker
-	}
-
-	return current, nil
+	return limiter.NewRpmLimiterEngine(redisClient, composerConfig, next)
 }

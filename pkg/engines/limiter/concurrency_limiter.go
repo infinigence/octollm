@@ -25,14 +25,18 @@ type ConcurrencyLimiterEngine struct {
 
 var _ octollm.Engine = (*ConcurrencyLimiterEngine)(nil)
 
-func NewConcurrencyLimiterEngine(redisClient *redis.Client, config *ConcurrencyLimiterConfig, key string, timeout time.Duration, next octollm.Engine) (*ConcurrencyLimiterEngine, error) {
+func NewConcurrencyLimiterEngine(redisClient *redis.Client, config *ConcurrencyLimiterConfig, next octollm.Engine) (*ConcurrencyLimiterEngine, error) {
 	// 如果配置不存在或 rates 为空，返回一个直接放过的 engine
 	if config == nil || len(config.Rates) == 0 {
+		key := ""
+		if config != nil {
+			key = config.Key
+		}
 		return &ConcurrencyLimiterEngine{
 			redisClient:      redisClient,
 			key:              key,
 			concurrencyRates: nil,
-			timeout:          timeout,
+			timeout:          config.Timeout,
 			acquireScript:    nil,
 			releaseScript:    nil,
 			renewScript:      nil,
@@ -54,7 +58,7 @@ func NewConcurrencyLimiterEngine(redisClient *redis.Client, config *ConcurrencyL
 
 	return &ConcurrencyLimiterEngine{
 		redisClient:      redisClient,
-		key:              key,
+		key:              config.Key,
 		concurrencyRates: filteredRates,
 		timeout:          timeout,
 		acquireScript:    acquireScript,

@@ -21,12 +21,16 @@ type RpmMarkerEngine struct {
 
 var _ octollm.Engine = (*RpmMarkerEngine)(nil)
 
-func NewRpmMarkerEngine(redisClient *redis.Client, config *RpmMarkerConfig, key string, next octollm.Engine) (*RpmMarkerEngine, error) {
+func NewRpmMarkerEngine(redisClient *redis.Client, config *RpmMarkerConfig, next octollm.Engine) (*RpmMarkerEngine, error) {
 	if next == nil {
 		return nil, fmt.Errorf("next engine must not be nil")
 	}
 
 	if config == nil || len(config.Rates) == 0 {
+		key := ""
+		if config != nil {
+			key = config.Key
+		}
 		return &RpmMarkerEngine{
 			redisClient: redisClient,
 			key:         key,
@@ -43,7 +47,7 @@ func NewRpmMarkerEngine(redisClient *redis.Client, config *RpmMarkerConfig, key 
 
 	return &RpmMarkerEngine{
 		redisClient: redisClient,
-		key:         key,
+		key:         config.Key,
 		rates:       filteredRates,
 		needMarker:  config.NeedMark,
 		next:        next,

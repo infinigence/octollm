@@ -62,8 +62,6 @@ type RuleConfig struct {
 type LimitsConfig struct {
 	TPM                     int   `json:"tpm" yaml:"tpm"`
 	RPM                     int   `json:"rpm" yaml:"rpm"`
-	TPD                     int   `json:"tpd" yaml:"tpd"`
-	RPD                     int   `json:"rpd" yaml:"rpd"`
 	RpmMarkerRates          []int `json:"rpm_marker_rates" yaml:"rpm_marker_rates"`
 	RpmLimiterRates         []int `json:"rpm_limiter_rates" yaml:"rpm_limiter_rates"`
 	Concurrency             int   `json:"concurrency" yaml:"concurrency"`

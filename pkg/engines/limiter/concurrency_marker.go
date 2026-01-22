@@ -30,14 +30,18 @@ type ConcurrencyMarkerEngine struct {
 
 var _ octollm.Engine = (*ConcurrencyMarkerEngine)(nil)
 
-func NewConcurrencyMarkerEngine(redisClient *redis.Client, config *ConcurrencyMarkerConfig, key string, timeout time.Duration, next octollm.Engine) (*ConcurrencyMarkerEngine, error) {
+func NewConcurrencyMarkerEngine(redisClient *redis.Client, config *ConcurrencyMarkerConfig, next octollm.Engine) (*ConcurrencyMarkerEngine, error) {
 	// 如果配置不存在或 rates 为空，返回一个直接放过的 engine
 	if config == nil || len(config.Rates) == 0 {
+		key := ""
+		if config != nil {
+			key = config.Key
+		}
 		return &ConcurrencyMarkerEngine{
 			redisClient:   redisClient,
 			key:           key,
 			rates:         nil,
-			timeout:       timeout,
+			timeout:       config.Timeout,
 			needMarker:    false,
 			acquireScript: nil,
 			releaseScript: nil,
@@ -61,7 +65,7 @@ func NewConcurrencyMarkerEngine(redisClient *redis.Client, config *ConcurrencyMa
 
 	return &ConcurrencyMarkerEngine{
 		redisClient:   redisClient,
-		key:           key,
+		key:           config.Key,
 		rates:         filteredRates,
 		timeout:       timeout,
 		needMarker:    config.NeedMark,

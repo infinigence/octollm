@@ -9,8 +9,6 @@ backends:
     limiter:
       tpm: 1000
       rpm: 1000
-      tpd: 1000
-      rpd: 1000
       # concurrency: 10
       # concurrency_marker_rates: [1000, 2000, 3000]
       concurrency_limiter_rates: [1000, 2000, 3000]
@@ -26,8 +24,6 @@ models:
     default_org_limits:
       tpm: 1000
       rpm: 1000
-      tpd: 1000
-      rpd: 1000
       # concurrency: 10
       concurrency_marker_rates: [1000, 2000, 3000]
       # concurrency_limiter_rates: [1000, 2000, 3000]

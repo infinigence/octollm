@@ -21,9 +21,9 @@ models:
           rpm: 1000
           # concurrency: 10
           rpm_marker_rates: [1000, 2000, 3000]
+          rpm_limiter_rates: [1000, 2000, 3000]
           concurrency_marker_rates: [1000, 2000, 3000]
           concurrency_limiter_rates: [1000, 2000, 3000]
-          rpm_limiter_rates: [1000, 2000, 3000]
           # deny_when_exceeding: true
 
       force_stream:

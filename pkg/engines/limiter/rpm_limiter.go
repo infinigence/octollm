@@ -25,12 +25,16 @@ var _ octollm.Engine = (*RpmLimiterEngine)(nil)
 
 var errRPMRateLimitReached = fmt.Errorf("rpm rate limit reached")
 
-func NewRpmLimiterEngine(redisClient *redis.Client, config *RpmLimiterConfig, key string, next octollm.Engine) (*RpmLimiterEngine, error) {
+func NewRpmLimiterEngine(redisClient *redis.Client, config *RpmLimiterConfig, next octollm.Engine) (*RpmLimiterEngine, error) {
 	if next == nil {
 		return nil, fmt.Errorf("next engine must not be nil")
 	}
 
 	if config == nil || len(config.Rates) == 0 {
+		key := ""
+		if config != nil {
+			key = config.Key
+		}
 		return &RpmLimiterEngine{
 			redisClient: redisClient,
 			key:         key,
@@ -46,7 +50,7 @@ func NewRpmLimiterEngine(redisClient *redis.Client, config *RpmLimiterConfig, ke
 
 	return &RpmLimiterEngine{
 		redisClient: redisClient,
-		key:         key,
+		key:         config.Key,
 		rates:       filteredRates,
 		next:        next,
 	}, nil
