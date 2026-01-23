@@ -45,7 +45,6 @@ type Backend struct {
 	RequestRewrites     *engines.RewritePolicy `json:"request_rewrites" yaml:"request_rewrites"`
 	ResponseRewrites    *engines.RewritePolicy `json:"response_rewrites" yaml:"response_rewrites"`
 	StreamChunkRewrites *engines.RewritePolicy `json:"stream_chunk_rewrites" yaml:"stream_chunk_rewrites"`
-	Limiter             *LimitsConfig          `json:"limiter" yaml:"limiter"`
 }
 
 type RuleList []*RuleConfig
@@ -60,14 +59,12 @@ type RuleConfig struct {
 }
 
 type LimitsConfig struct {
-	TPM                     int   `json:"tpm" yaml:"tpm"`
-	RPM                     int   `json:"rpm" yaml:"rpm"`
-	RpmMarkerRates          []int `json:"rpm_marker_rates" yaml:"rpm_marker_rates"`
-	RpmLimiterRates         []int `json:"rpm_limiter_rates" yaml:"rpm_limiter_rates"`
-	Concurrency             int   `json:"concurrency" yaml:"concurrency"`
-	ConcurrencyMarkerRates  []int `json:"concurrency_marker_rates" yaml:"concurrency_marker_rates"`
-	ConcurrencyLimiterRates []int `json:"concurrency_limiter_rates" yaml:"concurrency_limiter_rates"`
-	DenyWhenExceeding       bool  `json:"deny_when_exceeding" yaml:"deny_when_exceeding"` // only apply to rule_limits and default_org_limits
+	TPM               int  `json:"tpm" yaml:"tpm"`
+	RPM               int  `json:"rpm" yaml:"rpm"`
+	TPD               int  `json:"tpd" yaml:"tpd"`
+	RPD               int  `json:"rpd" yaml:"rpd"`
+	Concurrency       int  `json:"concurrency" yaml:"concurrency"`
+	DenyWhenExceeding bool `json:"deny_when_exceeding" yaml:"deny_when_exceeding"` // only apply to rule_limits
 }
 
 type UserOrg struct {
