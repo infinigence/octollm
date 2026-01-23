@@ -16,16 +16,6 @@ models:
     backends:
       default:1: 
         use: infini
-        limiter:
-          tpm: 1000
-          rpm: 1000
-          # concurrency: 10
-          rpm_marker_rates: [1000, 2000, 3000]
-          rpm_limiter_rates: [1000, 2000, 3000]
-          concurrency_marker_rates: [1000, 2000, 3000]
-          concurrency_limiter_rates: [1000, 2000, 3000]
-          # deny_when_exceeding: true
-
       force_stream:
         use: infini
         request_rewrites:
@@ -45,10 +35,3 @@ users:
             forward_weights:
               force_stream: 10
               non_exist: 20
-            rule_limits:
-              tpm: 1000
-              rpm: 1000
-              # concurrency: 10
-              concurrency_marker_rates: [1000, 2000, 3000]
-              concurrency_limiter_rates: [1000, 2000, 3000]
-              # deny_when_exceeding: true

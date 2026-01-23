@@ -12,37 +12,40 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// 使用统一的priority context key
+// Use unified priority context key
 
 var errRateLimitReached = fmt.Errorf("rate limit reached")
 
-type ConcurrencyMarkerEngine struct {
+type ConcurrencyColorMarkerEngine struct {
 	redisClient   *redis.Client
 	key           string
 	rates         []int
 	timeout       time.Duration
-	needMarker    bool
+	nameSpace     string
 	acquireScript *redis.Script
 	releaseScript *redis.Script
 	renewScript   *redis.Script
 	next          octollm.Engine
 }
 
-var _ octollm.Engine = (*ConcurrencyMarkerEngine)(nil)
+var _ octollm.Engine = (*ConcurrencyColorMarkerEngine)(nil)
 
-func NewConcurrencyMarkerEngine(redisClient *redis.Client, config *ConcurrencyMarkerConfig, next octollm.Engine) (*ConcurrencyMarkerEngine, error) {
-	// 如果配置不存在或 rates 为空，返回一个直接放过的 engine
-	if config == nil || len(config.Rates) == 0 {
-		key := ""
-		if config != nil {
-			key = config.Key
-		}
-		return &ConcurrencyMarkerEngine{
+// NewConcurrencyColorMarkerEngine creates a concurrency color marker engine
+// redisClient: Redis client
+// key: Redis key for storing concurrency count
+// rates: Concurrency rate threshold array, must be strictly increasing
+// timeout: Timeout duration, must be greater than 0
+// nameSpace: Namespace for isolating priority across different namespaces, marker and limiter within the same nameSpace can communicate
+// next: Next engine
+func NewConcurrencyColorMarkerEngine(redisClient *redis.Client, key string, rates []int, timeout time.Duration, nameSpace string, next octollm.Engine) (*ConcurrencyColorMarkerEngine, error) {
+	// If rates is empty, return an engine that directly passes through
+	if len(rates) == 0 {
+		return &ConcurrencyColorMarkerEngine{
 			redisClient:   redisClient,
 			key:           key,
 			rates:         nil,
-			timeout:       config.Timeout,
-			needMarker:    false,
+			timeout:       timeout,
+			nameSpace:     nameSpace,
 			acquireScript: nil,
 			releaseScript: nil,
 			renewScript:   nil,
@@ -50,7 +53,6 @@ func NewConcurrencyMarkerEngine(redisClient *redis.Client, config *ConcurrencyMa
 		}, nil
 	}
 
-	rates := config.Rates
 	if timeout <= 0 {
 		return nil, fmt.Errorf("timeout must be positive")
 	}
@@ -63,12 +65,12 @@ func NewConcurrencyMarkerEngine(redisClient *redis.Client, config *ConcurrencyMa
 	releaseScript := redis.NewScript(colorReleaseLuaScript)
 	renewScript := redis.NewScript(colorRenewLuaScript)
 
-	return &ConcurrencyMarkerEngine{
+	return &ConcurrencyColorMarkerEngine{
 		redisClient:   redisClient,
-		key:           config.Key,
+		key:           key,
 		rates:         filteredRates,
 		timeout:       timeout,
-		needMarker:    config.NeedMark,
+		nameSpace:     nameSpace,
 		acquireScript: acquireScript,
 		releaseScript: releaseScript,
 		renewScript:   renewScript,
@@ -76,9 +78,9 @@ func NewConcurrencyMarkerEngine(redisClient *redis.Client, config *ConcurrencyMa
 	}, nil
 }
 
-// allow 尝试允许请求通过，进行染色并计数
-func (e *ConcurrencyMarkerEngine) allow(ctx context.Context) (newCtx context.Context, done func(), err error) {
-	// 如果 rates 为空，直接放过
+// allow attempts to allow the request to pass through, performing coloring and counting
+func (e *ConcurrencyColorMarkerEngine) allow(ctx context.Context) (newCtx context.Context, done func(), err error) {
+	// If rates is empty, directly pass through
 	if len(e.rates) == 0 || e.acquireScript == nil {
 		return ctx, func() {}, nil
 	}
@@ -108,23 +110,19 @@ func (e *ConcurrencyMarkerEngine) allow(ctx context.Context) (newCtx context.Con
 		return ctx, func() {}, errRateLimitReached
 	}
 	priority := calculatePriority(int(currentValue), e.rates)
-	if e.needMarker {
-		newCtx = setPriorityToContext(ctx, priority)
-	} else {
-		newCtx = ctx
-	}
+	newCtx = e.setPriorityToContext(ctx, priority)
 
-	// 启动续期协程
+	// Start renewal goroutine
 	renewCtx, renewCancel := context.WithCancel(context.WithoutCancel(ctx))
 	renewDone := make(chan struct{})
 	go e.renewMember(renewCtx, memberID, renewDone)
 
 	done = func() {
-		// 停止续期协程
+		// Stop renewal goroutine
 		renewCancel()
 		<-renewDone
 
-		// 释放 member
+		// Release member
 		if e.releaseScript != nil {
 			c1 := context.WithoutCancel(ctx)
 			_, err := e.releaseScript.Run(c1, e.redisClient, []string{e.key}, memberID).Result()
@@ -133,18 +131,14 @@ func (e *ConcurrencyMarkerEngine) allow(ctx context.Context) (newCtx context.Con
 			}
 		}
 	}
-	if e.needMarker {
-		logrus.WithContext(ctx).Debugf("current concurrency: key=%s, val=%d, priority=%d (marker on)", e.key, currentValue, priority)
-	} else {
-		logrus.WithContext(ctx).Debugf("current concurrency: key=%s, val=%d (marker off)", e.key, currentValue)
-	}
+	logrus.WithContext(ctx).Debugf("current concurrency: key=%s, val=%d, priority=%d", e.key, currentValue, priority)
 	return newCtx, done, nil
 }
 
-func (e *ConcurrencyMarkerEngine) Process(req *octollm.Request) (*octollm.Response, error) {
+func (e *ConcurrencyColorMarkerEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	ctx := req.Context()
 
-	// 使用 allow 方法进行染色
+	// Use allow method to perform coloring
 	newCtx, done, err := e.allow(ctx)
 	if err != nil {
 		if err == errRateLimitReached {
@@ -161,13 +155,13 @@ func (e *ConcurrencyMarkerEngine) Process(req *octollm.Request) (*octollm.Respon
 		}
 	}
 
-	// 使用 SetContext 方法设置新的 context
+	// Use SetContext method to set new context
 	req.SetContext(newCtx)
 
-	// 处理请求
+	// Process request
 	resp, err := e.next.Process(req)
 
-	// 无论成功还是失败，都需要调用 done 清理
+	// Call done to cleanup regardless of success or failure
 	done()
 
 	return resp, err
@@ -182,23 +176,10 @@ func calculatePriority(value int, rates []int) int {
 	return 0
 }
 
-func setPriorityToContext(ctx context.Context, priority int) context.Context {
-	priorityStr := fmt.Sprintf("%s%d", ContextValuePrefixConcurrencyPriority, priority)
-	return context.WithValue(ctx, ContextKeyConcurrencyPriority, priorityStr)
-}
-
-func getPriorityFromContext(ctx context.Context) (int, bool) {
-	priorityStr, ok := ctx.Value(ContextKeyConcurrencyPriority).(string)
-	if !ok {
-		return 0, false
-	}
-	var priority int
-	_, err := fmt.Sscanf(priorityStr, ContextValuePrefixConcurrencyPriority+"%d", &priority)
-	if err != nil {
-		return 0, false
-	}
-
-	return priority, true
+func (e *ConcurrencyColorMarkerEngine) setPriorityToContext(ctx context.Context, priority int) context.Context {
+	priorityStr := fmt.Sprintf("%s%d", ContextValuePrefixPriority, priority)
+	contextKey := contextKey(fmt.Sprintf("%s:%s", e.nameSpace, ContextKeyPriority))
+	return context.WithValue(ctx, contextKey, priorityStr)
 }
 
 func filterIncreasingRates(rates []int) ([]int, bool) {
@@ -265,8 +246,8 @@ else
 end
 `
 
-// renewMember 定期续期 member 的 score
-func (e *ConcurrencyMarkerEngine) renewMember(ctx context.Context, memberID string, done chan struct{}) {
+// renewMember periodically renews the member's score
+func (e *ConcurrencyColorMarkerEngine) renewMember(ctx context.Context, memberID string, done chan struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
