@@ -2,7 +2,6 @@ package limiter
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -12,134 +11,219 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// RequestColorLimiterEngine is a request rate-based priority rate limiter.
-// Performs rate limiting checks based on priority and configured rates.
+// RequestColorLimiterEngine is a multi-tier token bucket-based priority rate limiter.
+// Performs rate limiting checks based on priority marked by RequestColorMarkerEngine.
 type RequestColorLimiterEngine struct {
-	redisClient *redis.Client
-	key         string
-	rates       []int
-	nameSpace   string
-	next        octollm.Engine
+	redisClient             *redis.Client
+	keyPrefix               string        // Redis key prefix for storing token bucket states
+	limits                  []int         // Request limits for each supported priority tier (must be strictly decreasing)
+	rates                   []float64     // Token refill rates for each priority tier (calculated from limits and window)
+	window                  time.Duration // Time window
+	nameSpace               string        // Namespace for priority context isolation
+	tokenBucketScript       *redis.Script
+	dualTokenBucketScript   *redis.Script
+	next                    octollm.Engine
 }
 
 var _ octollm.Engine = (*RequestColorLimiterEngine)(nil)
 
 var errRequestRateLimitReached = fmt.Errorf("request rate limit reached")
 
-// NewRequestColorLimiterEngine creates a request rate color limiter engine
+// NewRequestColorLimiterEngine creates a multi-tier token bucket-based priority rate limiter
 // redisClient: Redis client
-// key: Redis key for storing request rate count
-// rates: Request rate threshold array, must be strictly decreasing
+// keyPrefix: Redis key prefix for storing token bucket states (each tier uses keyPrefix:tier_N)
+// limits: Request limit array for each supported priority tier (must be strictly decreasing), e.g., [200, 100, 50]
+//
+//	means this limiter supports priority 2, 1, 0
+//	tier 0 (priority 2): 200 requests, tier 1 (priority 1): 100 requests, tier 2 (priority 0): 50 requests within the window
+//
+// window: Time window (supports seconds, minutes, etc.), must be greater than 0
 // nameSpace: Namespace for isolating priority across different namespaces, marker and limiter within the same nameSpace can communicate
 // next: Next engine
-func NewRequestColorLimiterEngine(redisClient *redis.Client, key string, rates []int, nameSpace string, next octollm.Engine) (*RequestColorLimiterEngine, error) {
+//
+// Working principle:
+// - The number of limits determines how many priority levels are supported
+// - Priority mapping: priority = len(limits) - 1 - tierIdx (same as marker)
+// - Token consumption logic:
+//   - Max priority requests (tier 0): only consume from tier 0
+//   - Lower priority requests: atomically consume from own tier and tier 0 with reservation
+//   - Reservation mechanism: when consuming tier 0 tokens, reserve N tokens where N = priority difference
+//     This ensures higher priority requests always have tokens available
+//   - Atomic operation: uses a single Lua script to check both buckets and consume from both or neither
+//     No rollback needed as the operation is atomic
+//
+// Example 1: limits=[200, 100], window=1*time.Minute (supports priority 1, 0)
+// - Tier 0: 200 req/min → Priority 1 (highest supported)
+// - Tier 1: 100 req/min → Priority 0 (lowest)
+// - Priority 1 request: only consume from tier 0
+// - Priority 0 request: atomically check tier 1 ≥1 AND tier 0 >1, then consume from both
+//   - If tier 0 has ≤1 tokens, priority 0 is rejected (reserved for priority 1)
+//
+// Example 2: limits=[200, 100, 50], window=1*time.Minute (supports priority 2, 1, 0)
+// - Tier 0: 200 req/min → Priority 2 (highest supported)
+// - Tier 1: 100 req/min → Priority 1 (medium)
+// - Tier 2: 50 req/min → Priority 0 (lowest)
+// - Priority 2 request: only consume from tier 0
+// - Priority 1 request: atomically check tier 1 ≥1 AND tier 0 >1, then consume from both
+//   - If tier 0 has ≤1 tokens, priority 1 is rejected
+//
+// - Priority 0 request: atomically check tier 2 ≥1 AND tier 0 >2, then consume from both
+//   - If tier 0 has ≤2 tokens, priority 0 is rejected
+func NewRequestColorLimiterEngine(redisClient *redis.Client, keyPrefix string, limits []int, window time.Duration, nameSpace string, next octollm.Engine) (*RequestColorLimiterEngine, error) {
 	if next == nil {
 		return nil, fmt.Errorf("next engine must not be nil")
 	}
 
-	if len(rates) == 0 {
+	// If limits is empty, disable rate limiting (pass through)
+	if len(limits) == 0 {
 		return &RequestColorLimiterEngine{
-			redisClient: redisClient,
-			key:         key,
-			rates:       nil,
-			nameSpace:   nameSpace,
-			next:        next,
+			redisClient:           redisClient,
+			keyPrefix:             keyPrefix,
+			limits:                nil,
+			rates:                 nil,
+			window:                0,
+			nameSpace:             nameSpace,
+			tokenBucketScript:     nil,
+			dualTokenBucketScript: nil,
+			next:                  next,
 		}, nil
 	}
 
-	filteredRates, filtered := filterDecreasingRates(rates)
+	// Validate and filter limits to ensure strictly decreasing order
+	filteredLimits, filtered := filterDecreasingRates(limits)
 	if filtered {
-		logrus.Warnf("request_color_limiter_rates must be strictly decreasing, filtered from %v to %v (removed %d non-decreasing values)", rates, filteredRates, len(rates)-len(filteredRates))
+		logrus.Warnf("request_color_limiter_limits must be strictly decreasing, filtered from %v to %v (removed %d non-decreasing values)", limits, filteredLimits, len(limits)-len(filteredLimits))
+	}
+
+	if window <= 0 {
+		return nil, fmt.Errorf("window must be positive")
+	}
+
+	// Calculate rate for each tier: rate = limit / window (in seconds)
+	rates := make([]float64, len(filteredLimits))
+	for i, limit := range filteredLimits {
+		rates[i] = float64(limit) / window.Seconds()
 	}
 
 	return &RequestColorLimiterEngine{
-		redisClient: redisClient,
-		key:         key,
-		rates:       filteredRates,
-		nameSpace:   nameSpace,
-		next:        next,
+		redisClient:           redisClient,
+		keyPrefix:             keyPrefix,
+		limits:                filteredLimits,
+		rates:                 rates,
+		window:                window,
+		nameSpace:             nameSpace,
+		tokenBucketScript:     redis.NewScript(tokenBucketLuaScript),
+		dualTokenBucketScript: redis.NewScript(dualTokenBucketLuaScript),
+		next:                  next,
 	}, nil
 }
 
-// allow attempts to allow the request to pass through, performing RPM rate limiting check
+// allow attempts to consume tokens from token buckets based on request priority
 func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), err error) {
-	// If rates is empty, directly pass through
-	if len(e.rates) == 0 || e.redisClient == nil {
+	// If configuration is invalid, directly pass through
+	if len(e.limits) == 0 || e.redisClient == nil || e.tokenBucketScript == nil {
 		return func() {}, nil
 	}
 
-	// Get priority
+	// Get priority from context (set by RequestColorMarkerEngine)
 	priority := 0
 	if p, ok := e.getPriorityFromContext(ctx); ok {
 		priority = p
 	}
-	if priority < 0 {
-		logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] invalid priority: %d, must be in range [0, %d)", priority, len(e.rates))
-		return func() {}, fmt.Errorf("invalid priority: %d, must be in range [0, %d)", priority, len(e.rates))
-	}
 
-	var priorityLimit int
-	if priority >= len(e.rates) {
-		priority = len(e.rates) - 1
-		priorityLimit = e.rates[0]
+	now := time.Now()
+	nowUnix := now.Unix()
+	windowSeconds := int64(e.window.Seconds())
+
+	// Calculate max supported priority: len(limits) - 1
+	maxSupportedPriority := len(e.limits) - 1
+
+	// Determine which tier corresponds to this priority
+	// Priority mapping: priority = len(limits) - 1 - tierIdx
+	// So tierIdx = len(limits) - 1 - priority
+	var tierIdx int
+	if priority >= maxSupportedPriority {
+		// High priority (>= max supported): use tier 0
+		tierIdx = 0
+	} else if priority >= 0 {
+		// Valid priority: use corresponding tier
+		tierIdx = len(e.limits) - 1 - priority
 	} else {
-		priorityLimit = e.rates[len(e.rates)-1-priority]
-	}
-	maxRate := e.rates[0]
-	gap := len(e.rates) - 1 - priority
-	if gap < 0 {
-		gap = 0
-	}
-	totalLimit := maxRate - gap
-
-	// Check current request rate usage
-	val, err := e.redisClient.Get(ctx, e.key).Int()
-	if err != nil && err != redis.Nil {
-		logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] failed to get request rate value for %s: %v", e.key, err)
-		return func() {}, fmt.Errorf("failed to get request rate value: %w", err)
+		// Invalid priority (< 0): use last tier (lowest priority)
+		tierIdx = len(e.limits) - 1
 	}
 
-	currentRemaining := priorityLimit
-	if err != redis.Nil {
-		currentRemaining = val
-	}
+	if tierIdx == 0 {
+		// Max priority: only consume from tier 0 using single key script
+		key := fmt.Sprintf("%s:tier_%d", e.keyPrefix, 0)
+		burst := e.limits[0]
+		rate := e.rates[0]
 
-	if currentRemaining <= 0 {
-		logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] request rate limit %d reached, current: %d, key: %s, priority: %d", priorityLimit, currentRemaining, e.key, priority)
-		return func() {}, errRequestRateLimitReached
-	}
+		result, err := e.tokenBucketScript.Run(ctx, e.redisClient, []string{key},
+			burst, rate, nowUnix, windowSeconds).Result()
+		if err != nil {
+			logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] token bucket script error for tier 0: %v, key: %s", err, key)
+			return func() {}, fmt.Errorf("token bucket script error: %w", err)
+		}
 
-	// Check if total limit is exceeded (simple check)
-	if totalLimit > 0 && (priorityLimit-currentRemaining+1) > totalLimit {
-		logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] total request rate limit %d reached, key: %s, priority: %d", totalLimit, e.key, priority)
-		return func() {}, errRequestRateLimitReached
-	}
+		results, ok := result.([]interface{})
+		if !ok || len(results) != 2 {
+			logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] unexpected script result format for tier 0, key: %s", key)
+			return func() {}, fmt.Errorf("unexpected script result format")
+		}
 
-	logrus.WithContext(ctx).Debugf("[RequestColorLimiterEngine] request rate allow: priority=%d, remaining=%d/%d, key=%s", priority, currentRemaining, priorityLimit, e.key)
+		allowed, _ := results[0].(int64)
+		tokens, _ := results[1].(int64)
 
-	done = func() {
-		// Deduct request rate
-		if e.redisClient != nil {
-			c1 := context.WithoutCancel(ctx)
-			pip := e.redisClient.Pipeline()
-			pip.DecrBy(c1, e.key, 1)
-			ttl := pip.TTL(c1, e.key)
-			_, err := pip.Exec(c1)
-			if err != nil && !errors.Is(err, redis.Nil) {
-				logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] failed to deduct request rate for %s: %v", e.key, err)
-				return
-			}
+		if allowed == 1 {
+			logrus.WithContext(ctx).Infof("[RequestColorLimiterEngine] max priority request allowed, consumed from tier 0, tokens: %d/%d", tokens, burst)
+		} else {
+			logrus.WithContext(ctx).Warnf("[RequestColorLimiterEngine] tier 0 rejected, tokens: %d/%d, key: %s", tokens, burst, key)
+			return func() {}, errRequestRateLimitReached
+		}
+	} else {
+		// Non-max priority: atomically consume from both own tier and tier 0 with reservation
+		ownKey := fmt.Sprintf("%s:tier_%d", e.keyPrefix, tierIdx)
+		tier0Key := fmt.Sprintf("%s:tier_%d", e.keyPrefix, 0)
 
-			// If TTL doesn't exist, set initial value
-			if ttl.Val() <= 0 {
-				err := e.redisClient.SetEx(c1, e.key, priorityLimit-1, 120*time.Second).Err()
-				if err != nil {
-					logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] failed to set request rate TTL for %s: %v", e.key, err)
-				}
-			}
+		ownBurst := e.limits[tierIdx]
+		ownRate := e.rates[tierIdx]
+		tier0Burst := e.limits[0]
+		tier0Rate := e.rates[0]
+
+		// Calculate priority difference (how many tokens to reserve in tier 0)
+		reservedTokens := int64(tierIdx)
+
+		// Use atomic dual-key Lua script: check both, consume both or consume neither
+		result, err := e.dualTokenBucketScript.Run(ctx, e.redisClient, []string{ownKey, tier0Key},
+			ownBurst, ownRate, tier0Burst, tier0Rate, nowUnix, windowSeconds, reservedTokens).Result()
+		if err != nil {
+			logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] dual token bucket script error: %v, ownKey: %s, tier0Key: %s", err, ownKey, tier0Key)
+			return func() {}, fmt.Errorf("token bucket script error: %w", err)
+		}
+
+		results, ok := result.([]interface{})
+		if !ok || len(results) != 3 {
+			logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] unexpected script result format, ownKey: %s, tier0Key: %s", ownKey, tier0Key)
+			return func() {}, fmt.Errorf("unexpected script result format")
+		}
+
+		allowed, _ := results[0].(int64)
+		ownTokens, _ := results[1].(int64)
+		tier0Tokens, _ := results[2].(int64)
+
+		if allowed == 1 {
+			logrus.WithContext(ctx).Infof("[RequestColorLimiterEngine] request allowed with priority %d (tier %d), consumed from tier %d and tier 0, ownTokens: %d/%d, tier0Tokens: %d/%d (reserved: %d)",
+				priority, tierIdx, tierIdx, ownTokens, ownBurst, tier0Tokens, tier0Burst, reservedTokens)
+		} else {
+			logrus.WithContext(ctx).Warnf("[RequestColorLimiterEngine] request rejected with priority %d (tier %d), ownTokens: %d/%d, tier0Tokens: %d/%d (reserved: %d)",
+				priority, tierIdx, ownTokens, ownBurst, tier0Tokens, tier0Burst, reservedTokens)
+			return func() {}, errRequestRateLimitReached
 		}
 	}
 
+	// done function doesn't need to do anything, as tokens are already consumed
+	done = func() {}
 	return done, nil
 }
 
@@ -150,13 +234,13 @@ func (e *RequestColorLimiterEngine) Process(req *octollm.Request) (*octollm.Resp
 	done, err := e.allow(ctx)
 	if err != nil {
 		if err == errRequestRateLimitReached {
-			logrus.WithContext(ctx).Warnf("[RequestColorLimiterEngine] request rate limit reached, key: %s", e.key)
+			logrus.WithContext(ctx).Warnf("[RequestColorLimiterEngine] request rate limit reached, keyPrefix: %s", e.keyPrefix)
 			return nil, &errutils.UpstreamRespError{
 				StatusCode: 429,
 				Body:       []byte("request rate limit reached"),
 			}
 		}
-		logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] request rate limiter error: %v, key: %s", err, e.key)
+		logrus.WithContext(ctx).Errorf("[RequestColorLimiterEngine] request rate limiter error: %v, keyPrefix: %s", err, e.keyPrefix)
 		return nil, &errutils.UpstreamRespError{
 			StatusCode: 500,
 			Body:       []byte("internal server error"),
@@ -166,7 +250,7 @@ func (e *RequestColorLimiterEngine) Process(req *octollm.Request) (*octollm.Resp
 	// Process request
 	resp, err := e.next.Process(req)
 
-	// Call done to cleanup regardless of success or failure (deduct quota)
+	// Call done (although currently an empty function, maintains interface consistency)
 	done()
 
 	return resp, err
@@ -186,3 +270,69 @@ func (e *RequestColorLimiterEngine) getPriorityFromContext(ctx context.Context) 
 
 	return priority, true
 }
+
+// dualTokenBucketLuaScript atomically checks and consumes tokens from two buckets
+// KEYS[1]: own tier bucket key
+// KEYS[2]: tier 0 bucket key
+// ARGV[1]: ownBurst (maximum tokens for own tier)
+// ARGV[2]: ownRate (refill rate for own tier)
+// ARGV[3]: tier0Burst (maximum tokens for tier 0)
+// ARGV[4]: tier0Rate (refill rate for tier 0)
+// ARGV[5]: nowUnix (current timestamp)
+// ARGV[6]: windowSeconds (time window in seconds)
+// ARGV[7]: reservedTokens (tokens to reserve in tier 0 for higher priority)
+// Returns: {allowed, ownTokens, tier0Tokens}
+const dualTokenBucketLuaScript = `
+local ownKey = KEYS[1]
+local tier0Key = KEYS[2]
+local ownBurst = tonumber(ARGV[1])
+local ownRate = tonumber(ARGV[2])
+local tier0Burst = tonumber(ARGV[3])
+local tier0Rate = tonumber(ARGV[4])
+local nowUnix = tonumber(ARGV[5])
+local windowSeconds = tonumber(ARGV[6])
+local reservedTokens = tonumber(ARGV[7])
+
+-- Get own tier bucket state
+local ownBucket = redis.call('HMGET', ownKey, 'tokens', 'lastRefill')
+local ownTokens = tonumber(ownBucket[1]) or ownBurst
+local ownLastRefill = tonumber(ownBucket[2]) or nowUnix
+
+-- Calculate tokens to add for own tier
+local ownElapsed = nowUnix - ownLastRefill
+local ownTokensToAdd = math.floor(ownElapsed * ownRate)
+ownTokens = math.min(ownBurst, ownTokens + ownTokensToAdd)
+
+-- Get tier 0 bucket state
+local tier0Bucket = redis.call('HMGET', tier0Key, 'tokens', 'lastRefill')
+local tier0Tokens = tonumber(tier0Bucket[1]) or tier0Burst
+local tier0LastRefill = tonumber(tier0Bucket[2]) or nowUnix
+
+-- Calculate tokens to add for tier 0
+local tier0Elapsed = nowUnix - tier0LastRefill
+local tier0TokensToAdd = math.floor(tier0Elapsed * tier0Rate)
+tier0Tokens = math.min(tier0Burst, tier0Tokens + tier0TokensToAdd)
+
+-- Check if both buckets have sufficient tokens
+local allowed = 0
+if ownTokens >= 1 and tier0Tokens > reservedTokens then
+    -- Both conditions met, consume from both
+    ownTokens = ownTokens - 1
+    tier0Tokens = tier0Tokens - 1
+    allowed = 1
+    
+    -- Update both buckets
+    redis.call('HMSET', ownKey, 'tokens', ownTokens, 'lastRefill', nowUnix)
+    redis.call('EXPIRE', ownKey, windowSeconds * 2)
+    redis.call('HMSET', tier0Key, 'tokens', tier0Tokens, 'lastRefill', nowUnix)
+    redis.call('EXPIRE', tier0Key, windowSeconds * 2)
+else
+    -- Conditions not met, only update refill times without consuming
+    redis.call('HMSET', ownKey, 'tokens', ownTokens, 'lastRefill', nowUnix)
+    redis.call('EXPIRE', ownKey, windowSeconds * 2)
+    redis.call('HMSET', tier0Key, 'tokens', tier0Tokens, 'lastRefill', nowUnix)
+    redis.call('EXPIRE', tier0Key, windowSeconds * 2)
+end
+
+return {allowed, ownTokens, tier0Tokens}
+`

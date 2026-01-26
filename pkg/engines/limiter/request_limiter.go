@@ -13,12 +13,13 @@ import (
 
 // RequestLimiterEngine is a token bucket-based request rate limiter
 type RequestLimiterEngine struct {
-	redisClient *redis.Client
-	key         string
-	burst       int           // Maximum number of tokens
-	rate        float64       // Number of tokens added per second
-	window      time.Duration // Time window
-	next        octollm.Engine
+	redisClient       *redis.Client
+	key               string
+	burst             int           // Maximum number of tokens
+	rate              float64       // Number of tokens added per second
+	window            time.Duration // Time window
+	tokenBucketScript *redis.Script
+	next              octollm.Engine
 }
 
 var _ octollm.Engine = (*RequestLimiterEngine)(nil)
@@ -28,23 +29,28 @@ var errRequestLimitReached = fmt.Errorf("request limit reached")
 // NewRequestLimiterEngine creates a token bucket-based request rate limiter engine
 // redisClient: Redis client
 // key: Redis key for storing token bucket state
-// burst: Maximum number of tokens, must be greater than 0
-// rate: Number of tokens added per second, must be greater than 0
+// burst: Maximum number of tokens (bucket capacity), must be greater than 0
+// limit: Maximum number of requests allowed within the time window, must be greater than 0
 // window: Time window (supports seconds, minutes, etc.), must be greater than 0
 // next: Next engine
-func NewRequestLimiterEngine(redisClient *redis.Client, key string, burst int, rate float64, window time.Duration, next octollm.Engine) (*RequestLimiterEngine, error) {
+//
+// The rate (tokens per second) is automatically calculated as: rate = limit / window.Seconds()
+// For example: limit=100, window=1*time.Minute means 100 requests per minute, rate=100/60≈1.67 tokens/second
+func NewRequestLimiterEngine(redisClient *redis.Client, key string, burst int, limit int, window time.Duration, next octollm.Engine) (*RequestLimiterEngine, error) {
 	if next == nil {
 		return nil, fmt.Errorf("next engine must not be nil")
 	}
 
-	if burst <= 0 || rate <= 0 {
+	// If burst or limit is invalid, disable rate limiting (pass through)
+	if burst <= 0 || limit <= 0 {
 		return &RequestLimiterEngine{
-			redisClient: redisClient,
-			key:         key,
-			burst:       0,
-			rate:        0,
-			window:      0,
-			next:        next,
+			redisClient:       redisClient,
+			key:               key,
+			burst:             0,
+			rate:              0,
+			window:            0,
+			tokenBucketScript: nil,
+			next:              next,
 		}, nil
 	}
 
@@ -52,20 +58,25 @@ func NewRequestLimiterEngine(redisClient *redis.Client, key string, burst int, r
 		return nil, fmt.Errorf("window must be positive")
 	}
 
+	// Calculate rate: tokens per second = limit / window (in seconds)
+	// This ensures that within the time window, at most 'limit' requests can pass through
+	rate := float64(limit) / window.Seconds()
+
 	return &RequestLimiterEngine{
-		redisClient: redisClient,
-		key:         key,
-		burst:       burst,
-		rate:        rate,
-		window:      window,
-		next:        next,
+		redisClient:       redisClient,
+		key:               key,
+		burst:             burst,
+		rate:              rate,
+		window:            window,
+		tokenBucketScript: redis.NewScript(tokenBucketLuaScript),
+		next:              next,
 	}, nil
 }
 
 // allow attempts to allow the request to pass through, performing token bucket rate limiting check
 func (e *RequestLimiterEngine) allow(ctx context.Context) (done func(), err error) {
 	// If configuration is invalid, directly pass through
-	if e.burst <= 0 || e.rate <= 0 || e.redisClient == nil {
+	if e.burst <= 0 || e.rate <= 0 || e.redisClient == nil || e.tokenBucketScript == nil {
 		return func() {}, nil
 	}
 
@@ -74,7 +85,7 @@ func (e *RequestLimiterEngine) allow(ctx context.Context) (done func(), err erro
 	windowSeconds := int64(e.window.Seconds())
 
 	// Use Lua script to implement token bucket algorithm
-	result, err := e.redisClient.Eval(ctx, tokenBucketLuaScript, []string{e.key},
+	result, err := e.tokenBucketScript.Run(ctx, e.redisClient, []string{e.key},
 		e.burst, e.rate, nowUnix, windowSeconds).Result()
 	if err != nil {
 		logrus.WithContext(ctx).Errorf("[RequestLimiterEngine] token bucket script error: %v, key: %s", err, e.key)
