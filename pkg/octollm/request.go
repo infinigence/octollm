@@ -254,7 +254,6 @@ func GetCtxValue[T any](req *Request, key any) (T, bool) {
 		return zero, false
 	}
 	return v, true
-}
 
 func NewNonStreamResponse(statusCode int, header http.Header, body *UnifiedBody) *Response {
 	return &Response{
