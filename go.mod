@@ -12,11 +12,12 @@ require (
 	github.com/gin-contrib/gzip v1.2.5
 	github.com/gin-gonic/gin v1.11.0
 	github.com/goccy/go-yaml v1.18.0
+	github.com/google/uuid v1.6.0
 	github.com/openai/openai-go/v3 v3.8.1
 	github.com/prometheus/client_golang v1.23.2
+	github.com/redis/go-redis/v9 v9.17.2
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.11.1
-	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/yidun/yidun-golang-sdk v1.0.32
 )
@@ -33,6 +34,7 @@ require (
 	github.com/clbanning/mxj/v2 v2.7.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/gabriel-vasile/mimetype v1.4.10 // indirect
 	github.com/gin-contrib/sse v1.1.0 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
@@ -55,6 +57,7 @@ require (
 	github.com/quic-go/qpack v0.5.1 // indirect
 	github.com/quic-go/quic-go v0.55.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect

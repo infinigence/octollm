@@ -227,6 +227,10 @@ func (u *Request) Context() context.Context {
 	return u.ctx
 }
 
+func (u *Request) SetContext(ctx context.Context) {
+	u.ctx = ctx
+}
+
 func NewNonStreamResponse(statusCode int, header http.Header, body *UnifiedBody) *Response {
 	return &Response{
 		StatusCode: statusCode,
