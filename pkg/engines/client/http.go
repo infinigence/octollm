@@ -90,8 +90,12 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	for k, v := range req.Header {
+		// http.Client handles its own compression
+		if k == "Accept-Encoding" {
+			continue
+		}
 		for _, vv := range v {
-			httpReq.Header.Set(k, vv)
+			httpReq.Header.Add(k, vv)
 		}
 	}
 	if e.reqModifier != nil {
