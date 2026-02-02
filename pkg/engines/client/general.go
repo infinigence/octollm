@@ -85,7 +85,7 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 			func(req *octollm.Request) octollm.Parser {
 				switch req.Format {
 				case octollm.APIFormatChatCompletions:
-					return &octollm.JSONParser[openai.ChatCompletionRequest]{}
+					return &octollm.JSONParser[openai.ChatCompletionResponse]{}
 				case octollm.APIFormatClaudeMessages:
 					return &octollm.JSONParser[anthropic.ClaudeMessagesResponse]{}
 				case octollm.APIFormatCompletions:
