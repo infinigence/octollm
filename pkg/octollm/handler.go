@@ -19,8 +19,9 @@ import (
 type contextKey string
 
 const (
-	ContextKeyModelName contextKey = "model_name"
-	ContextKeyAction    contextKey = "action"
+	ContextKeyModelName      contextKey = "model_name"
+	ContextKeyAction         contextKey = "action"
+	ContextKeyReceivedHeader contextKey = "received_header"
 )
 
 type Server struct {
@@ -44,6 +45,8 @@ func (s *Server) SetEngine(ep Engine) {
 // Otherwise, it will write the response as a plain text.
 func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.HandlerFunc {
 	return errutils.ErrorHandlingMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		// store received headers in context
+		r = r.WithContext(context.WithValue(r.Context(), ContextKeyReceivedHeader, r.Header))
 		u := NewRequest(r, format)
 		u.Body.SetParser(parser)
 		resp, err := engine.Process(u)
@@ -145,6 +148,8 @@ func RerankHandler(engine Engine) http.HandlerFunc {
 // This is the format used by Google Vertex AI API.
 func httpJSONArrayHandler(engine Engine, format APIFormat, parser Parser) http.HandlerFunc {
 	return errutils.ErrorHandlingMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		// store received headers in context
+		r = r.WithContext(context.WithValue(r.Context(), ContextKeyReceivedHeader, r.Header))
 		u := NewRequest(r, format)
 		u.Body.SetParser(parser)
 		resp, err := engine.Process(u)

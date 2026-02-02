@@ -214,7 +214,7 @@ func NewRequest(r *http.Request, format APIFormat) *Request {
 		Format: format,
 		URL:    r.URL,
 		Query:  r.URL.Query(),
-		Header: r.Header,
+		Header: make(http.Header),
 		ctx:    r.Context(),
 		Body: &UnifiedBody{
 			reader: r.Body,
