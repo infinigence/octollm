@@ -69,7 +69,9 @@ func TestProcessJSONStream(t *testing.T) {
 	defer cancel()
 
 	endpoint := NewHTTPEndpoint()
-	go endpoint.processJSONStream(ctx, resp, ch, parser)
+	go endpoint.processJSONStream(ctx, resp, ch, parser, func(value time.Time) {
+		// no-op for test
+	})
 
 	var chunks []*octollm.StreamChunk
 	done := make(chan bool)

@@ -179,6 +179,28 @@ type Response struct {
 	Header     http.Header
 	Body       *UnifiedBody
 	Stream     *StreamChan
+
+	// metadata stores engine-specific information that child engines can write
+	// and parent engines can retrieve. Used for passing data up the engine chain
+	// (e.g., retry attempts, selected backend, timing info, custom flags).
+	metadata map[any]any
+}
+
+// GetMetadataValue retrieves a value from metadata by key with type assertion.
+func (r *Response) GetMetadataValue(key any) (any, bool) {
+	if r.metadata == nil {
+		return nil, false
+	}
+	val, ok := r.metadata[key]
+	return val, ok
+}
+
+// SetMetadataValue sets a value in metadata by key. Initializes metadata map if nil.
+func (r *Response) SetMetadataValue(key any, value any) {
+	if r.metadata == nil {
+		r.metadata = make(map[any]any)
+	}
+	r.metadata[key] = value
 }
 
 type StreamChan struct {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
@@ -22,6 +23,26 @@ const (
 	StreamingTypeSSE  StreamingType = "sse"
 	StreamingTypeJSON StreamingType = "json"
 )
+
+type clientMetadataKey string
+
+const (
+	// clientRecvFirstChunkTime stores the timestamp (time.Time) when the first chunk
+	// was received from the upstream HTTP endpoint.
+	clientRecvFirstChunkTime clientMetadataKey = "recv_first_chunk_time"
+)
+
+func GetClientRecvFirstChunkTime(resp *octollm.Response) (time.Time, bool) {
+	if resp == nil {
+		return time.Time{}, false
+	}
+	value, ok := resp.GetMetadataValue(clientRecvFirstChunkTime)
+	if !ok {
+		return time.Time{}, false
+	}
+	t, ok := value.(time.Time)
+	return t, ok
+}
 
 type HTTPEndpoint struct {
 	client          *http.Client
@@ -145,29 +166,37 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 	// stream response
 	ch := make(chan *octollm.StreamChunk)
 	ctx, cancel := context.WithCancel(req.Context())
+	streamChan := octollm.NewStreamChan(ch, cancel)
+	llmresp := octollm.NewStreamResponse(resp.StatusCode, resp.Header, streamChan)
+
+	setRecvFirstChunkTime := func(recvTime time.Time) {
+		llmresp.SetMetadataValue(clientRecvFirstChunkTime, recvTime)
+	}
+
 	// use a scanner to read SSE messages
 	streamParser, streamingType := e.streamParser(req)
 	switch streamingType {
 	case StreamingTypeSSE:
-		go e.processSSEStream(ctx, resp, ch, streamParser)
+		go e.processSSEStream(ctx, resp, ch, streamParser, setRecvFirstChunkTime)
 	case StreamingTypeJSON:
-		go e.processJSONStream(ctx, resp, ch, streamParser)
+		go e.processJSONStream(ctx, resp, ch, streamParser, setRecvFirstChunkTime)
 	default:
+		cancel() // just for the linter
 		return nil, fmt.Errorf("unsupported streaming type %s", streamingType)
 	}
 
 	logrus.WithContext(req.Context()).Debugf("[http-endpoint] returning stream response")
-	streamChan := octollm.NewStreamChan(ch, cancel)
-	llmresp := octollm.NewStreamResponse(resp.StatusCode, resp.Header, streamChan)
 	return llmresp, nil
 }
 
-func (e *HTTPEndpoint) processSSEStream(ctx context.Context, resp *http.Response, ch chan *octollm.StreamChunk, streamParser octollm.Parser) {
+func (e *HTTPEndpoint) processSSEStream(ctx context.Context, resp *http.Response, ch chan *octollm.StreamChunk, streamParser octollm.Parser, setRecvFirstChunkTime func(recvTime time.Time)) {
 	defer close(ch)
 	defer resp.Body.Close()
 
 	metaBuffer := make(map[string]string)
 	bodyBuffer := make([]byte, 0, 512)
+
+	var recvFirstChunkTime time.Time
 
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
@@ -211,6 +240,10 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, resp *http.Response
 
 		switch key {
 		case "data":
+			if recvFirstChunkTime.IsZero() {
+				recvFirstChunkTime = time.Now()
+				setRecvFirstChunkTime(recvFirstChunkTime)
+			}
 			// find the first non-space byte
 			start := slices.IndexFunc(line[colonIdx+1:], func(b byte) bool {
 				return b != ' '
@@ -231,7 +264,7 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, resp *http.Response
 	}
 }
 
-func (e *HTTPEndpoint) processJSONStream(ctx context.Context, resp *http.Response, ch chan *octollm.StreamChunk, streamParser octollm.Parser) {
+func (e *HTTPEndpoint) processJSONStream(ctx context.Context, resp *http.Response, ch chan *octollm.StreamChunk, streamParser octollm.Parser, setRecvFirstChunkTime func(recvTime time.Time)) {
 	defer close(ch)
 	defer resp.Body.Close()
 
@@ -243,12 +276,13 @@ func (e *HTTPEndpoint) processJSONStream(ctx context.Context, resp *http.Respons
 		logrus.WithContext(ctx).Warnf("[http-endpoint] failed to read opening bracket: %v", err)
 		return
 	}
-
 	// Verify it's an array opening bracket
 	if delim, ok := t.(json.Delim); !ok || delim != '[' {
 		logrus.WithContext(ctx).Warnf("[http-endpoint] expected array opening bracket, got %T: %v", t, t)
 		return
 	}
+
+	var recvFirstChunkTime time.Time
 
 	// Read array elements
 	for dec.More() {
@@ -256,12 +290,16 @@ func (e *HTTPEndpoint) processJSONStream(ctx context.Context, resp *http.Respons
 			logrus.WithContext(ctx).Infof("[http-endpoint] context error during JSON stream response: %v", ctx.Err())
 			return
 		}
-
 		// Decode one JSON object into RawMessage to preserve the raw bytes
 		var rawMsg json.RawMessage
 		if err := dec.Decode(&rawMsg); err != nil {
 			logrus.WithContext(ctx).Warnf("[http-endpoint] failed to decode JSON object: %v", err)
 			return
+		}
+
+		if recvFirstChunkTime.IsZero() {
+			recvFirstChunkTime = time.Now()
+			setRecvFirstChunkTime(recvFirstChunkTime)
 		}
 
 		// Create chunk from raw JSON bytes
@@ -278,7 +316,7 @@ func (e *HTTPEndpoint) processJSONStream(ctx context.Context, resp *http.Respons
 	}
 
 	// Read closing bracket ']'
-	t, err = dec.Token()
+	_, err = dec.Token()
 	if err != nil {
 		logrus.WithContext(ctx).Warnf("[http-endpoint] failed to read closing bracket: %v", err)
 		return

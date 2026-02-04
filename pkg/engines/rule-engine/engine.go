@@ -32,6 +32,23 @@ type RuleEngine struct {
 
 var _ octollm.Engine = (*RuleEngine)(nil)
 
+type ruleEngineMetadataKey string
+
+const (
+	// matchedRuleName stores the name of the rule that was matched by the rule engine.
+	matchedRuleName ruleEngineMetadataKey = "matched_rule_name"
+)
+
+// GetMatchedRuleName retrieves the matched rule name from response metadata.
+func GetMatchedRuleName(resp *octollm.Response) (string, bool) {
+	val, ok := resp.GetMetadataValue(matchedRuleName)
+	if !ok {
+		return "", false
+	}
+	ruleName, ok := val.(string)
+	return ruleName, ok
+}
+
 func (e *RuleEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	// find default chain
 	currChain, ok := e.Chains["default"]
@@ -51,6 +68,7 @@ func (e *RuleEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 		logrus.WithContext(req.Context()).Debugf("[rule-engine] rule %s matched, executing", r.Name)
 		resp, err := r.Engine.Process(req)
 		if err == nil {
+			resp.SetMetadataValue(matchedRuleName, r.Name)
 			logrus.WithContext(req.Context()).Debugf("[rule-engine] rule %s exec success", r.Name)
 			return resp, nil
 		}

@@ -33,6 +33,23 @@ type WeightedRoundRobin struct {
 
 var _ octollm.Engine = (*WeightedRoundRobin)(nil)
 
+type loadBalancerMetadataKey string
+
+const (
+	// backendName stores the name of the backend selected by the load balancer.
+	backendName loadBalancerMetadataKey = "backend_name"
+)
+
+// GetSelectedBackendName retrieves the selected backend name from response metadata.
+func GetSelectedBackendName(resp *octollm.Response) (string, bool) {
+	val, ok := resp.GetMetadataValue(backendName)
+	if !ok {
+		return "", false
+	}
+	name, ok := val.(string)
+	return name, ok
+}
+
 func NewWeightedRoundRobin(backends []BackendItem, retryTimeout time.Duration, retryMaxCount int) (*WeightedRoundRobin, error) {
 	if len(backends) == 0 {
 		return nil, fmt.Errorf("backends must have at least one item")
@@ -80,6 +97,7 @@ func (l *WeightedRoundRobin) Process(req *octollm.Request) (*octollm.Response, e
 		logrus.WithContext(req.Context()).Infof("[WRR load balancer] will use engine name: %s", n)
 		resp, err := eng.Process(req)
 		if err == nil {
+			resp.SetMetadataValue(backendName, n)
 			return resp, nil
 		}
 		retryCount++
