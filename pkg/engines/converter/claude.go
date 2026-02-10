@@ -75,6 +75,12 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 		dst.Stream = src.Stream
 	}
 
+	if src.Thinking != nil && src.Thinking.Type == "enabled" {
+		dst.Thinking = &openai.Thinking{
+			Type: "enabled",
+		}
+	}
+
 	// Model
 	dst.Model = src.Model
 
@@ -280,6 +286,9 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 	// Convert ToolChoice
 	if src.ToolChoice != nil {
 		switch src.ToolChoice.Type {
+		case "none":
+			none := "none"
+			dst.ToolChoice = &openai.ToolChoice{String: &none}
 		case "auto":
 			auto := "auto"
 			dst.ToolChoice = &openai.ToolChoice{String: &auto}
@@ -348,6 +357,14 @@ func (e *ChatCompletionToClaudeMessages) convertNonStreamResponseBody(ctx contex
 
 		msg := choice.Message
 		if msg != nil {
+			if msg.ReasoningContent != nil {
+				claudeResp.Content = append(claudeResp.Content, &anthropic.MessageContentBlock{
+					Type: "thinking",
+					MessageContentThinking: &anthropic.MessageContentThinking{
+						Thinking: msg.ReasoningContent.ExtractText(),
+					},
+				})
+			}
 			// Content
 			if msg.Content != nil {
 				text := msg.Content.ExtractText()
@@ -406,6 +423,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(ctx context.Conte
 		type blockType int
 		const (
 			blockTypeNone blockType = iota
+			blockTypeThinking
 			blockTypeText
 			blockTypeTool
 		)
@@ -460,6 +478,10 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(ctx context.Conte
 							InputTokens:  int64(pendingUsage.PromptTokens),
 							OutputTokens: int64(pendingUsage.CompletionTokens),
 						}
+						if pendingUsage.PromptTokensDetails != nil && pendingUsage.PromptTokensDetails.CachedTokens > 0 {
+							cached := int64(pendingUsage.PromptTokensDetails.CachedTokens)
+							msgDelta.Usage.CacheReadInputTokens = &cached
+						}
 					}
 					if err := e.sendEvent(outCh, msgDelta); err != nil {
 						logrus.WithContext(ctx).Errorf("failed to send message_delta event: %v", err)
@@ -508,6 +530,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(ctx context.Conte
 
 			// Extract Delta
 			var deltaContent string
+			var reasoningContent string
 			var toolCalls []*openai.ToolCall
 
 			if len(openaiChunk.Choices) > 0 {
@@ -515,6 +538,9 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(ctx context.Conte
 				if choice.Delta != nil {
 					if choice.Delta.Content != nil {
 						deltaContent = choice.Delta.Content.ExtractText()
+					}
+					if choice.Delta.ReasoningContent != nil {
+						reasoningContent = choice.Delta.ReasoningContent.ExtractText()
 					}
 					toolCalls = choice.Delta.ToolCalls
 				}
@@ -528,12 +554,80 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(ctx context.Conte
 				pendingUsage = openaiChunk.Usage
 			}
 
+			// Handle reasoning content (thinking)
+			if reasoningContent != "" {
+				// Check if we need to start a new block
+				needNewBlock := false
+				switch currentBlockType {
+				case blockTypeNone:
+					needNewBlock = true
+				case blockTypeText:
+					needNewBlock = true
+				case blockTypeTool:
+					needNewBlock = true
+				}
+
+				if needNewBlock {
+					// Close previous block if exists
+					if currentBlockType != blockTypeNone {
+						blockStop := &anthropic.ClaudeMessagesStreamEvent{
+							Type:  "content_block_stop",
+							Index: intPtr(currentBlockIndex),
+						}
+						if err := e.sendEvent(outCh, blockStop); err != nil {
+							logrus.WithContext(ctx).Errorf("failed to send content_block_stop event: %v", err)
+							continue
+						}
+					}
+
+					// Create new thinking block
+					currentBlockIndex++
+
+					// Start thinking block - manually construct JSON to include empty thinking field
+					blockStart := &anthropic.ClaudeMessagesStreamEvent{
+						Type:  "content_block_start",
+						Index: &currentBlockIndex,
+						ContentBlock: &anthropic.MessageContentBlock{
+							Type: "thinking",
+							MessageContentThinking: &anthropic.MessageContentThinking{
+								Thinking:  "",
+								Signature: "",
+							},
+						},
+					}
+					if err := e.sendEvent(outCh, blockStart); err != nil {
+						logrus.WithContext(ctx).Errorf("failed to send content_block_start event: %v", err)
+						continue
+					}
+					currentBlockType = blockTypeThinking
+				}
+
+				// Send thinking delta
+				deltaEvent := &anthropic.ClaudeMessagesStreamEvent{
+					Type:  "content_block_delta",
+					Index: intPtr(currentBlockIndex),
+				}
+				deltaData := &anthropic.ApiContentBlockDelta{
+					Type:     "thinking_delta",
+					Thinking: &reasoningContent,
+				}
+				deltaBytes, _ := json.Marshal(deltaData)
+				deltaEvent.DeltaRaw = deltaBytes
+
+				if err := e.sendEvent(outCh, deltaEvent); err != nil {
+					logrus.WithContext(ctx).Errorf("failed to send content_block_delta event: %v", err)
+					continue
+				}
+			}
+
 			// Handle text content
 			if deltaContent != "" {
 				// Check if we need to start a new block
 				needNewBlock := false
 				switch currentBlockType {
 				case blockTypeNone:
+					needNewBlock = true
+				case blockTypeThinking:
 					needNewBlock = true
 				case blockTypeTool:
 					needNewBlock = true

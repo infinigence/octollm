@@ -219,6 +219,49 @@ func TestChatCompletionsToClaudeMessages_convertRequestBody_SimpleTextWithMeta(t
 	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
 }
 
+func TestChatCompletionsToClaudeMessages_convertRequestBody_MultipleSystem(t *testing.T) {
+	claudeReqJSON := `{
+		"model": "claude-3-5-haiku",
+		"max_tokens": 1024,
+		"system": [
+			{
+				"type": "text",
+				"text": "You are a helpful assistant."
+			},
+			{
+				"type": "text",
+				"text": "Be concise."
+			}
+		],
+		"messages": [
+			{
+				"role": "user",
+				"content": "Hello, how are you?"
+			}
+		]
+	}`
+
+	expectedOpenaiReqJSON := `{
+		"model": "claude-3-5-haiku",
+		"max_tokens": 1024,
+		"messages": [
+			{
+				"role": "system",
+				"content": "You are a helpful assistant."
+			},
+			{
+				"role": "system",
+				"content": "Be concise."
+			},
+			{
+				"role": "user",
+				"content": [{ "type": "text", "text": "Hello, how are you?" }]
+			}
+		]
+	}`
+
+	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
+}
 func TestChatCompletionsToClaudeMessages_convertRequestBody_MultipleText(t *testing.T) {
 	claudeReqJSON := `{
 		"model": "claude-3-5-haiku",
@@ -384,6 +427,173 @@ func TestChatCompletionsToClaudeMessages_convertRequestBody_ToolCall(t *testing.
 	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
 }
 
+func TestChatCompletionsToClaudeMessages_convertRequest_WithToolChoice(t *testing.T) {
+	claudeReqJSON := `{
+		"model": "claude-3-5-haiku",
+		"max_tokens": 1024,
+		"messages": [
+			{
+				"role": "user",
+				"content": "Hello, how are you?"
+			}
+		],
+		"tools": [
+			{
+    			"name": "get_stock_price",
+    			"description": "Get the current stock price for a given ticker symbol.",
+    			"input_schema": {
+      				"type": "object",
+      				"properties": {
+        				"ticker": {
+          					"type": "string",
+          					"description": "The stock ticker symbol, e.g. AAPL for Apple Inc."
+        				}
+      				},
+      				"required": ["ticker"]
+    			}
+  			}
+		],
+		"tool_choice": {
+			"type": "tool",
+			"name": "get_stock_price"
+		}
+	}`
+
+	expectedOpenaiReqJSON := `{
+		"model": "claude-3-5-haiku",
+		"max_tokens": 1024,
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "text",
+						"text": "Hello, how are you?"
+					}
+				]
+			}
+		],
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "get_stock_price",
+					"description": "Get the current stock price for a given ticker symbol.",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"ticker": {
+								"type": "string",
+								"description": "The stock ticker symbol, e.g. AAPL for Apple Inc."
+							}
+						},
+						"required": ["ticker"]
+					}
+				}
+			}
+		],
+		"tool_choice":{"type": "function", "function": {"name": "get_stock_price"}}
+	}`
+
+	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
+}
+
+func TestChatCompletionsToClaudeMessages_convertRequestBody_MultipleToolCall(t *testing.T) {
+	claudeReqJSON := `{
+		"model": "claude-3-5-haiku",
+		"max_tokens": 1024,
+		"messages": [
+			{
+				"role": "user",
+				"content": "Hello, how are you?"
+			}
+		],
+		"tools": [
+			{
+    			"name": "get_stock_price",
+    			"description": "Get the current stock price for a given ticker symbol.",
+    			"input_schema": {
+      				"type": "object",
+      				"properties": {
+        				"ticker": {
+          					"type": "string",
+          					"description": "The stock ticker symbol, e.g. AAPL for Apple Inc."
+        				}
+      				},
+      				"required": ["ticker"]
+    			}
+  			},
+			{
+    			"name": "get_weather",
+    			"description": "Get the current weather in a given location",
+    			"input_schema": {
+      				"type": "object",
+      				"properties": {
+        				"location": {
+          					"type": "string",
+          					"description": "The city and state, e.g. San Francisco, CA"
+        				}
+      				},
+      				"required": ["location"]
+    			}
+  			}
+		]
+	}`
+
+	expectedOpenaiReqJSON := `{
+		"model": "claude-3-5-haiku",
+		"max_tokens": 1024,
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "text",
+						"text": "Hello, how are you?"
+					}
+				]
+			}
+		],
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "get_stock_price",
+					"description": "Get the current stock price for a given ticker symbol.",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"ticker": {
+								"type": "string",
+								"description": "The stock ticker symbol, e.g. AAPL for Apple Inc."
+							}
+						},
+						"required": ["ticker"]
+					}
+				}
+			},
+			{
+				"type": "function",
+				"function": {
+					"name": "get_weather",
+					"description": "Get the current weather in a given location",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"location": {
+								"type": "string",
+								"description": "The city and state, e.g. San Francisco, CA"
+							}
+						},
+						"required": ["location"]
+					}
+				}
+			}
+		]
+	}`
+
+	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
+}
 func TestChatCompletionsToClaudeMessages_convertRequestBody_ToolResult(t *testing.T) {
 	claudeReqJSON := `{
 		"model": "claude-sonnet-4-5",
@@ -1145,4 +1355,111 @@ func TestChatCompletionsToClaudeMessages_convertStreamResponse_MultipleToolCall_
 	}
 
 	testChatCompletionsToClaudeMessages_convertStreamResponse(t, openaiRespJSON, expectedClaudeRespJSON)
+}
+
+func TestChatCompletionsToClaudeMessages_convertNonStreamResponse_WithReasoning(t *testing.T) {
+	openaiResp := `{
+		"choices": [
+			{
+				"finish_reason": "stop",
+				"index": 0,
+				"message": {
+					"content": "\n您好！我是智谱AI训练的GLM大语言模型，旨在通过自然语言处理技术为用户提供信息和帮助。",
+					"reasoning_content": "\n收到用户的问候“你好，你是谁”，这是一个典型的身份确认问题。需要以专业且友好的方式回应，同时清晰传达自己的核心定位。",
+					"role": "assistant"
+				}
+			}
+		],
+		"created": 1770631146,
+		"id": "2026020917585695a7e8be40254c7c",
+		"model": "glm-4.6",
+		"object": "chat.completion",
+		"request_id": "2026020917585695a7e8be40254c7c",
+		"usage": {
+			"completion_tokens": 329,
+			"completion_tokens_details": {
+				"reasoning_tokens": 253
+			},
+			"prompt_tokens": 9,
+			"prompt_tokens_details": {
+				"cached_tokens": 4
+			},
+			"total_tokens": 338
+		}
+	}`
+	exceptClaudeResp := `{
+		"id": "2026020917585695a7e8be40254c7c",
+		"type": "message",
+		"role": "assistant",
+		"model": "glm-4.6",
+		"content": [
+			{
+				"type": "thinking",
+				"signature": "",
+				"thinking": "\n收到用户的问候“你好，你是谁”，这是一个典型的身份确认问题。需要以专业且友好的方式回应，同时清晰传达自己的核心定位。"
+			},
+			{
+				"type": "text",
+				"text": "\n您好！我是智谱AI训练的GLM大语言模型，旨在通过自然语言处理技术为用户提供信息和帮助。"
+			}
+		],
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 9,
+			"output_tokens": 329,
+			"cache_read_input_tokens": 4
+		}
+	}`
+	testChatCompletionsToClaudeMessages_convertNonStreamResponseBody(t, openaiResp, exceptClaudeResp)
+}
+
+func TestChatCompletionsToClaudeMessages_convertStreamResponse_WithReasoning(t *testing.T) {
+	openaiResp := []string{
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"\n"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"1"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"."}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":" "}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":" **"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"分析"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"用户的"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"查询"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"："}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"\n"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"你好"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"！\n\n"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"我是一个"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"大型"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"语言"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"模型"}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"finish_reason":"stop","delta":{"role":"assistant","content":""}}]}`,
+		`{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"model":"glm-4.6","choices":[],"usage":{"completion_tokens":1024,"prompt_tokens":9,"total_tokens":1033,"prompt_tokens_details":{"cached_tokens":7}},"object":"chat.completion.chunk"}`,
+		`[DONE]`,
+	}
+
+	exceptClaudeResp := []string{
+		`{"type": "message_start", "message": {"id": "2026021010253871cb1b6ec9e54d6b", "type": "message", "role": "assistant", "model": "glm-4.6", "content": [], "usage": {"input_tokens": 0, "output_tokens": 0}}}`,
+		`{"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}`,
+		`{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "\n"}}`,
+		`{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "1"}}`,
+		`{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "."}}`,
+		`{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": " "}}`,
+		`{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": " **"}}`,
+		`{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "分析"}}`,
+		`{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "用户的"}}`,
+		`{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "查询"}}`,
+		`{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "："}}`,
+		`{"type": "content_block_stop", "index": 0}`,
+		`{"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}`,
+		`{"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "\n"}}`,
+		`{"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "你好"}}`,
+		`{"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "！\n\n"}}`,
+		`{"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "我是一个"}}`,
+		`{"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "大型"}}`,
+		`{"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "语言"}}`,
+		`{"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "模型"}}`,
+		`{"type": "content_block_stop", "index": 1}`,
+		`{"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"input_tokens": 9, "output_tokens": 1024, "cache_read_input_tokens": 7}}`,
+		`{"type": "message_stop"}`,
+	}
+	testChatCompletionsToClaudeMessages_convertStreamResponse(t, openaiResp, exceptClaudeResp)
 }

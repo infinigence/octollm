@@ -159,8 +159,8 @@ type DocumentCitations struct {
 }
 
 type MessageContentThinking struct {
-	Thinking  string `json:"thinking,omitempty"`
-	Signature string `json:"signature,omitempty"`
+	Thinking  string `json:"thinking"`
+	Signature string `json:"signature"`
 }
 
 type MessageContentRedactedThinking struct {

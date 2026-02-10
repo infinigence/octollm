@@ -6,17 +6,16 @@ import (
 )
 
 type ChatCompletionRequest struct {
-	Model          string     `json:"model"`
-	Messages       []*Message `json:"messages" binding:"required"`
-	Thinking       *Thinking  `json:"thinking,omitempty"`
-	EnableThinking *bool      `json:"enable_thinking,omitempty"`
-	MaxTokens      *int       `json:"max_tokens,omitempty"`
-	Temperature    *float64   `json:"temperature,omitempty"`
-	TopP           *float64   `json:"top_p,omitempty"`
-	TopK           *int       `json:"top_k,omitempty"`
-	Stop           []string   `json:"stop,omitempty"`
-	Stream         *bool      `json:"stream,omitempty"`
-	Tools          []*Tool    `json:"tools,omitempty"` // 可用函数工具列表
+	Model       string     `json:"model"`
+	Messages    []*Message `json:"messages" binding:"required"`
+	Thinking    *Thinking  `json:"thinking,omitempty"`
+	MaxTokens   *int       `json:"max_tokens,omitempty"`
+	Temperature *float64   `json:"temperature,omitempty"`
+	TopP        *float64   `json:"top_p,omitempty"`
+	TopK        *int       `json:"top_k,omitempty"`
+	Stop        []string   `json:"stop,omitempty"`
+	Stream      *bool      `json:"stream,omitempty"`
+	Tools       []*Tool    `json:"tools,omitempty"` // 可用函数工具列表
 
 	ToolChoice *ToolChoice `json:"tool_choice,omitempty"` // 指定强制调用的函数（可选）
 }
