@@ -14,7 +14,7 @@ type SimpleFeatureExtractor struct {
 	SuffixHashLen []int
 }
 
-func (e *SimpleFeatureExtractor) Features(req *octollm.Request) (map[string]any, error) {
+func (e *SimpleFeatureExtractor) Features(req *octollm.Request) (any, error) {
 	reqBody, err := req.Body.Parsed()
 	if err != nil {
 		return nil, fmt.Errorf("parse request body failed: %w", err)

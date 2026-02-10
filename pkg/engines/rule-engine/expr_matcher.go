@@ -11,29 +11,40 @@ import (
 )
 
 type FeatureExtractor interface {
-	Features(req *octollm.Request) (map[string]any, error)
+	Features(req *octollm.Request) (any, error)
 }
 
-type FeatureExtractorFunc func(req *octollm.Request) (map[string]any, error)
+type FeatureExtractorFunc func(req *octollm.Request) (any, error)
 
-func (f FeatureExtractorFunc) Features(req *octollm.Request) (map[string]any, error) {
+func (f FeatureExtractorFunc) Features(req *octollm.Request) (any, error) {
 	return f(req)
 }
 
 type ExprMatcher struct {
-	Code             string
-	FeatureExtractor FeatureExtractor
-
-	prog *vm.Program
+	Code              string
+	FeatureExtractors map[string]FeatureExtractor
+	prog              *vm.Program
 }
 
 type ExprMatcherEnv struct {
-	RawReq   map[string]any
-	Features map[string]any
-	req      *octollm.Request
+	RawReq            map[string]any
+	featureExtractors map[string]FeatureExtractor
+	Req               *octollm.Request
 }
 
 var _ Matcher = (*ExprMatcher)(nil)
+
+func (m *ExprMatcherEnv) ExtractFeature(feature string) any {
+	if extractor, ok := m.featureExtractors[feature]; ok {
+		value, err := extractor.Features(m.Req)
+		if err != nil {
+			slog.WarnContext(m.Req.Context(), "extract feature %s failed: %v", feature, err)
+			return nil
+		}
+		return value
+	}
+	return nil
+}
 
 func (m *ExprMatcher) Match(req *octollm.Request) bool {
 	env, err := m.buildEnvFor(req)
@@ -68,10 +79,6 @@ func (m *ExprMatcher) Match(req *octollm.Request) bool {
 	}
 }
 
-func (env *ExprMatcherEnv) CtxValue(key any) any {
-	return env.req.Context().Value(key)
-}
-
 func (m *ExprMatcher) buildEnvFor(req *octollm.Request) (*ExprMatcherEnv, error) {
 	mapBody := make(map[string]any)
 	b, err := req.Body.Bytes()
@@ -82,19 +89,10 @@ func (m *ExprMatcher) buildEnvFor(req *octollm.Request) (*ExprMatcherEnv, error)
 		return nil, fmt.Errorf("unmarshal request body failed: %w", err)
 	}
 
-	var features map[string]any
-	if m.FeatureExtractor != nil {
-		features, err = m.FeatureExtractor.Features(req)
-		if err != nil {
-			return nil, fmt.Errorf("extract features failed: %w", err)
-		}
-		slog.DebugContext(req.Context(), fmt.Sprintf("[expr-matcher] extracted features: %v", features))
-	}
-
 	env := &ExprMatcherEnv{
-		RawReq:   mapBody,
-		Features: features,
-		req:      req,
+		RawReq:            mapBody,
+		featureExtractors: m.FeatureExtractors,
+		Req:               req,
 	}
 	return env, nil
 }

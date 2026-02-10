@@ -201,8 +201,8 @@ func (r *RuleComposerFileBased) buildRuleEngineRuleByConfig(ruleConf *RuleConfig
 		matcher = ruleengine.AlwaysTrueMatcher
 	} else {
 		matcher = &ruleengine.ExprMatcher{
-			Code:             ruleConf.MatchExpr,
-			FeatureExtractor: &ruleengine.SimpleFeatureExtractor{PrefixHashLen: []int{20}, SuffixHashLen: []int{20}},
+			Code: ruleConf.MatchExpr,
+			// FeatureExtractors: &ruleengine.SimpleFeatureExtractor{PrefixHashLen: []int{20}, SuffixHashLen: []int{20}},
 		}
 	}
 
