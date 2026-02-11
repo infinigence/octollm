@@ -2,8 +2,8 @@ package engines
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-
 	"github.com/expr-lang/expr"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/sirupsen/logrus"
@@ -52,7 +52,7 @@ func (p *RewritePolicy) Merge(other *RewritePolicy) *RewritePolicy {
 type llmJSONRewriter struct {
 	policy  *RewritePolicy
 	ctx     context.Context
-	exprEnv any
+	exprEnv map[string]any
 }
 
 // RewriteJSON 重写JSON字符串
@@ -123,12 +123,32 @@ func NewRewriteEngine(next octollm.Engine, requestRewrite, nonstreamResponseRewr
 	}
 }
 
+func buildExprEnv(req *octollm.Request) (map[string]any, error) {
+	exprEnv := make(map[string]any)
+	var rawReq map[string]any
+	b, err := req.Body.Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("get request body bytes error: %w", err)
+	}
+	if err := json.Unmarshal(b, &rawReq); err != nil {
+		logrus.WithContext(req.Context()).Warnf("[RewriteEngine.Process] unmarshal request body for expr env error:%s", err)
+		rawReq = make(map[string]any)
+	}
+	exprEnv["RawReq"] = rawReq
+	return exprEnv, nil
+}
+
 func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	if e.RequestRewrite != nil {
+		exprEnv, err := buildExprEnv(req)
+		if err != nil {
+			return nil, fmt.Errorf("build expr env error: %w", err)
+		}
+
 		reqRewriter := &llmJSONRewriter{
-			policy: e.RequestRewrite,
-			ctx:    req.Context(),
-			// exprEnv: req.Meta,
+			policy:  e.RequestRewrite,
+			ctx:     req.Context(),
+			exprEnv: exprEnv,
 		}
 		b, err := req.Body.Bytes()
 		if err != nil {
