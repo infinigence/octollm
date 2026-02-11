@@ -35,7 +35,7 @@ func TestExprMatcher_Match(t *testing.T) {
 		},
 		{
 			name: "ctx value",
-			code: "Req.Context().Value(\"user_name\") == 'my_org'",
+			code: `Req.Context().Value("user_name") == "my_org"`,
 			setupReq: func() *octollm.Request {
 				ctx := context.Background()
 				ctx = context.WithValue(ctx, "user_name", "my_org")
@@ -47,7 +47,7 @@ func TestExprMatcher_Match(t *testing.T) {
 		},
 		{
 			name: "prompt text length > 15",
-			code: `ExtractFeature("simpleFeature")["promptTextLen"] > 15`,
+			code: `ExtractFeature("promptTextLen") > 15`,
 			setupReq: func() *octollm.Request {
 				return testhelper.CreateTestRequest(
 					testhelper.WithBody(
@@ -64,18 +64,18 @@ func TestExprMatcher_Match(t *testing.T) {
 				)
 			},
 			featureExtractors: map[string]FeatureExtractor{
-				"simpleFeature": &SimpleFeatureExtractor{},
+				"promptTextLen": &PromptTextLenExtractor{},
 			},
 			want: true,
 		},
 		{
 			name: "prompt text length < 15",
-			code: `ExtractFeature("simpleFeature")["promptTextLen"] > 15`,
+			code: `ExtractFeature("promptTextLen") > 15`,
 			setupReq: func() *octollm.Request {
 				return testhelper.CreateTestRequest()
 			},
 			featureExtractors: map[string]FeatureExtractor{
-				"simpleFeature": &SimpleFeatureExtractor{},
+				"promptTextLen": &PromptTextLenExtractor{},
 			},
 			want: false,
 		},
@@ -86,9 +86,55 @@ func TestExprMatcher_Match(t *testing.T) {
 				return testhelper.CreateTestRequest()
 			},
 			featureExtractors: map[string]FeatureExtractor{
-				"simpleFeature": &SimpleFeatureExtractor{},
+				"promptTextLen": &PromptTextLenExtractor{},
 			},
 			want: false,
+		},
+		{
+			name: "prefix hash matches",
+			code: `ExtractFeature("prefix20") == "c6eec1e7"`,
+			setupReq: func() *octollm.Request {
+				return testhelper.CreateTestRequest(
+					testhelper.WithBody(
+						openai.ChatCompletionRequest{
+							Model: "glm-4.7",
+							Messages: []*openai.Message{
+								{
+									Role:    "user",
+									Content: openai.MessageContentString("who are you? I am testing the rule engine."),
+								},
+							},
+						},
+					),
+				)
+			},
+			featureExtractors: map[string]FeatureExtractor{
+				"prefix20": &PrefixHashExtractor{Length: 20},
+			},
+			want: true,
+		},
+		{
+			name: "suffix hash matches",
+			code: `ExtractFeature("suffix20") == "efc888e0"`,
+			setupReq: func() *octollm.Request {
+				return testhelper.CreateTestRequest(
+					testhelper.WithBody(
+						openai.ChatCompletionRequest{
+							Model: "glm-4.7",
+							Messages: []*openai.Message{
+								{
+									Role:    "user",
+									Content: openai.MessageContentString("who are you? I am testing the rule engine."),
+								},
+							},
+						},
+					),
+				)
+			},
+			featureExtractors: map[string]FeatureExtractor{
+				"suffix20": &SuffixHashExtractor{Length: 20},
+			},
+			want: true,
 		},
 	}
 
