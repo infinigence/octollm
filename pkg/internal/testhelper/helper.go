@@ -16,6 +16,8 @@ type reqOptions struct {
 	HttpMethod string
 	URL        string
 	Body       io.Reader
+
+	features map[string]octollm.FeatureExtractor
 }
 
 type reqOptFunc func(opts *reqOptions)
@@ -57,6 +59,12 @@ func CreateTestRequest(opts ...reqOptFunc) *octollm.Request {
 	req := octollm.NewRequest(r, octollm.APIFormatChatCompletions)
 	req.Body.SetParser(parser)
 
+	if o.features != nil {
+		for name, extractor := range o.features {
+			req.RegisterFeature(name, extractor)
+		}
+	}
+
 	return req
 }
 
@@ -79,5 +87,14 @@ func WithBody(body any) reqOptFunc {
 			buffer, _ := json.Marshal(v)
 			opts.Body = bytes.NewReader(buffer)
 		}
+	}
+}
+
+func WithFeature(name string, extractor octollm.FeatureExtractor) reqOptFunc {
+	return func(opts *reqOptions) {
+		if opts.features == nil {
+			opts.features = make(map[string]octollm.FeatureExtractor)
+		}
+		opts.features[name] = extractor
 	}
 }

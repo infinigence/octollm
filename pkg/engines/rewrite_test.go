@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +17,7 @@ func TestRewriteJSON_RemoveKey(t *testing.T) {
 	rewriter := &llmJSONRewriter{
 		policy:  policy,
 		ctx:     context.Background(),
-		exprEnv: map[string]any{},
+		exprEnv: nil,
 	}
 
 	origin := `{"key1": "value1", "key2": "value2", "key3": "value3"}`
@@ -49,7 +50,7 @@ func TestRewriteJSON_SetKey(t *testing.T) {
 	rewriter := &llmJSONRewriter{
 		policy:  policy,
 		ctx:     context.Background(),
-		exprEnv: map[string]any{},
+		exprEnv: nil,
 	}
 
 	origin := `{"key1": "value1", "key2": "value2", "key3": "value3"}`
@@ -78,23 +79,21 @@ func TestRewriteJSON_SetKey(t *testing.T) {
 func TestRewriteJSON_SetKeyByExpr(t *testing.T) {
 	policy := &RewritePolicy{
 		SetKeysByExpr: map[string]string{
-			"stream_options": "RawReq.stream == true ? {\"include_usage\": true, \"continuous_usage_stats\": true} : nil",
+			"stream_options": "RawReq().stream == true ? {\"include_usage\": true, \"continuous_usage_stats\": true} : nil",
 		},
 	}
 
 	// Test 1: when stream is true
 	origin := `{"stream": true, "key1": 11, "key2": "value2", "key3": "value3"}`
 
-	// Parse origin to create exprEnv - this ensures consistency
-	var rawReq map[string]any
-	require.NoError(t, json.Unmarshal([]byte(origin), &rawReq))
+	req := testhelper.CreateTestRequest(
+		testhelper.WithBody(origin),
+	)
 
 	rewriter := &llmJSONRewriter{
-		policy: policy,
-		ctx:    context.Background(),
-		exprEnv: map[string]any{
-			"RawReq": rawReq,
-		},
+		policy:  policy,
+		ctx:     context.Background(),
+		exprEnv: req.GetExprEnv(),
 	}
 
 	rewritten := rewriter.RewriteJSON([]byte(origin))
@@ -109,16 +108,14 @@ func TestRewriteJSON_SetKeyByExpr(t *testing.T) {
 	// Test 2: when stream is false
 	originFalse := `{"stream": false, "key1": 11, "key2": "value2", "key3": "value3"}`
 
-	// Parse originFalse to create exprEnv - ensures consistency
-	var rawReqFalse map[string]any
-	require.NoError(t, json.Unmarshal([]byte(originFalse), &rawReqFalse))
+	req2 := testhelper.CreateTestRequest(
+		testhelper.WithBody(originFalse),
+	)
 
 	rewriter2 := &llmJSONRewriter{
-		policy: policy,
-		ctx:    context.Background(),
-		exprEnv: map[string]any{
-			"RawReq": rawReqFalse,
-		},
+		policy:  policy,
+		ctx:     context.Background(),
+		exprEnv: req2.GetExprEnv(),
 	}
 
 	rewritten2 := rewriter2.RewriteJSON([]byte(originFalse))

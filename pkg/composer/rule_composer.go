@@ -202,11 +202,11 @@ func (r *RuleComposerFileBased) buildRuleEngineRuleByConfig(ruleConf *RuleConfig
 	} else {
 		matcher = &ruleengine.ExprMatcher{
 			Code: ruleConf.MatchExpr,
-			FeatureExtractors: map[string]ruleengine.FeatureExtractor{
-				"promptTextLen": &ruleengine.PromptTextLenExtractor{},
-				"prefix20":      &ruleengine.PrefixHashExtractor{Length: 20},
-				"suffix20":      &ruleengine.SuffixHashExtractor{Length: 20},
-			},
+			// FeatureExtractors: map[string]octollm.FeatureExtractor{
+			// 	"promptTextLen": &ruleengine.PromptTextLenExtractor{},
+			// 	"prefix20":      &ruleengine.PrefixHashExtractor{Length: 20},
+			// 	"suffix20":      &ruleengine.SuffixHashExtractor{Length: 20},
+			// },
 		}
 	}
 

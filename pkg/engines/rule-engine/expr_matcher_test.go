@@ -14,7 +14,7 @@ func TestExprMatcher_Match(t *testing.T) {
 		name              string
 		code              string
 		setupReq          func() *octollm.Request
-		featureExtractors map[string]FeatureExtractor
+		featureExtractors map[string]octollm.FeatureExtractor
 		want              bool
 	}{
 		{
@@ -35,7 +35,7 @@ func TestExprMatcher_Match(t *testing.T) {
 		},
 		{
 			name: "ctx value",
-			code: `Req.Context().Value("user_name") == "my_org"`,
+			code: `Context("user_name") == "my_org"`,
 			setupReq: func() *octollm.Request {
 				ctx := context.Background()
 				ctx = context.WithValue(ctx, "user_name", "my_org")
@@ -47,7 +47,7 @@ func TestExprMatcher_Match(t *testing.T) {
 		},
 		{
 			name: "prompt text length > 15",
-			code: `ExtractFeature("promptTextLen") > 15`,
+			code: `Feature("promptTextLen") > 15`,
 			setupReq: func() *octollm.Request {
 				return testhelper.CreateTestRequest(
 					testhelper.WithBody(
@@ -61,10 +61,8 @@ func TestExprMatcher_Match(t *testing.T) {
 							},
 						},
 					),
+					testhelper.WithFeature("promptTextLen", &PromptTextLenExtractor{}),
 				)
-			},
-			featureExtractors: map[string]FeatureExtractor{
-				"promptTextLen": &PromptTextLenExtractor{},
 			},
 			want: true,
 		},
@@ -72,10 +70,9 @@ func TestExprMatcher_Match(t *testing.T) {
 			name: "prompt text length < 15",
 			code: `ExtractFeature("promptTextLen") > 15`,
 			setupReq: func() *octollm.Request {
-				return testhelper.CreateTestRequest()
-			},
-			featureExtractors: map[string]FeatureExtractor{
-				"promptTextLen": &PromptTextLenExtractor{},
+				return testhelper.CreateTestRequest(
+					testhelper.WithFeature("promptTextLen", &PromptTextLenExtractor{}),
+				)
 			},
 			want: false,
 		},
@@ -84,9 +81,6 @@ func TestExprMatcher_Match(t *testing.T) {
 			code: `ExtractFeature("nonExistFeature") == "some_value"`,
 			setupReq: func() *octollm.Request {
 				return testhelper.CreateTestRequest()
-			},
-			featureExtractors: map[string]FeatureExtractor{
-				"promptTextLen": &PromptTextLenExtractor{},
 			},
 			want: false,
 		},
@@ -106,10 +100,8 @@ func TestExprMatcher_Match(t *testing.T) {
 							},
 						},
 					),
+					testhelper.WithFeature("prefix20", &PrefixHashExtractor{Length: 20}),
 				)
-			},
-			featureExtractors: map[string]FeatureExtractor{
-				"prefix20": &PrefixHashExtractor{Length: 20},
 			},
 			want: true,
 		},
@@ -129,10 +121,8 @@ func TestExprMatcher_Match(t *testing.T) {
 							},
 						},
 					),
+					testhelper.WithFeature("suffix20", &SuffixHashExtractor{Length: 20}),
 				)
-			},
-			featureExtractors: map[string]FeatureExtractor{
-				"suffix20": &SuffixHashExtractor{Length: 20},
 			},
 			want: true,
 		},
@@ -142,8 +132,8 @@ func TestExprMatcher_Match(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := tt.setupReq()
 			m := &ExprMatcher{
-				Code:              tt.code,
-				FeatureExtractors: tt.featureExtractors,
+				Code: tt.code,
+				// FeatureExtractors: tt.featureExtractors,
 			}
 			got := m.Match(req)
 			if got != tt.want {

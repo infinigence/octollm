@@ -53,7 +53,7 @@ func (p *RewritePolicy) Merge(other *RewritePolicy) *RewritePolicy {
 type llmJSONRewriter struct {
 	policy  *RewritePolicy
 	ctx     context.Context
-	exprEnv map[string]any
+	exprEnv *octollm.RequestExprEnv
 }
 
 // RewriteJSON 重写JSON字符串
@@ -139,10 +139,7 @@ func buildExprEnv(req *octollm.Request) (map[string]any, error) {
 
 func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	if e.RequestRewrite != nil {
-		exprEnv, err := buildExprEnv(req)
-		if err != nil {
-			return nil, fmt.Errorf("build expr env error: %w", err)
-		}
+		exprEnv := req.GetExprEnv()
 
 		reqRewriter := &llmJSONRewriter{
 			policy:  e.RequestRewrite,

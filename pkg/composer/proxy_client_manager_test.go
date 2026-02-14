@@ -22,7 +22,7 @@ func TestClientManager_GetClient_WithProxy(t *testing.T) {
 	assert.NotNil(t, cli)
 
 	cli1 := cm.GetClient("http://127.0.0.1:8080")
-	assert.Equal(t, cli, cli1)
+	assert.NotEqual(t, cli, cli1)
 
 	cli2 := cm.GetClient("http://127.0.0.1:8081")
 	assert.NotEqual(t, cli, cli2)

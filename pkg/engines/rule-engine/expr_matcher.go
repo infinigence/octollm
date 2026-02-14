@@ -1,7 +1,6 @@
 package ruleengine
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -10,50 +9,19 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
-type FeatureExtractor interface {
-	Features(req *octollm.Request) (any, error)
-}
-
-type FeatureExtractorFunc func(req *octollm.Request) (any, error)
-
-func (f FeatureExtractorFunc) Features(req *octollm.Request) (any, error) {
-	return f(req)
-}
-
 type ExprMatcher struct {
-	Code              string
-	FeatureExtractors map[string]FeatureExtractor
-	prog              *vm.Program
-}
-
-type ExprMatcherEnv struct {
-	RawReq            map[string]any
-	featureExtractors map[string]FeatureExtractor
-	Req               *octollm.Request
+	Code string
+	prog *vm.Program
 }
 
 var _ Matcher = (*ExprMatcher)(nil)
 
-func (m *ExprMatcherEnv) ExtractFeature(feature string) any {
-	if extractor, ok := m.featureExtractors[feature]; ok {
-		value, err := extractor.Features(m.Req)
-		if err != nil {
-			slog.WarnContext(m.Req.Context(), "extract feature %s failed: %v", feature, err)
-			return nil
-		}
-		return value
-	}
-	return nil
-}
-
 func (m *ExprMatcher) Match(req *octollm.Request) bool {
-	env, err := m.buildEnvFor(req)
-	if err != nil {
-		slog.WarnContext(req.Context(), fmt.Sprintf("build env for request failed: %v", err))
-	}
+	env := req.GetExprEnv()
 
+	var err error
 	if m.prog == nil {
-		m.prog, err = expr.Compile(m.Code)
+		m.prog, err = expr.Compile(m.Code, expr.Env(env))
 		if err != nil {
 			slog.WarnContext(req.Context(), fmt.Sprintf("compile expr code failed: %v", err))
 			return false
@@ -77,22 +45,4 @@ func (m *ExprMatcher) Match(req *octollm.Request) bool {
 		slog.WarnContext(req.Context(), fmt.Sprintf("Run rule (%s) invalid return type: %T", m.Code, v))
 		return false
 	}
-}
-
-func (m *ExprMatcher) buildEnvFor(req *octollm.Request) (*ExprMatcherEnv, error) {
-	mapBody := make(map[string]any)
-	b, err := req.Body.Bytes()
-	if err != nil {
-		return nil, fmt.Errorf("read request body failed: %w", err)
-	}
-	if err := json.Unmarshal(b, &mapBody); err != nil {
-		return nil, fmt.Errorf("unmarshal request body failed: %w", err)
-	}
-
-	env := &ExprMatcherEnv{
-		RawReq:            mapBody,
-		featureExtractors: m.FeatureExtractors,
-		Req:               req,
-	}
-	return env, nil
 }
