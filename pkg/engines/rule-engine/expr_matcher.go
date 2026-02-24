@@ -6,6 +6,7 @@ import (
 
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
+	"github.com/infinigence/octollm/pkg/exprenv"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
@@ -17,11 +18,11 @@ type ExprMatcher struct {
 var _ Matcher = (*ExprMatcher)(nil)
 
 func (m *ExprMatcher) Match(req *octollm.Request) bool {
-	env := req.GetExprEnv()
+	env := exprenv.Get(req)
 
 	var err error
 	if m.prog == nil {
-		m.prog, err = expr.Compile(m.Code, expr.Env(env))
+		m.prog, err = expr.Compile(m.Code, expr.Env(exprenv.Sentinel))
 		if err != nil {
 			slog.WarnContext(req.Context(), fmt.Sprintf("compile expr code failed: %v", err))
 			return false

@@ -23,6 +23,7 @@ const (
 	ContextKeyModelName      contextKey = "model_name"
 	ContextKeyAction         contextKey = "action"
 	ContextKeyReceivedHeader contextKey = "received_header"
+	ContextKeyExprEnv        contextKey = "expr_env"
 )
 
 type Server struct {

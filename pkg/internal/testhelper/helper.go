@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/infinigence/octollm/pkg/exprenv"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/openai"
 )
@@ -17,7 +18,8 @@ type reqOptions struct {
 	URL        string
 	Body       io.Reader
 
-	features map[string]octollm.FeatureExtractor
+	recvHeader http.Header
+	features   map[string]exprenv.FeatureExtractor
 }
 
 type reqOptFunc func(opts *reqOptions)
@@ -55,15 +57,27 @@ func CreateTestRequest(opts ...reqOptFunc) *octollm.Request {
 		r, _ = http.NewRequestWithContext(o.ctx, o.HttpMethod, o.URL, o.Body)
 	}
 
+	// inject recvHeader before creating the octollm Request so that the
+	// exprenv's req reference already sees ContextKeyReceivedHeader
+	if o.recvHeader != nil {
+		rctx := context.WithValue(r.Context(), octollm.ContextKeyReceivedHeader, o.recvHeader)
+		r = r.WithContext(rctx)
+	}
+
 	parser := &octollm.JSONParser[openai.ChatCompletionRequest]{}
 	req := octollm.NewRequest(r, octollm.APIFormatChatCompletions)
 	req.Body.SetParser(parser)
 
+	// inject features into context
+	env := exprenv.Get(req)
 	if o.features != nil {
 		for name, extractor := range o.features {
-			req.RegisterFeature(name, extractor)
+			env.WithFeatureExtractor(name, extractor)
 		}
 	}
+	ctx := req.Context()
+	ctx = context.WithValue(ctx, octollm.ContextKeyExprEnv, env)
+	req = req.WithContext(ctx)
 
 	return req
 }
@@ -90,10 +104,19 @@ func WithBody(body any) reqOptFunc {
 	}
 }
 
-func WithFeature(name string, extractor octollm.FeatureExtractor) reqOptFunc {
+func WithRecvHeader(key, value string) reqOptFunc {
+	return func(opts *reqOptions) {
+		if opts.recvHeader == nil {
+			opts.recvHeader = make(http.Header)
+		}
+		opts.recvHeader.Add(key, value)
+	}
+}
+
+func WithFeature(name string, extractor exprenv.FeatureExtractor) reqOptFunc {
 	return func(opts *reqOptions) {
 		if opts.features == nil {
-			opts.features = make(map[string]octollm.FeatureExtractor)
+			opts.features = make(map[string]exprenv.FeatureExtractor)
 		}
 		opts.features[name] = extractor
 	}

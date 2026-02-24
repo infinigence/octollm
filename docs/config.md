@@ -49,7 +49,7 @@ models:
           set_keys:
             model: "actual-upstream-model-name"
           set_keys_by_expr:
-            max_tokens: "RawReq.max_tokens > 1000 ? 1000 : RawReq.max_tokens"
+            max_tokens: "req.RawReq().max_tokens > 1000 ? 1000 : req.RawReq().max_tokens"
           remove_keys: ["top_p"]
         
         response_rewrites:
@@ -62,7 +62,7 @@ models:
     # executed after user-specific rules (if any).
     default_rules:
       - name: deny_streaming_by_default
-        match: "RawReq.stream == true"
+        match: "req.RawReq().stream == true"
         deny:
           reason_text: "Streaming denied by default"
           http_status_code: 403
@@ -103,7 +103,7 @@ users:
       exposed-model-name:
         rules:
           - name: rule_name
-            match: "RawReq.stream == true"
+            match: "req.RawReq().stream == true"
             deny:
               reason_text: "Streaming denied"
               http_status_code: 403
@@ -118,7 +118,7 @@ Rules are defined as an ordered list. They are executed sequentially. **Once a r
 
 *   **`match`**: An expression to evaluate against the request.
     *   The syntax follows [expr-lang](https://expr-lang.org/).
-    *   You can access the raw request body fields via the `RawReq` variable (e.g., `RawReq.messages[0].role == 'system'`).
+    *   You can access the raw request body fields via `req.RawReq()` (e.g., `req.RawReq().messages[0].role == 'system'`). See the [Expr Guide](expr-guide.md) for the full list of available methods.
 *   **`deny`**: Configuration to reject the request if matched.
     *   `reason_text`: The error message returned to the client.
     *   `http_status_code`: The HTTP status code to return.

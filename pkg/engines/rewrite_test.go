@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/infinigence/octollm/pkg/exprenv"
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,7 +80,7 @@ func TestRewriteJSON_SetKey(t *testing.T) {
 func TestRewriteJSON_SetKeyByExpr(t *testing.T) {
 	policy := &RewritePolicy{
 		SetKeysByExpr: map[string]string{
-			"stream_options": "RawReq().stream == true ? {\"include_usage\": true, \"continuous_usage_stats\": true} : nil",
+			"stream_options": "req.RawReq().stream == true ? {\"include_usage\": true, \"continuous_usage_stats\": true} : nil",
 		},
 	}
 
@@ -93,7 +94,7 @@ func TestRewriteJSON_SetKeyByExpr(t *testing.T) {
 	rewriter := &llmJSONRewriter{
 		policy:  policy,
 		ctx:     context.Background(),
-		exprEnv: req.GetExprEnv(),
+		exprEnv: exprenv.Get(req),
 	}
 
 	rewritten := rewriter.RewriteJSON([]byte(origin))
@@ -115,7 +116,7 @@ func TestRewriteJSON_SetKeyByExpr(t *testing.T) {
 	rewriter2 := &llmJSONRewriter{
 		policy:  policy,
 		ctx:     context.Background(),
-		exprEnv: req2.GetExprEnv(),
+		exprEnv: exprenv.Get(req2),
 	}
 
 	rewritten2 := rewriter2.RewriteJSON([]byte(originFalse))

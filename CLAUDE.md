@@ -50,6 +50,7 @@ Engines can be arbitrarily nested, each handling specific concerns (client commu
 - **`/pkg/engines/load-balancer`** - Weighted round-robin load balancing with retry logic
 - **`/pkg/engines/rule-engine`** - Matcher-based rule chains using expr-lang expressions
 - **`/pkg/engines/rewrite.go`** - JSON path-based request/response/stream-chunk rewriting
+- **`/pkg/exprenv`** - expr-lang environment for rule/rewrite expressions; exposes `req.Header()`, `req.Feature()`, `req.Context()`, `req.RawReq()`; `exprenv.Get(req)` retrieves or creates the env from request context, `exprenv.Sentinel` is a zero-value env used for compile-time type checking
 - **`/pkg/composer`** - YAML config parsing, model-to-engine mapping, orchestration
 - **`/pkg/types/anthropic`** - Claude message request/response types
 - **`/pkg/types/openai`** - OpenAI ChatCompletion types

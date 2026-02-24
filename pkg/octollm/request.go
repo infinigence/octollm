@@ -3,7 +3,6 @@ package octollm
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -180,9 +179,6 @@ type Request struct {
 	Header http.Header
 	Body   *UnifiedBody
 
-	features map[string]FeatureExtractor
-	exprEnv  *RequestExprEnv
-
 	ctx context.Context
 }
 
@@ -304,82 +300,4 @@ func NewStreamResponse(statusCode int, header http.Header, stream *StreamChan) *
 		Header:     header,
 		Stream:     stream,
 	}
-}
-
-func (u *Request) GetExprEnv() *RequestExprEnv {
-	if u.exprEnv != nil {
-		return u.exprEnv
-	}
-
-	u.exprEnv = &RequestExprEnv{
-		req: u,
-	}
-
-	return u.exprEnv
-}
-
-func (u *Request) RegisterFeature(name string, extractor FeatureExtractor) {
-	if u.features == nil {
-		u.features = make(map[string]FeatureExtractor)
-	}
-	u.features[name] = extractor
-}
-
-func (u *Request) GetFeatureExtractor(name string) (FeatureExtractor, bool) {
-	if u.features == nil {
-		return nil, false
-	}
-	extractor, ok := u.features[name]
-	return extractor, ok
-}
-
-type RequestExprEnv struct {
-	req    *Request
-	rawReq map[string]any
-}
-
-type FeatureExtractor interface {
-	Features(req *Request) (any, error)
-}
-
-type FeatureExtractorFunc func(req *Request) (any, error)
-
-func (f FeatureExtractorFunc) Features(req *Request) (any, error) {
-	return f(req)
-}
-
-// RawReq returns the raw request body as a map[string]any. It caches the result after the first call.
-func (r *RequestExprEnv) RawReq() map[string]any {
-	if r.rawReq != nil {
-		return r.rawReq
-	}
-
-	b, err := r.req.Body.Bytes()
-	if err != nil {
-		return nil
-	}
-	var rawReq map[string]any
-	if err := json.Unmarshal(b, &rawReq); err != nil {
-		return nil
-	}
-
-	r.rawReq = rawReq
-	return rawReq
-}
-
-// CachedResult returns the cached result for a given key. It returns nil if the key does not exist.
-func (r *RequestExprEnv) Context(key string) any {
-	return r.req.Context().Value(key)
-}
-
-// Feature returns the extracted feature value for a given key. It returns nil if the key does not exist or if there is an error during extraction.
-func (r *RequestExprEnv) Feature(key string) any {
-	if extractor, ok := r.req.GetFeatureExtractor(key); ok {
-		val, err := extractor.Features(r.req)
-		if err != nil {
-			return nil
-		}
-		return val
-	}
-	return nil
 }

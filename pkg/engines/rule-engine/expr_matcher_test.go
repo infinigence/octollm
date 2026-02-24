@@ -11,11 +11,10 @@ import (
 
 func TestExprMatcher_Match(t *testing.T) {
 	tests := []struct {
-		name              string
-		code              string
-		setupReq          func() *octollm.Request
-		featureExtractors map[string]octollm.FeatureExtractor
-		want              bool
+		name     string
+		code     string
+		setupReq func() *octollm.Request
+		want     bool
 	}{
 		{
 			name: "always true",
@@ -35,7 +34,7 @@ func TestExprMatcher_Match(t *testing.T) {
 		},
 		{
 			name: "ctx value",
-			code: `Context("user_name") == "my_org"`,
+			code: `req.Context("user_name") == "my_org"`,
 			setupReq: func() *octollm.Request {
 				ctx := context.Background()
 				ctx = context.WithValue(ctx, "user_name", "my_org")
@@ -47,7 +46,7 @@ func TestExprMatcher_Match(t *testing.T) {
 		},
 		{
 			name: "prompt text length > 15",
-			code: `Feature("promptTextLen") > 15`,
+			code: `req.Feature("promptTextLen") > 15`,
 			setupReq: func() *octollm.Request {
 				return testhelper.CreateTestRequest(
 					testhelper.WithBody(
@@ -68,7 +67,7 @@ func TestExprMatcher_Match(t *testing.T) {
 		},
 		{
 			name: "prompt text length < 15",
-			code: `ExtractFeature("promptTextLen") > 15`,
+			code: `req.Feature("promptTextLen") > 15`,
 			setupReq: func() *octollm.Request {
 				return testhelper.CreateTestRequest(
 					testhelper.WithFeature("promptTextLen", &PromptTextLenExtractor{}),
@@ -78,7 +77,7 @@ func TestExprMatcher_Match(t *testing.T) {
 		},
 		{
 			name: "invalid feature extractor",
-			code: `ExtractFeature("nonExistFeature") == "some_value"`,
+			code: `req.Feature("nonExistFeature") == "some_value"`,
 			setupReq: func() *octollm.Request {
 				return testhelper.CreateTestRequest()
 			},
@@ -86,7 +85,7 @@ func TestExprMatcher_Match(t *testing.T) {
 		},
 		{
 			name: "prefix hash matches",
-			code: `ExtractFeature("prefix20") == "c6eec1e7"`,
+			code: `req.Feature("prefix20") == "c6eec1e7"`,
 			setupReq: func() *octollm.Request {
 				return testhelper.CreateTestRequest(
 					testhelper.WithBody(
@@ -107,7 +106,7 @@ func TestExprMatcher_Match(t *testing.T) {
 		},
 		{
 			name: "suffix hash matches",
-			code: `ExtractFeature("suffix20") == "efc888e0"`,
+			code: `req.Feature("suffix20") == "efc888e0"`,
 			setupReq: func() *octollm.Request {
 				return testhelper.CreateTestRequest(
 					testhelper.WithBody(
@@ -126,6 +125,24 @@ func TestExprMatcher_Match(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name: "received header matches",
+			code: `req.Header("X-Org-Id") == "my-org"`,
+			setupReq: func() *octollm.Request {
+				return testhelper.CreateTestRequest(
+					testhelper.WithRecvHeader("X-Org-Id", "my-org"),
+				)
+			},
+			want: true,
+		},
+		{
+			name: "received header absent",
+			code: `req.Header("X-Org-Id") == "my-org"`,
+			setupReq: func() *octollm.Request {
+				return testhelper.CreateTestRequest()
+			},
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -133,7 +150,6 @@ func TestExprMatcher_Match(t *testing.T) {
 			req := tt.setupReq()
 			m := &ExprMatcher{
 				Code: tt.code,
-				// FeatureExtractors: tt.featureExtractors,
 			}
 			got := m.Match(req)
 			if got != tt.want {
