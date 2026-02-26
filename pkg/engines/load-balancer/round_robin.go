@@ -40,9 +40,9 @@ const (
 	backendName loadBalancerMetadataKey = "backend_name"
 )
 
-// GetSelectedBackendName retrieves the selected backend name from response metadata.
-func GetSelectedBackendName(resp *octollm.Response) (string, bool) {
-	val, ok := resp.GetMetadataValue(backendName)
+// GetSelectedBackendName retrieves the selected backend name from request metadata.
+func GetSelectedBackendName(req *octollm.Request) (string, bool) {
+	val, ok := req.GetMetadataValue(backendName)
 	if !ok {
 		return "", false
 	}
@@ -97,7 +97,7 @@ func (l *WeightedRoundRobin) Process(req *octollm.Request) (*octollm.Response, e
 		slog.InfoContext(req.Context(), fmt.Sprintf("[WRR load balancer] will use engine name: %s", n))
 		resp, err := eng.Process(req)
 		if err == nil {
-			resp.SetMetadataValue(backendName, n)
+			req.SetMetadataValue(backendName, n)
 			return resp, nil
 		}
 		retryCount++

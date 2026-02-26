@@ -32,11 +32,11 @@ const (
 	clientRecvFirstChunkTime clientMetadataKey = "recv_first_chunk_time"
 )
 
-func GetClientRecvFirstChunkTime(resp *octollm.Response) (time.Time, bool) {
-	if resp == nil {
+func GetClientRecvFirstChunkTime(req *octollm.Request) (time.Time, bool) {
+	if req == nil {
 		return time.Time{}, false
 	}
-	value, ok := resp.GetMetadataValue(clientRecvFirstChunkTime)
+	value, ok := req.GetMetadataValue(clientRecvFirstChunkTime)
 	if !ok {
 		return time.Time{}, false
 	}
@@ -170,7 +170,7 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 	llmresp := octollm.NewStreamResponse(resp.StatusCode, resp.Header, streamChan)
 
 	setRecvFirstChunkTime := func(recvTime time.Time) {
-		llmresp.SetMetadataValue(clientRecvFirstChunkTime, recvTime)
+		req.SetMetadataValue(clientRecvFirstChunkTime, recvTime)
 	}
 
 	// use a scanner to read SSE messages

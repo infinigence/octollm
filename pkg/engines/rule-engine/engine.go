@@ -39,9 +39,9 @@ const (
 	matchedRuleName ruleEngineMetadataKey = "matched_rule_name"
 )
 
-// GetMatchedRuleName retrieves the matched rule name from response metadata.
-func GetMatchedRuleName(resp *octollm.Response) (string, bool) {
-	val, ok := resp.GetMetadataValue(matchedRuleName)
+// GetMatchedRuleName retrieves the matched rule name from request metadata.
+func GetMatchedRuleName(req *octollm.Request) (string, bool) {
+	val, ok := req.GetMetadataValue(matchedRuleName)
 	if !ok {
 		return "", false
 	}
@@ -68,7 +68,7 @@ func (e *RuleEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 		slog.DebugContext(req.Context(), fmt.Sprintf("[rule-engine] rule %s matched, executing", r.Name))
 		resp, err := r.Engine.Process(req)
 		if err == nil {
-			resp.SetMetadataValue(matchedRuleName, r.Name)
+			req.SetMetadataValue(matchedRuleName, r.Name)
 			slog.DebugContext(req.Context(), fmt.Sprintf("[rule-engine] rule %s exec success", r.Name))
 			return resp, nil
 		}
