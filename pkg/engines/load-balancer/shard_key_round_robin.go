@@ -3,13 +3,13 @@ package loadbalancer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"sync"
 	"time"
 
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
-	"github.com/sirupsen/logrus"
 )
 
 // ShardKeyWeightedRoundRobin implements a weighted round-robin load balancer with shard key support.
@@ -25,6 +25,7 @@ type ShardKeyWeightedRoundRobin struct {
 	// shardKeyList and redisClient are used to resolve prioritizedBackends lazily in Process.
 	shardKeyList []string
 	redisClient  *redis.Client
+	cacheTTL     time.Duration
 
 	// prioritizedBackends are resolved from shardKeyList via Redis.
 	// Requests will be routed to these first (from high to low priority),
@@ -46,12 +47,14 @@ var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
 //   - backends: backend items with name/weight/engine (same as WeightedRoundRobin)
 //   - retryTimeout: maximum time to retry failed requests
 //   - retryMaxCount: maximum number of retries
+//   - cacheTTL: expiration time for shard key -> backend mapping in Redis
 //   - shardKeyList: shard keys for this request (string array, later elements have higher priority)
 //   - redisClient: Redis client, used to resolve shard keys to backend names with pipeline
 func NewShardKeyWeightedRoundRobin(
 	backends []BackendItem,
 	retryTimeout time.Duration,
 	retryMaxCount int,
+	cacheTTL time.Duration,
 	shardKeyList []string,
 	redisClient *redis.Client,
 ) (*ShardKeyWeightedRoundRobin, error) {
@@ -89,6 +92,7 @@ func NewShardKeyWeightedRoundRobin(
 		backends:       wrrBackends,
 		shardKeyList:   shardKeyList,
 		redisClient:    redisClient,
+		cacheTTL:       cacheTTL,
 		retryTimeout:   retryTimeout,
 		retryMaxCount:  retryMaxCount,
 		prioritizedSet: make(map[*wrrBackend]struct{}),
@@ -104,7 +108,7 @@ func (l *ShardKeyWeightedRoundRobin) initPrioritizedBackends(ctx context.Context
 	defer l.mu.Unlock()
 
 	if l.prioritizedInitialized {
-		logrus.WithContext(ctx).Debugf("[ShardKey WRR load balancer] prioritized backends already initialized")
+		slog.DebugContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] prioritized backends already initialized"))
 		return
 	}
 	defer func() {
@@ -112,7 +116,7 @@ func (l *ShardKeyWeightedRoundRobin) initPrioritizedBackends(ctx context.Context
 	}()
 
 	if l.redisClient == nil || len(l.shardKeyList) == 0 {
-		logrus.WithContext(ctx).Debugf("[ShardKey WRR load balancer] no Redis client or shard key list")
+		slog.DebugContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] no Redis client or shard key list"))
 		return
 	}
 
@@ -126,7 +130,7 @@ func (l *ShardKeyWeightedRoundRobin) initPrioritizedBackends(ctx context.Context
 	}
 
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-		logrus.WithContext(ctx).Warnf("[ShardKey WRR load balancer] failed to exec Redis pipeline for shard keys: %v", err)
+		slog.WarnContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] failed to exec Redis pipeline for shard keys: %v", err))
 	}
 
 	// Build name -> backend map from current backends.
@@ -147,7 +151,7 @@ func (l *ShardKeyWeightedRoundRobin) initPrioritizedBackends(ctx context.Context
 		backendName, err := cmd.Result()
 		if err != nil {
 			if err != redis.Nil {
-				logrus.WithContext(ctx).Debugf("[ShardKey WRR load balancer] Redis get error for shard key %s: %v", l.shardKeyList[i], err)
+				slog.DebugContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] Redis get error for shard key %s: %v", l.shardKeyList[i], err))
 			}
 			continue
 		}
@@ -175,25 +179,40 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 	retryCount := 0
 	for {
 		n, eng := l.GetNextEngine()
-		logrus.WithContext(req.Context()).Infof("[ShardKey WRR load balancer] will use engine name: %s", n)
+		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] will use engine name: %s", n))
 		resp, err := eng.Process(req)
 		if err == nil {
 			// Reuse same metadata key as normal WRR.
 			resp.SetMetadataValue(backendName, n)
+
+			// Update Redis: shardKeyList -> selected backend name with configured TTL.
+			if l.redisClient != nil && len(l.shardKeyList) > 0 && l.cacheTTL > 0 {
+				pipe := l.redisClient.Pipeline()
+				for _, shardKey := range l.shardKeyList {
+					if shardKey == "" {
+						continue
+					}
+					pipe.Set(req.Context(), shardKey, n, l.cacheTTL)
+				}
+				if _, err := pipe.Exec(req.Context()); err != nil && err != redis.Nil {
+					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] failed to update shard key mapping in Redis: %v", err))
+				}
+			}
+
 			return resp, nil
 		}
 		retryCount++
 		if time.Since(start) >= l.retryTimeout {
 			// retry period reached, return last resp and err
-			logrus.WithContext(req.Context()).Warnf("[ShardKey WRR load balancer] retry period %v reached, return last resp and err", l.retryTimeout)
+			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] retry period %v reached, return last resp and err", l.retryTimeout))
 			return resp, err
 		}
 		if retryCount >= l.retryMaxCount {
 			// retry max count reached, return last resp and err
-			logrus.WithContext(req.Context()).Warnf("[ShardKey WRR load balancer] retry max count %d reached, return last resp and err", l.retryMaxCount)
+			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] retry max count %d reached, return last resp and err", l.retryMaxCount))
 			return resp, err
 		}
-		logrus.WithContext(req.Context()).Infof("[ShardKey WRR load balancer] will retry, count %d, time %v", retryCount, time.Since(start))
+		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] will retry, count %d, time %v", retryCount, time.Since(start)))
 	}
 }
 
