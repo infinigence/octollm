@@ -25,10 +25,14 @@ type ShardKeyWeightedRoundRobin struct {
 	// shardKeyListGetter and redisClient are used to resolve prioritized backends in Process.
 	shardKeyListGetter func(req *octollm.Request) []string
 	redisClient        *redis.Client
-	cacheTTL           time.Duration
+	shardKeyTTL        time.Duration
 
 	retryTimeout  time.Duration
 	retryMaxCount int
+
+	// minWeightMultiple controls the lower bound for currentWeight:
+	// a backend is temporarily not selectable when currentWeight < -minWeightMultiple * totalWeight.
+	minWeightMultiple int
 }
 
 var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
@@ -39,14 +43,16 @@ var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
 //   - backends: backend items with name/weight/engine (same as WeightedRoundRobin)
 //   - retryTimeout: maximum time to retry failed requests
 //   - retryMaxCount: maximum number of retries
-//   - cacheTTL: expiration time for shard key -> backend mapping in Redis
+//   - shardKeyTTL: expiration time for shard key -> backend mapping in Redis
+//   - minWeightMultiple: used to compute the lower bound threshold = -minWeightMultiple * totalWeight
 //   - shardKeyList: shard keys for this request (string array, later elements have higher priority)
 //   - redisClient: Redis client, used to resolve shard keys to backend names with pipeline
 func NewShardKeyWeightedRoundRobin(
 	backends []BackendItem,
 	retryTimeout time.Duration,
 	retryMaxCount int,
-	cacheTTL time.Duration,
+	shardKeyTTL time.Duration,
+	minWeightMultiple int,
 	shardKeyListGetter func(req *octollm.Request) []string,
 	redisClient *redis.Client,
 ) (*ShardKeyWeightedRoundRobin, error) {
@@ -84,9 +90,10 @@ func NewShardKeyWeightedRoundRobin(
 		backends:           wrrBackends,
 		shardKeyListGetter: shardKeyListGetter,
 		redisClient:        redisClient,
-		cacheTTL:           cacheTTL,
+		shardKeyTTL:        shardKeyTTL,
 		retryTimeout:       retryTimeout,
 		retryMaxCount:      retryMaxCount,
+		minWeightMultiple:  minWeightMultiple,
 	}
 
 	return lb, nil
@@ -202,7 +209,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			req.SetMetadataValue(backendName, n)
 
 			// Update Redis: shardKeyList -> ZSET of backend names (score = current timestamp), with configured TTL.
-			if l.redisClient != nil && len(shardKeyList) > 0 && l.cacheTTL > 0 {
+			if l.redisClient != nil && len(shardKeyList) > 0 && l.shardKeyTTL > 0 {
 				pipe := l.redisClient.Pipeline()
 				for _, shardKey := range shardKeyList {
 					if shardKey == "" {
@@ -212,7 +219,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 						Score:  float64(time.Now().Unix()),
 						Member: n,
 					})
-					pipe.Expire(req.Context(), shardKey, l.cacheTTL)
+					pipe.Expire(req.Context(), shardKey, l.shardKeyTTL)
 				}
 				if _, err := pipe.Exec(req.Context()); err != nil && err != redis.Nil {
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] failed to update shard key mapping in Redis: %v", err))
@@ -236,10 +243,13 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 	}
 }
 
-// GetNextEngine applies the shard-key aware WRR selection:
-//   - all backends first add their own weight once
-//   - if prioritizedBackend is non-empty and its backend's currentWeight >= -5 * totalWeight, pick it
-//   - otherwise, pick among all backends with currentWeight >= -5 * totalWeight by max currentWeight
+// GetNextEngine applies the shard-key aware WRR selection.
+// Step for each pick:
+//   1) Compute totalWeight and threshold = -minWeightMultiple * totalWeight.
+//   2) If prioritizedBackend is non-empty and its backend's currentWeight >= threshold, pick it;
+//      otherwise pick the backend with the largest currentWeight among those whose currentWeight >= threshold.
+//   3) For the selected backend, subtract totalWeight from its currentWeight.
+//   4) Then, for all backends, add their own weight once (currentWeight += weight).
 func (l *ShardKeyWeightedRoundRobin) GetNextEngine(prioritizedBackend string) (string, octollm.Engine) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -254,9 +264,51 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(prioritizedBackend string) (s
 	if totalWeight <= 0 {
 		return "", nil
 	}
-	threshold := -5 * totalWeight
+	multiple := l.minWeightMultiple
+	if multiple <= 0 {
+		multiple = 5
+	}
+	threshold := -multiple * totalWeight
 
-	// First, all backends add their own weight once (matches the example's "随后每个端点增加一次自己对应的权重值").
+	// Try shard-hit backend first (if any) and if it hasn't dropped below threshold.
+	var selected *wrrBackend
+	if prioritizedBackend != "" {
+		for _, backend := range l.backends {
+			if backend == nil || backend.weight <= 0 {
+				continue
+			}
+			if backend.name == prioritizedBackend {
+				if backend.currentWeight >= threshold {
+					selected = backend
+				}
+				break
+			}
+		}
+	}
+
+	// Fallback to normal WRR among backends whose currentWeight >= threshold.
+	if selected == nil {
+		for _, backend := range l.backends {
+			if backend == nil || backend.weight <= 0 {
+				continue
+			}
+			if backend.currentWeight < threshold {
+				continue
+			}
+			if selected == nil || backend.currentWeight > selected.currentWeight {
+				selected = backend
+			}
+		}
+	}
+
+	if selected == nil {
+		return "", nil
+	}
+
+	// Step 3: subtract totalWeight from selected backend.
+	selected.currentWeight -= totalWeight
+
+	// Step 4: then every backend adds its own weight once.
 	for _, backend := range l.backends {
 		if backend == nil || backend.weight <= 0 {
 			continue
@@ -264,41 +316,5 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(prioritizedBackend string) (s
 		backend.currentWeight += backend.weight
 	}
 
-	// Try shard-hit backend first (if any) and if it hasn't dropped below -5 * totalWeight.
-	if prioritizedBackend != "" {
-		var hitBackend *wrrBackend
-		for _, backend := range l.backends {
-			if backend == nil || backend.weight <= 0 {
-				continue
-			}
-			if backend.name == prioritizedBackend {
-				hitBackend = backend
-				break
-			}
-		}
-		if hitBackend != nil && hitBackend.currentWeight >= threshold {
-			hitBackend.currentWeight -= totalWeight
-			return hitBackend.name, hitBackend.engine
-		}
-	}
-
-	// Fallback to normal WRR among backends whose currentWeight >= threshold.
-	var maxWeightBackend *wrrBackend
-	for _, backend := range l.backends {
-		if backend == nil || backend.weight <= 0 {
-			continue
-		}
-		if backend.currentWeight < threshold {
-			// below -5 * totalWeight, temporarily not selectable
-			continue
-		}
-		if maxWeightBackend == nil || backend.currentWeight > maxWeightBackend.currentWeight {
-			maxWeightBackend = backend
-		}
-	}
-	if maxWeightBackend == nil {
-		return "", nil
-	}
-	maxWeightBackend.currentWeight -= totalWeight
-	return maxWeightBackend.name, maxWeightBackend.engine
+	return selected.name, selected.engine
 }
