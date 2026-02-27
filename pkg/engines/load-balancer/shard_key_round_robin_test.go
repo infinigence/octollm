@@ -95,8 +95,8 @@ func TestResolvePrioritizedBackends_WithRedisAndTrim(t *testing.T) {
 		{name: "b5"},
 	}
 	lb := &ShardKeyWeightedRoundRobin{
-		backends:         backends,
-		redisClient:      client,
+		backends:          backends,
+		redisClient:       client,
 		minWeightMultiple: 5,
 	}
 
@@ -281,8 +281,8 @@ func TestShardKeyWeightedRoundRobin_Process_RetryTimeout(t *testing.T) {
 		backends: []*wrrBackend{
 			{name: "backend1", weight: 1, engine: failEngine},
 		},
-		retryTimeout:     0,
-		retryMaxCount:    10,
+		retryTimeout:      0,
+		retryMaxCount:     10,
 		minWeightMultiple: 5,
 	}
 
@@ -305,8 +305,8 @@ func TestShardKeyWeightedRoundRobin_Process_RetryMaxCount(t *testing.T) {
 		backends: []*wrrBackend{
 			{name: "backend1", weight: 1, engine: failEngine},
 		},
-		retryTimeout:     time.Hour,
-		retryMaxCount:    2,
+		retryTimeout:      time.Hour,
+		retryMaxCount:     2,
 		minWeightMultiple: 5,
 	}
 
@@ -319,4 +319,80 @@ func TestShardKeyWeightedRoundRobin_Process_RetryMaxCount(t *testing.T) {
 	assert.Equal(t, 2, failEngine.callCount)
 }
 
+func TestGetNextEngine_SmoothWeightedRoundRobin_NoShard(t *testing.T) {
+	// Weights: A=2, B=3, C=5, total=10.
+	// For classic smooth WRR, in any window of length 10 we should see A,B,C chosen
+	// exactly 2,3,5 times respectively (ignoring randomness in initial currentWeight).
+	lb := &ShardKeyWeightedRoundRobin{
+		backends: []*wrrBackend{
+			{name: "A", weight: 2, engine: &stubEngine{}, currentWeight: 0},
+			{name: "B", weight: 3, engine: &stubEngine{}, currentWeight: 0},
+			{name: "C", weight: 5, engine: &stubEngine{}, currentWeight: 0},
+		},
+		minWeightMultiple: 5,
+	}
 
+	const totalPicks = 10 // sum of weights
+	counts := map[string]int{}
+	sequence := make([]string, 0, totalPicks)
+
+	for i := 0; i < totalPicks; i++ {
+		name, eng := lb.GetNextEngine("")
+		assert.NotEmpty(t, name)
+		assert.NotNil(t, eng)
+		counts[name]++
+		sequence = append(sequence, name)
+	}
+
+	assert.Equal(t, 2, counts["A"])
+	assert.Equal(t, 3, counts["B"])
+	assert.Equal(t, 5, counts["C"])
+
+	// Additionally, ensure that C does not appear 5 times consecutively at the start,
+	// i.e., the sequence is not trivially "C C C C C ..." but interleaved.
+	if len(sequence) >= 5 {
+		allC := true
+		for i := 0; i < 5; i++ {
+			if sequence[i] != "C" {
+				allC = false
+				break
+			}
+		}
+		assert.False(t, allC, "C should not appear 5 times consecutively at the beginning")
+	}
+}
+
+func TestGetNextEngine_ShardHitEventuallyFallsBackWhenBelowThreshold(t *testing.T) {
+	// Three backends with weights 2,3,5. Prioritized shard always points to A.
+	// With a relatively small minWeightMultiple, A will eventually fall below threshold
+	// and the picker should start choosing other backends even when shard_key keeps hitting A.
+	lb := &ShardKeyWeightedRoundRobin{
+		backends: []*wrrBackend{
+			{name: "A", weight: 2, engine: &stubEngine{}, currentWeight: 0},
+			{name: "B", weight: 3, engine: &stubEngine{}, currentWeight: 0},
+			{name: "C", weight: 5, engine: &stubEngine{}, currentWeight: 0},
+		},
+		minWeightMultiple: 1, // threshold = -1 * totalWeight
+	}
+
+	const iterations = 10
+	sawA := false
+	sawNonAAfterA := false
+
+	for i := 0; i < iterations; i++ {
+		name, eng := lb.GetNextEngine("A")
+		assert.NotEmpty(t, name)
+		assert.NotNil(t, eng)
+
+		if name == "A" {
+			sawA = true
+		}
+		if sawA && name != "A" {
+			sawNonAAfterA = true
+			break
+		}
+	}
+
+	assert.True(t, sawA, "shard-hit backend A should be selected at least once")
+	assert.True(t, sawNonAAfterA, "after enough hits, selection should eventually fall back to a non-A backend even when shard key keeps hitting A")
+}
