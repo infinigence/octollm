@@ -199,8 +199,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] will use engine name: %s", n))
 		resp, err := eng.Process(req)
 		if err == nil {
-			// Reuse same metadata key as normal WRR.
-			resp.SetMetadataValue(backendName, n)
+			req.SetMetadataValue(backendName, n)
 
 			// Update Redis: shardKeyList -> ZSET of backend names (score = current timestamp), with configured TTL.
 			if l.redisClient != nil && len(shardKeyList) > 0 && l.cacheTTL > 0 {
