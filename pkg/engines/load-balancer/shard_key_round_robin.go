@@ -92,7 +92,7 @@ func NewShardKeyWeightedRoundRobin(
 	return lb, nil
 }
 
-// resolvePrioritizedBackends resolves shardKeyList -> backendName via Redis and returns
+// resolvePrioritizedBackends resolves shardKeyList -> backendName via Redis ZSETs and returns
 // backend pointers ordered from high to low priority (later keys have higher priority).
 // Note: This is computed per-request; backend weight state (currentWeight) stays on l.backends and is reused.
 func (l *ShardKeyWeightedRoundRobin) resolvePrioritizedBackends(
@@ -103,16 +103,18 @@ func (l *ShardKeyWeightedRoundRobin) resolvePrioritizedBackends(
 		return nil
 	}
 
-	pipe := l.redisClient.Pipeline()
-	cmds := make([]*redis.StringCmd, len(shardKeyList))
+	// First pipeline: read all members for each shard key once via ZREVRANGE.
+	readPipe := l.redisClient.Pipeline()
+	cmds := make([]*redis.StringSliceCmd, len(shardKeyList))
 	for i, shardKey := range shardKeyList {
 		if shardKey == "" {
 			continue
 		}
-		cmds[i] = pipe.Get(ctx, shardKey)
+		// Get all members ordered from newest to oldest (by score).
+		cmds[i] = readPipe.ZRevRange(ctx, shardKey, 0, -1)
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+	if _, err := readPipe.Exec(ctx); err != nil && err != redis.Nil {
 		slog.WarnContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] failed to exec Redis pipeline for shard keys: %v", err))
 	}
 
@@ -124,26 +126,43 @@ func (l *ShardKeyWeightedRoundRobin) resolvePrioritizedBackends(
 	}
 
 	seen := make(map[string]bool)
+	// Second pipeline: for keys whose ZSET size > 3, trim older entries.
+	trimPipe := l.redisClient.Pipeline()
+
 	// Iterate from last to first so later shard keys have higher priority.
 	for i := len(shardKeyList) - 1; i >= 0; i-- {
 		cmd := cmds[i]
 		if cmd == nil {
 			continue
 		}
-		backendName, err := cmd.Result()
-		if err != nil {
-			if err != redis.Nil {
-				slog.DebugContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] Redis get error for shard key %s: %v", shardKeyList[i], err))
+		backendNames, err := cmd.Result()
+		if err != nil && err != redis.Nil {
+			slog.DebugContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] Redis ZSET error for shard key %s: %v", shardKeyList[i], err))
+			continue
+		}
+		// If more than 3 members exist, trim the oldest ones (keep latest 3).
+		if len(backendNames) > 3 {
+			// In ascending order, oldest elements have lowest rank.
+			// Remove ranks [0, len-4] so that only the latest 3 remain.
+			stop := int64(len(backendNames) - 4)
+			if stop >= 0 {
+				trimPipe.ZRemRangeByRank(ctx, shardKeyList[i], 0, stop)
 			}
-			continue
 		}
-		if backendName == "" || seen[backendName] {
-			continue
+		// backendNames are already ordered from most recent to oldest
+		for _, backendName := range backendNames {
+			if backendName == "" || seen[backendName] {
+				continue
+			}
+			if backend, ok := backendByName[backendName]; ok {
+				prioritizedBackends = append(prioritizedBackends, backend)
+				seen[backendName] = true
+			}
 		}
-		if backend, ok := backendByName[backendName]; ok {
-			prioritizedBackends = append(prioritizedBackends, backend)
-			seen[backendName] = true
-		}
+	}
+
+	if _, err := trimPipe.Exec(ctx); err != nil && err != redis.Nil {
+		slog.WarnContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] failed to trim Redis ZSET for shard keys: %v", err))
 	}
 
 	return prioritizedBackends
@@ -183,14 +202,18 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			// Reuse same metadata key as normal WRR.
 			resp.SetMetadataValue(backendName, n)
 
-			// Update Redis: shardKeyList -> selected backend name with configured TTL.
+			// Update Redis: shardKeyList -> ZSET of backend names (score = current timestamp), with configured TTL.
 			if l.redisClient != nil && len(shardKeyList) > 0 && l.cacheTTL > 0 {
 				pipe := l.redisClient.Pipeline()
 				for _, shardKey := range shardKeyList {
 					if shardKey == "" {
 						continue
 					}
-					pipe.Set(req.Context(), shardKey, n, l.cacheTTL)
+					pipe.ZAdd(req.Context(), shardKey, redis.Z{
+						Score:  float64(time.Now().Unix()),
+						Member: n,
+					})
+					pipe.Expire(req.Context(), shardKey, l.cacheTTL)
 				}
 				if _, err := pipe.Exec(req.Context()); err != nil && err != redis.Nil {
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] failed to update shard key mapping in Redis: %v", err))
