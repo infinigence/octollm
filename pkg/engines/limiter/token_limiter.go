@@ -28,17 +28,21 @@ type TokenLimiterEngine struct {
 	next octollm.Engine
 }
 
-// tokenDeductionKey is a strongly-typed metadata key used for token deduction.
-// The corresponding metadata value MUST be an int (number of tokens to deduct).
-type tokenDeductionKey struct{}
+type DeDuctionCallback func(ctx context.Context, used int64) error
 
-// SetTokenDeduction sets the token deduction value into request metadata using tokenDeductionKey.
-// The value MUST be an int representing the number of tokens to deduct.
-func SetTokenDeduction(req *octollm.Request, v int) {
-	if req == nil {
-		return
+// deDuctionCallbackKey is a strongly-typed metadata key used for token deduction.
+// The corresponding metadata value MUST be an int (number of tokens to deduct).
+type deDuctionCallbackKey struct{}
+
+// DoDeduction performs the token deduction based on the value in request metadata.
+// The deduction amount is read from req.GetMetadataValue(deDuctionCallbackKey{}) as int (if present).
+func DoDeduction(req *octollm.Request, used int64) error {
+	ctx := req.Context()
+	deDuctionCallback, ok := req.GetMetadataValue(deDuctionCallbackKey{})
+	if !ok {
+		return fmt.Errorf("deDuctionCallback not found in request metadata")
 	}
-	req.SetMetadataValue(tokenDeductionKey{}, v)
+	return deDuctionCallback.(DeDuctionCallback)(ctx, used)
 }
 
 var _ octollm.Engine = (*TokenLimiterEngine)(nil)
@@ -185,26 +189,7 @@ func (e *TokenLimiterEngine) allow(ctx context.Context) error {
 
 // deduction performs post-response token deduction based on the value in request metadata.
 // The deduction amount is read from req.GetMetadataValue(tokenDeductionKey{}) as int (if present).
-func (e *TokenLimiterEngine) deduction(req *octollm.Request) error {
-	if e.redisClient == nil || e.burst <= 0 {
-		return nil
-	}
-	if req == nil {
-		return nil
-	}
-	ctx := req.Context()
-
-	raw, ok := req.GetMetadataValue(tokenDeductionKey{})
-	if !ok || raw == nil {
-		return nil
-	}
-
-	usedInt, ok := raw.(int)
-	if !ok {
-		return fmt.Errorf("token deduction value in metadata must be int, got %T", raw)
-	}
-	used := int64(usedInt)
-
+func (e *TokenLimiterEngine) deduction(ctx context.Context, used int64) error {
 	if used <= 0 {
 		slog.WarnContext(ctx, fmt.Sprintf("[TokenLimiterEngine] token deduction value is less than or equal to 0, key: %s, used: %d", e.key, used))
 		return nil
@@ -304,10 +289,9 @@ func (e *TokenLimiterEngine) Process(req *octollm.Request) (*octollm.Response, e
 	// Process request
 	resp, err := e.next.Process(req)
 
-	// Post-deduction; failure does not change the upstream response, only logs error.
-	if derr := e.deduction(req); derr != nil {
-		slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] deduction error: %v, key: %s", derr, e.key))
-	}
+	req.SetMetadataValue(deDuctionCallbackKey{}, DeDuctionCallback(func(ctx context.Context, used int64) error {
+		return e.deduction(ctx, used)
+	}))
 
 	return resp, err
 }

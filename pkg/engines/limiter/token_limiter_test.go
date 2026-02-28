@@ -19,16 +19,10 @@ type nextStubEngine struct {
 	resp      *octollm.Response
 	err       error
 	callCount int
-
-	// deduction, if >0, will be set via SetTokenDeduction in Process.
-	deduction int
 }
 
 func (n *nextStubEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	n.callCount++
-	if req != nil && n.deduction > 0 {
-		SetTokenDeduction(req, n.deduction)
-	}
 	if n.resp == nil {
 		return &octollm.Response{StatusCode: 200}, n.err
 	}
@@ -182,27 +176,11 @@ func TestTokenLimiter_deduction_NoOpCases(t *testing.T) {
 	e, err := NewTokenLimiterEngine(client, "bucket", 10, 10, time.Second, next)
 	assert.NoError(t, err)
 
-	// burst <= 0
-	eDisabled := &TokenLimiterEngine{
-		redisClient: client,
-		key:         "k",
-		burst:       0,
-		next:        next,
-	}
-	assert.NoError(t, eDisabled.deduction(nil))
+	ctx := context.Background()
 
-	req := newLimiterTestRequest(t)
-
-	// no metadata set
-	assert.NoError(t, e.deduction(req))
-
-	// non-int metadata
-	req.SetMetadataValue(tokenDeductionKey{}, "not-int")
-	assert.Error(t, e.deduction(req))
-
-	// used <= 0
-	SetTokenDeduction(req, 0)
-	assert.NoError(t, e.deduction(req))
+	// used <= 0: deduction is no-op, returns nil without persisting
+	assert.NoError(t, e.deduction(ctx, 0))
+	assert.NoError(t, e.deduction(ctx, -1))
 }
 
 func TestTokenLimiter_deduction_TTLReadError(t *testing.T) {
@@ -214,13 +192,10 @@ func TestTokenLimiter_deduction_TTLReadError(t *testing.T) {
 	e, err := NewTokenLimiterEngine(client, "bucket", 10, 10, time.Second, next)
 	assert.NoError(t, err)
 
-	req := newLimiterTestRequest(t)
-	SetTokenDeduction(req, 5)
-
 	// Close miniredis to force a network error on TTL
 	mr.Close()
 
-	assert.Error(t, e.deduction(req))
+	assert.Error(t, e.deduction(context.Background(), 5))
 }
 
 func TestTokenLimiter_deduction_CreateNewBucketOnMissingKey(t *testing.T) {
@@ -233,12 +208,9 @@ func TestTokenLimiter_deduction_CreateNewBucketOnMissingKey(t *testing.T) {
 	e, err := NewTokenLimiterEngine(client, "bucket", 10, 10, time.Second, next)
 	assert.NoError(t, err)
 
-	req := newLimiterTestRequest(t)
-	SetTokenDeduction(req, 3)
-
-	assert.NoError(t, e.deduction(req))
-
 	ctx := context.Background()
+	assert.NoError(t, e.deduction(ctx, 3))
+
 	tokensStr, err := client.HGet(ctx, "bucket", "tokens").Result()
 	assert.NoError(t, err)
 
@@ -307,8 +279,7 @@ func TestTokenLimiter_Process_SuccessAndDeduction(t *testing.T) {
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	next := &nextStubEngine{
-		resp:      &octollm.Response{StatusCode: 201},
-		deduction: 4,
+		resp: &octollm.Response{StatusCode: 201},
 	}
 
 	e, err := NewTokenLimiterEngine(client, "bucket", 10, 10, time.Second, next)
@@ -335,7 +306,10 @@ func TestTokenLimiter_Process_SuccessAndDeduction(t *testing.T) {
 	}
 	assert.Equal(t, 1, next.callCount)
 
-	// Deduction should have persisted updated tokens
+	// Process sets DeDuctionCallback in metadata; simulate downstream calling DoDeduction with used=4
+	assert.NoError(t, DoDeduction(req, 4))
+
+	// Deduction callback should have persisted updated tokens (burst - 4)
 	tokensStr, err := client.HGet(ctx, "bucket", "tokens").Result()
 	assert.NoError(t, err)
 
@@ -343,5 +317,12 @@ func TestTokenLimiter_Process_SuccessAndDeduction(t *testing.T) {
 	_, err = fmt.Sscan(tokensStr, &tokens)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(e.burst)-4, tokens)
+}
+
+func TestDoDeduction_WithoutCallbackReturnsError(t *testing.T) {
+	req := newLimiterTestRequest(t)
+	err := DoDeduction(req, 10)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "deDuctionCallback not found")
 }
 
