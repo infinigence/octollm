@@ -323,6 +323,63 @@ func TestDoDeduction_WithoutCallbackReturnsError(t *testing.T) {
 	req := newLimiterTestRequest(t)
 	err := DoDeduction(req, 10)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "deDuctionCallback not found")
+	assert.Contains(t, err.Error(), "deDuctionCallbacks not found")
 }
 
+func TestTokenLimiter_Process_StackedEnginesBothKeysDeducted(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	next := &nextStubEngine{
+		resp: &octollm.Response{StatusCode: 201},
+	}
+
+	inner, err := NewTokenLimiterEngine(client, "bucket-inner", 10, 10, time.Second, next)
+	assert.NoError(t, err)
+	outer, err := NewTokenLimiterEngine(client, "bucket-outer", 10, 10, time.Second, inner)
+	assert.NoError(t, err)
+
+	req := newLimiterTestRequest(t)
+	resp, err := outer.Process(req)
+	assert.NoError(t, err)
+	if assert.NotNil(t, resp) {
+		assert.Equal(t, 201, resp.StatusCode)
+	}
+	assert.Equal(t, 1, next.callCount)
+
+	// Ensure both limiters appended their callbacks to the same request metadata.
+	raw, ok := req.GetMetadataValue(deDuctionCallbackKey{})
+	assert.True(t, ok)
+	callbacks, ok := raw.(DeDuctionCallbacks)
+	assert.True(t, ok)
+	assert.Len(t, callbacks.callbacks, 2)
+
+	// Trigger post-response deduction. Both keys should be created/updated independently.
+	const used int64 = 4
+	assert.NoError(t, DoDeduction(req, used))
+
+	ctx := context.Background()
+
+	tokensOuterStr, err := client.HGet(ctx, "bucket-outer", "tokens").Result()
+	assert.NoError(t, err)
+	var tokensOuter int64
+	_, err = fmt.Sscan(tokensOuterStr, &tokensOuter)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(10)-used, tokensOuter)
+
+	tokensInnerStr, err := client.HGet(ctx, "bucket-inner", "tokens").Result()
+	assert.NoError(t, err)
+	var tokensInner int64
+	_, err = fmt.Sscan(tokensInnerStr, &tokensInner)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(10)-used, tokensInner)
+
+	ttlOuter, err := client.TTL(ctx, "bucket-outer").Result()
+	assert.NoError(t, err)
+	assert.Greater(t, ttlOuter, time.Duration(0))
+
+	ttlInner, err := client.TTL(ctx, "bucket-inner").Result()
+	assert.NoError(t, err)
+	assert.Greater(t, ttlInner, time.Duration(0))
+}

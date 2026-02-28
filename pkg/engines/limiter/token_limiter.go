@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -30,19 +31,37 @@ type TokenLimiterEngine struct {
 
 type DeDuctionCallback func(ctx context.Context, used int64) error
 
+type DeDuctionCallbacks struct {
+	callbacks []DeDuctionCallback
+}
+
 // deDuctionCallbackKey is a strongly-typed metadata key used for token deduction.
 // The corresponding metadata value MUST be an int (number of tokens to deduct).
 type deDuctionCallbackKey struct{}
 
 // DoDeduction performs the token deduction based on the value in request metadata.
 // The deduction amount is read from req.GetMetadataValue(deDuctionCallbackKey{}) as int (if present).
-func DoDeduction(req *octollm.Request, used int64) error {
+func DoDeduction(req *octollm.Request, used int64) (err error) {
 	ctx := req.Context()
-	deDuctionCallback, ok := req.GetMetadataValue(deDuctionCallbackKey{})
+	defer func() {
+		if err != nil {
+			slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] deDuction error: %v", err))
+		}
+	}()
+	deDuctionCallbacks, ok := req.GetMetadataValue(deDuctionCallbackKey{})
 	if !ok {
-		return fmt.Errorf("deDuctionCallback not found in request metadata")
+		slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] deDuctionCallbacks not found in request metadata"))
+		return fmt.Errorf("deDuctionCallbacks not found in request metadata")
 	}
-	return deDuctionCallback.(DeDuctionCallback)(ctx, used)
+	callbacks, ok := deDuctionCallbacks.(DeDuctionCallbacks)
+	if !ok {
+		slog.ErrorContext(ctx, fmt.Sprintf("DeDuctionCallbacks type assertion failed"))
+		return fmt.Errorf("DeDuctionCallbacks type assertion failed")
+	}
+	for _, callback := range callbacks.callbacks {
+		err = errors.Join(err, callback(ctx, used))
+	}
+	return err
 }
 
 var _ octollm.Engine = (*TokenLimiterEngine)(nil)
@@ -286,13 +305,30 @@ func (e *TokenLimiterEngine) Process(req *octollm.Request) (*octollm.Response, e
 		}
 	}
 
+	// Add deduction callback to request metadata
+	deDuctionCallbacks, ok := req.GetMetadataValue(deDuctionCallbackKey{})
+	if !ok {
+		deDuctionCallbacks = DeDuctionCallbacks{callbacks: []DeDuctionCallback{func(ctx context.Context, used int64) error {
+			return e.deduction(ctx, used)
+		}}}
+		req.SetMetadataValue(deDuctionCallbackKey{}, deDuctionCallbacks)
+	} else {
+		callbacks, ok := deDuctionCallbacks.(DeDuctionCallbacks)
+		if !ok {
+			slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] DeDuctionCallbacks type assertion failed in token limiter engine"))
+			return nil, &errutils.UpstreamRespError{
+				StatusCode: 500,
+				Body:       []byte("DeDuctionCallbacks type assertion failed in token limiter engine"),
+			}
+		}
+		callbacks.callbacks = append(callbacks.callbacks, func(ctx context.Context, used int64) error {
+			return e.deduction(ctx, used)
+		})
+		req.SetMetadataValue(deDuctionCallbackKey{}, callbacks)
+	}
+
 	// Process request
 	resp, err := e.next.Process(req)
-
-	req.SetMetadataValue(deDuctionCallbackKey{}, DeDuctionCallback(func(ctx context.Context, used int64) error {
-		return e.deduction(ctx, used)
-	}))
-
 	return resp, err
 }
 
