@@ -133,3 +133,24 @@ func TestRewriteJSON_SetKeyByExpr(t *testing.T) {
 	_, hasStreamOptions := got2["stream_options"]
 	assert.False(t, hasStreamOptions, "stream_options should not be present when expression returns nil")
 }
+
+func TestRewriteEngine_RevertsRequestBodyOnError(t *testing.T) {
+	origin := `{"model": "gpt-4", "key1": "value1"}`
+	req := testhelper.CreateTestRequest(testhelper.WithBody(origin))
+
+	policy := &RewritePolicy{
+		SetKeys: map[string]any{"key1": "rewritten"},
+	}
+
+	errorEngine := &DenyEngine{ReasonText: "upstream error", HTTPStatusCode: 500}
+
+	engine := NewRewriteEngine(errorEngine, policy, nil, nil)
+	_, err := engine.Process(req)
+	require.Error(t, err)
+
+	// body should be reverted to original after the error
+	b, readErr := req.Body.Bytes()
+	require.NoError(t, readErr)
+
+	assert.JSONEq(t, origin, string(b))
+}

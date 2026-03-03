@@ -123,6 +123,7 @@ func NewRewriteEngine(next octollm.Engine, requestRewrite, nonstreamResponseRewr
 }
 
 func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error) {
+	shouldRevertRewrite := false
 	if e.RequestRewrite != nil {
 		exprEnv := exprenv.Get(req)
 
@@ -136,6 +137,14 @@ func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error)
 			return nil, fmt.Errorf("get request body bytes error: %w", err)
 		}
 		req.Body.SetBytes(reqRewriter.RewriteJSON(b))
+		shouldRevertRewrite = true
+		defer func() {
+			if shouldRevertRewrite {
+				// revert the rewrite to make sure the original request body is not changed for other engines in the chain
+				req.Body.SetBytes(b)
+				slog.DebugContext(req.Context(), "[RewriteEngine.Process] revert request body rewrite")
+			}
+		}()
 		slog.DebugContext(req.Context(), "[RewriteEngine.Run] request body rewritten")
 	}
 	if e.Next == nil {
@@ -145,6 +154,7 @@ func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error)
 	if err != nil {
 		return nil, fmt.Errorf("underlying engine run error: %w", err)
 	}
+	shouldRevertRewrite = false
 
 	if resp.Stream != nil {
 		if e.StreamChunkRewrite == nil {
