@@ -48,7 +48,7 @@ func (s *Server) SetEngine(ep Engine) {
 func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.HandlerFunc {
 	return errutils.ErrorHandlingMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		// store received headers in context
-		r = r.WithContext(context.WithValue(r.Context(), ContextKeyReceivedHeader, r.Header))
+		*r = *r.WithContext(context.WithValue(r.Context(), ContextKeyReceivedHeader, r.Header))
 		u := NewRequest(r, format)
 		u.Body.SetParser(parser)
 		resp, err := engine.Process(u)
@@ -151,7 +151,7 @@ func RerankHandler(engine Engine) http.HandlerFunc {
 func httpJSONArrayHandler(engine Engine, format APIFormat, parser Parser) http.HandlerFunc {
 	return errutils.ErrorHandlingMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		// store received headers in context
-		r = r.WithContext(context.WithValue(r.Context(), ContextKeyReceivedHeader, r.Header))
+		*r = *r.WithContext(context.WithValue(r.Context(), ContextKeyReceivedHeader, r.Header))
 		u := NewRequest(r, format)
 		u.Body.SetParser(parser)
 		resp, err := engine.Process(u)
