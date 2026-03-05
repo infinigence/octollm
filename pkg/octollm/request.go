@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 )
 
 type APIFormat string
@@ -182,7 +183,7 @@ type Request struct {
 	// metadata stores engine-specific information that engines can write and read.
 	// Used for passing data through the engine chain
 	// (e.g., retry attempts, selected backend, timing info, custom flags).
-	metadata map[any]any
+	metadata *sync.Map
 
 	ctx context.Context
 }
@@ -192,16 +193,15 @@ func (u *Request) GetMetadataValue(key any) (any, bool) {
 	if u.metadata == nil {
 		return nil, false
 	}
-	val, ok := u.metadata[key]
-	return val, ok
+	return u.metadata.Load(key)
 }
 
-// SetMetadataValue sets a value in metadata by key. Initializes metadata map if nil.
+// SetMetadataValue sets a value in metadata by key.
 func (u *Request) SetMetadataValue(key any, value any) {
 	if u.metadata == nil {
-		u.metadata = make(map[any]any)
+		u.metadata = &sync.Map{}
 	}
-	u.metadata[key] = value
+	u.metadata.Store(key, value)
 }
 
 type Response struct {
@@ -240,12 +240,13 @@ func (sc *StreamChan) Close() {
 
 func NewRequest(r *http.Request, format APIFormat) *Request {
 	u := &Request{
-		Method: r.Method,
-		Format: format,
-		URL:    r.URL,
-		Query:  r.URL.Query(),
-		Header: make(http.Header),
-		ctx:    r.Context(),
+		Method:   r.Method,
+		Format:   format,
+		URL:      r.URL,
+		Query:    r.URL.Query(),
+		Header:   make(http.Header),
+		ctx:      r.Context(),
+		metadata: &sync.Map{},
 		Body: &UnifiedBody{
 			reader: r.Body,
 		},

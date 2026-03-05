@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/vertex"
 )
@@ -69,9 +70,9 @@ func TestProcessJSONStream(t *testing.T) {
 	defer cancel()
 
 	endpoint := NewHTTPEndpoint()
-	go endpoint.processJSONStream(ctx, resp, ch, parser, func(value time.Time) {
-		// no-op for test
-	})
+	req := testhelper.CreateTestRequest()
+
+	go endpoint.processJSONStream(ctx, req, resp, ch, parser)
 
 	var chunks []*octollm.StreamChunk
 	done := make(chan bool)

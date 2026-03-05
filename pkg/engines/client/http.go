@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -30,7 +31,13 @@ const (
 	// clientRecvFirstChunkTime stores the timestamp (time.Time) when the first chunk
 	// was received from the upstream HTTP endpoint.
 	clientRecvFirstChunkTime clientMetadataKey = "recv_first_chunk_time"
+
+	// clientProcessStreamError stores any error (error) that occurs during the processing of the stream response.
+	// could be context cancellation, context deadline, scanner error, unexpected EOF, etc.
+	clientProcessStreamError clientMetadataKey = "process_stream_error"
 )
+
+var ErrStreamScan = errors.New("scanner error reading stream body")
 
 func GetClientRecvFirstChunkTime(req *octollm.Request) (time.Time, bool) {
 	if req == nil {
@@ -42,6 +49,18 @@ func GetClientRecvFirstChunkTime(req *octollm.Request) (time.Time, bool) {
 	}
 	t, ok := value.(time.Time)
 	return t, ok
+}
+
+func GetClientProcessStreamError(req *octollm.Request) (error, bool) {
+	if req == nil {
+		return nil, false
+	}
+	value, ok := req.GetMetadataValue(clientProcessStreamError)
+	if !ok {
+		return nil, false
+	}
+	err, ok := value.(error)
+	return err, ok
 }
 
 type HTTPEndpoint struct {
@@ -169,17 +188,13 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 	streamChan := octollm.NewStreamChan(ch, cancel)
 	llmresp := octollm.NewStreamResponse(resp.StatusCode, resp.Header, streamChan)
 
-	setRecvFirstChunkTime := func(recvTime time.Time) {
-		req.SetMetadataValue(clientRecvFirstChunkTime, recvTime)
-	}
-
 	// use a scanner to read SSE messages
 	streamParser, streamingType := e.streamParser(req)
 	switch streamingType {
 	case StreamingTypeSSE:
-		go e.processSSEStream(ctx, resp, ch, streamParser, setRecvFirstChunkTime)
+		go e.processSSEStream(ctx, req, resp, ch, streamParser)
 	case StreamingTypeJSON:
-		go e.processJSONStream(ctx, resp, ch, streamParser, setRecvFirstChunkTime)
+		go e.processJSONStream(ctx, req, resp, ch, streamParser)
 	default:
 		cancel() // just for the linter
 		return nil, fmt.Errorf("unsupported streaming type %s", streamingType)
@@ -189,7 +204,7 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 	return llmresp, nil
 }
 
-func (e *HTTPEndpoint) processSSEStream(ctx context.Context, resp *http.Response, ch chan *octollm.StreamChunk, streamParser octollm.Parser, setRecvFirstChunkTime func(recvTime time.Time)) {
+func (e *HTTPEndpoint) processSSEStream(ctx context.Context, req *octollm.Request, resp *http.Response, ch chan *octollm.StreamChunk, streamParser octollm.Parser) {
 	defer close(ch)
 	defer resp.Body.Close()
 
@@ -200,8 +215,8 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, resp *http.Response
 
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
-		if ctx.Err() != nil {
-			slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] context error during stream response: %v", ctx.Err()))
+		if err := ctx.Err(); err != nil {
+			slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] context error during stream response: %v", err))
 			return
 		}
 		line := scanner.Bytes()
@@ -242,7 +257,7 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, resp *http.Response
 		case "data":
 			if recvFirstChunkTime.IsZero() {
 				recvFirstChunkTime = time.Now()
-				setRecvFirstChunkTime(recvFirstChunkTime)
+				req.SetMetadataValue(clientRecvFirstChunkTime, recvFirstChunkTime)
 			}
 			// find the first non-space byte
 			start := slices.IndexFunc(line[colonIdx+1:], func(b byte) bool {
@@ -260,11 +275,12 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, resp *http.Response
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		req.SetMetadataValue(clientProcessStreamError, fmt.Errorf("%w: %w", ErrStreamScan, err))
 		slog.WarnContext(ctx, fmt.Sprintf("[http-endpoint] scan response body error: %v", err))
 	}
 }
 
-func (e *HTTPEndpoint) processJSONStream(ctx context.Context, resp *http.Response, ch chan *octollm.StreamChunk, streamParser octollm.Parser, setRecvFirstChunkTime func(recvTime time.Time)) {
+func (e *HTTPEndpoint) processJSONStream(ctx context.Context, req *octollm.Request, resp *http.Response, ch chan *octollm.StreamChunk, streamParser octollm.Parser) {
 	defer close(ch)
 	defer resp.Body.Close()
 
@@ -299,7 +315,7 @@ func (e *HTTPEndpoint) processJSONStream(ctx context.Context, resp *http.Respons
 
 		if recvFirstChunkTime.IsZero() {
 			recvFirstChunkTime = time.Now()
-			setRecvFirstChunkTime(recvFirstChunkTime)
+			req.SetMetadataValue(clientRecvFirstChunkTime, recvFirstChunkTime)
 		}
 
 		// Create chunk from raw JSON bytes
