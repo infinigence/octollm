@@ -41,8 +41,11 @@ type deDuctionCallbackKey struct{}
 
 // DoDeduction performs the token deduction based on the value in request metadata.
 // The deduction amount is read from req.GetMetadataValue(deDuctionCallbackKey{}) as int (if present).
-func DoDeduction(req *octollm.Request, used int64) (err error) {
-	ctx := req.Context()
+//
+// The ctx parameter is separate from req's context so that deduction can still run when
+// the request context is canceled (e.g., client disconnect, timeout). In such cases,
+// we must still persist token usage to avoid quota leakage.
+func DoDeduction(ctx context.Context, req *octollm.Request, used int64) (err error) {
 	defer func() {
 		if err != nil {
 			slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] deDuction error: %v", err))

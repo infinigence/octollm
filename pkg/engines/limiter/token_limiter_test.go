@@ -307,7 +307,7 @@ func TestTokenLimiter_Process_SuccessAndDeduction(t *testing.T) {
 	assert.Equal(t, 1, next.callCount)
 
 	// Process sets DeDuctionCallback in metadata; simulate downstream calling DoDeduction with used=4
-	assert.NoError(t, DoDeduction(req, 4))
+	assert.NoError(t, DoDeduction(ctx, req, 4))
 
 	// Deduction callback should have persisted updated tokens (burst - 4)
 	tokensStr, err := client.HGet(ctx, "bucket", "tokens").Result()
@@ -321,7 +321,7 @@ func TestTokenLimiter_Process_SuccessAndDeduction(t *testing.T) {
 
 func TestDoDeduction_WithoutCallbackReturnsError(t *testing.T) {
 	req := newLimiterTestRequest(t)
-	err := DoDeduction(req, 10)
+	err := DoDeduction(context.Background(), req, 10)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "deDuctionCallbacks not found")
 }
@@ -357,7 +357,7 @@ func TestTokenLimiter_Process_StackedEnginesBothKeysDeducted(t *testing.T) {
 
 	// Trigger post-response deduction. Both keys should be created/updated independently.
 	const used int64 = 4
-	assert.NoError(t, DoDeduction(req, used))
+	assert.NoError(t, DoDeduction(context.Background(), req, used))
 
 	ctx := context.Background()
 
