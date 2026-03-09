@@ -178,16 +178,81 @@ func (m MessageContentArray) MarshalJSON() ([]byte, error) {
 type MessageContentItem struct {
 	Type       string                        `json:"type" binding:"required"`
 	Text       string                        `json:"text,omitempty"`
-	ImageURL   *MessageContentItemImageURL   `json:"image_url,omitempty"`
+	ImageURL   ImageURLContent               `json:"image_url,omitempty"`
 	VideoURL   *MessageContentItemVideoURL   `json:"video_url,omitempty"`
 	AudioURL   *MessageContentItemAudioURL   `json:"audio_url,omitempty"`
 	InputAudio *MessageContentItemInputAudio `json:"input_audio,omitempty"`
 	File       *MessageContentItemFile       `json:"file,omitempty"` // Added for Gemini file support
 }
 
+// UnmarshalJSON 实现 MessageContentItem 的自定义 JSON 反序列化，支持 image_url 为 string 或 struct
+func (m *MessageContentItem) UnmarshalJSON(data []byte) error {
+	type Alias struct {
+		Type       string                        `json:"type"`
+		Text       string                        `json:"text,omitempty"`
+		ImageURL   json.RawMessage               `json:"image_url,omitempty"`
+		VideoURL   *MessageContentItemVideoURL   `json:"video_url,omitempty"`
+		AudioURL   *MessageContentItemAudioURL   `json:"audio_url,omitempty"`
+		InputAudio *MessageContentItemInputAudio `json:"input_audio,omitempty"`
+		File       *MessageContentItemFile       `json:"file,omitempty"`
+	}
+
+	var alias Alias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+
+	m.Type = alias.Type
+	m.Text = alias.Text
+	m.VideoURL = alias.VideoURL
+	m.AudioURL = alias.AudioURL
+	m.InputAudio = alias.InputAudio
+	m.File = alias.File
+
+	if len(alias.ImageURL) > 0 {
+		imageURL, err := unmarshalImageURLContent(alias.ImageURL)
+		if err != nil {
+			return err
+		}
+		m.ImageURL = imageURL
+	}
+
+	return nil
+}
+
+// unmarshalImageURLContent 根据 JSON 数据类型解析 ImageURLContent（string 或 struct）
+func unmarshalImageURLContent(data json.RawMessage) (ImageURLContent, error) {
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		return ImageURLString(str), nil
+	}
+
+	var obj MessageContentItemImageURL
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil, err
+	}
+	return &obj, nil
+}
+
 type MessageContentItemImageURL struct {
 	URL    string `json:"url" binding:"required"`
 	Detail string `json:"detail,omitempty"`
+}
+
+func (i *MessageContentItemImageURL) GetImageUrl() string {
+	return i.URL
+}
+
+// ImageURLContent 接口，用于统一获取 image_url（支持 string 或 struct 两种形式）
+type ImageURLContent interface {
+	GetImageUrl() string
+}
+
+// ImageURLString image_url 为 string 类型
+type ImageURLString string
+
+func (i ImageURLString) GetImageUrl() string {
+	return string(i)
 }
 
 type MessageContentItemVideoURL struct {
