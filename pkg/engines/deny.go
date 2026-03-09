@@ -1,6 +1,8 @@
 package engines
 
 import (
+	"errors"
+
 	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
@@ -10,11 +12,14 @@ type DenyEngine struct {
 	HTTPStatusCode int    `json:"http_status_code" yaml:"http_status_code"`
 }
 
+var ErrRequestDenied = errors.New("request denied")
+
 var _ octollm.Engine = (*DenyEngine)(nil)
 
 func (e *DenyEngine) Process(req *octollm.Request) (*octollm.Response, error) {
-	return nil, &errutils.UpstreamRespError{
+	return nil, &errutils.HandlerError{
+		Err:        ErrRequestDenied,
 		StatusCode: e.HTTPStatusCode,
-		Body:       []byte(e.ReasonText),
+		Message:    e.ReasonText,
 	}
 }
