@@ -22,6 +22,10 @@ func (e *HandlerError) Error() string {
 	return e.Err.Error()
 }
 
+func (e *HandlerError) Unwrap() error {
+	return e.Err
+}
+
 func WithHandlerError(r *http.Request, err *HandlerError) *http.Request {
 	ctx := context.WithValue(r.Context(), errorKey, err)
 	return r.WithContext(ctx)
