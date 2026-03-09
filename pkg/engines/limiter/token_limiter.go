@@ -7,10 +7,12 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/infinigence/octollm/pkg/octollm"
 )
+
+var ErrLimiterInternalError = errors.New("limiter internal error")
 
 // TokenLimiterEngine is a token-bucket-based limiter that supports negative balances
 // and post-response token deduction based on request metadata.
@@ -165,8 +167,8 @@ func (e *TokenLimiterEngine) allow(ctx context.Context) error {
 	}
 
 	// Default values if not set
-	var tokens int64 = int64(e.burst)
-	var lastRefill int64 = nowUnix
+	tokens := int64(e.burst)
+	lastRefill := nowUnix
 
 	if len(result) == 2 {
 		if v, ok := result[0].(string); ok && v != "" {
@@ -197,13 +199,12 @@ func (e *TokenLimiterEngine) allow(ctx context.Context) error {
 		if tokens > int64(e.burst) {
 			tokens = int64(e.burst)
 		}
-		lastRefill = nowUnix
 	}
 
 	// Check if we have at least 1 nominal token left to allow this request.
 	if tokens <= 0 {
 		slog.WarnContext(ctx, fmt.Sprintf("[TokenLimiterEngine] request limit reached, key: %s, tokens: %d, burst: %d", e.key, tokens, e.burst))
-		return errRequestLimitReached
+		return ErrRequestLimitReached
 	}
 
 	return nil
@@ -294,18 +295,8 @@ func (e *TokenLimiterEngine) Process(req *octollm.Request) (*octollm.Response, e
 
 	// Pre-check using token bucket
 	if err := e.allow(ctx); err != nil {
-		if err == errRequestLimitReached {
-			slog.WarnContext(ctx, fmt.Sprintf("[TokenLimiterEngine] token limit reached, key: %s", e.key))
-			return nil, &errutils.UpstreamRespError{
-				StatusCode: 429,
-				Body:       []byte("token limit reached"),
-			}
-		}
 		slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] token limiter error: %v, key: %s", err, e.key))
-		return nil, &errutils.UpstreamRespError{
-			StatusCode: 500,
-			Body:       []byte("internal server error"),
-		}
+		return nil, err
 	}
 
 	// Add deduction callback to request metadata
@@ -319,10 +310,7 @@ func (e *TokenLimiterEngine) Process(req *octollm.Request) (*octollm.Response, e
 		callbacks, ok := deDuctionCallbacks.(DeDuctionCallbacks)
 		if !ok {
 			slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] DeDuctionCallbacks type assertion failed in token limiter engine"))
-			return nil, &errutils.UpstreamRespError{
-				StatusCode: 500,
-				Body:       []byte("DeDuctionCallbacks type assertion failed in token limiter engine"),
-			}
+			return nil, fmt.Errorf("%w: DeDuctionCallbacks type assertion failed", ErrLimiterInternalError)
 		}
 		callbacks.callbacks = append(callbacks.callbacks, func(ctx context.Context, used int64) error {
 			return e.deduction(ctx, used)

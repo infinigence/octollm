@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 type ConcurrencyColorLimiterEngine struct {
@@ -154,7 +154,7 @@ func (e *ConcurrencyColorLimiterEngine) allow(ctx context.Context) (done func(),
 
 		if acquiredInt == 0 {
 			slog.WarnContext(ctx, fmt.Sprintf("tier 0 concurrency limit %d reached, current: %d, key: %s", tier0Limit, tier0Count, tier0Key))
-			return func() {}, errRateLimitReached
+			return func() {}, ErrRateLimitReached
 		}
 
 		// Start renewal goroutine
@@ -205,7 +205,7 @@ func (e *ConcurrencyColorLimiterEngine) allow(ctx context.Context) (done func(),
 		if acquiredInt == 0 {
 			slog.WarnContext(ctx, fmt.Sprintf("concurrency limit reached for priority %d (tier %d), ownCount: %d/%d, tier0Count: %d/%d (reserved: %d)",
 				priority, tierIdx, ownCount, ownLimit, tier0Count, tier0Limit, reservedSlots))
-			return func() {}, errRateLimitReached
+			return func() {}, ErrRateLimitReached
 		}
 
 		// Start renewal goroutine
@@ -235,18 +235,8 @@ func (e *ConcurrencyColorLimiterEngine) Process(req *octollm.Request) (*octollm.
 	// Use allow method to perform rate limiting
 	done, err := e.allow(ctx)
 	if err != nil {
-		if err == errRateLimitReached {
-			slog.WarnContext(ctx, fmt.Sprintf("concurrency rate limiter: rate limit reached, key: %s", e.key))
-			return nil, &errutils.UpstreamRespError{
-				StatusCode: 429,
-				Body:       []byte("rate limit reached"),
-			}
-		}
 		slog.ErrorContext(ctx, fmt.Sprintf("concurrency rate limiter error: %v, key: %s", err, e.key))
-		return nil, &errutils.UpstreamRespError{
-			StatusCode: 500,
-			Body:       []byte("internal server error"),
-		}
+		return nil, err
 	}
 
 	// Process request

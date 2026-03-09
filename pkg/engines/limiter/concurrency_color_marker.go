@@ -7,14 +7,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/infinigence/octollm/pkg/octollm"
 )
-
-// Use unified priority context key
-
-var errRateLimitReached = fmt.Errorf("rate limit reached")
 
 type ConcurrencyColorMarkerEngine struct {
 	redisClient   *redis.Client
@@ -143,7 +139,7 @@ func (e *ConcurrencyColorMarkerEngine) allow(ctx context.Context) (newCtx contex
 	if acquired == 0 {
 		// All tiers exhausted
 		slog.WarnContext(ctx, fmt.Sprintf("all tiers exhausted, key: %s", e.key))
-		return ctx, func() {}, errRateLimitReached
+		return ctx, func() {}, ErrRateLimitReached
 	}
 
 	// acquired > 0: priority (1-based in Lua, convert to 0-based)
@@ -190,18 +186,8 @@ func (e *ConcurrencyColorMarkerEngine) Process(req *octollm.Request) (*octollm.R
 	// Use allow method to perform coloring
 	newCtx, done, err := e.allow(ctx)
 	if err != nil {
-		if err == errRateLimitReached {
-			slog.WarnContext(ctx, fmt.Sprintf("concurrency marker: rate limit reached, key: %s", e.key))
-			return nil, &errutils.UpstreamRespError{
-				StatusCode: 429,
-				Body:       []byte("rate limit reached"),
-			}
-		}
 		slog.ErrorContext(ctx, fmt.Sprintf("concurrency marker error: %v, key: %s", err, e.key))
-		return nil, &errutils.UpstreamRespError{
-			StatusCode: 500,
-			Body:       []byte("internal server error"),
-		}
+		return nil, err
 	}
 
 	// Use WithContext method to set new context

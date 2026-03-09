@@ -9,10 +9,10 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
-	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 type nextStubEngine struct {
@@ -138,7 +138,7 @@ func TestTokenLimiter_allow_DeniedWhenTokensExhausted(t *testing.T) {
 	assert.NoError(t, err)
 
 	err = e.allow(ctx)
-	assert.ErrorIs(t, err, errRequestLimitReached)
+	assert.ErrorIs(t, err, ErrRequestLimitReached)
 }
 
 func TestTokenLimiter_allow_AllowedWhenTokensAvailable(t *testing.T) {
@@ -252,9 +252,7 @@ func TestTokenLimiter_Process_RequestLimitReachedAndInternalError(t *testing.T) 
 	resp, err := e.Process(req)
 	assert.Nil(t, resp)
 
-	var upErr *errutils.UpstreamRespError
-	assert.ErrorAs(t, err, &upErr)
-	assert.Equal(t, http.StatusTooManyRequests, upErr.StatusCode)
+	assert.ErrorIs(t, err, ErrRequestLimitReached)
 
 	// Case 2: internal error due to TTL read failure
 	mr2 := miniredis.RunT(t)
@@ -268,9 +266,7 @@ func TestTokenLimiter_Process_RequestLimitReachedAndInternalError(t *testing.T) 
 	resp2, err := e2.Process(req2)
 	assert.Nil(t, resp2)
 
-	upErr = nil
-	assert.ErrorAs(t, err, &upErr)
-	assert.Equal(t, http.StatusInternalServerError, upErr.StatusCode)
+	assert.Error(t, err)
 }
 
 func TestTokenLimiter_Process_SuccessAndDeduction(t *testing.T) {

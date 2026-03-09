@@ -7,9 +7,9 @@ import (
 	"math"
 	"time"
 
-	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 // RequestColorMarkerEngine is a multi-tier token bucket-based request rate limiter with priority marking.
@@ -162,7 +162,7 @@ func (e *RequestColorMarkerEngine) allow(ctx context.Context) (newCtx context.Co
 	if acquired == 0 {
 		// All tiers exhausted
 		slog.WarnContext(ctx, fmt.Sprintf("[RequestColorMarkerEngine] all tiers exhausted, keyPrefix: %s", e.keyPrefix))
-		return ctx, func() {}, errRateLimitReached
+		return ctx, func() {}, ErrRateLimitReached
 	}
 
 	// acquired > 0: priority (1-based in Lua, convert to 0-based)
@@ -183,18 +183,8 @@ func (e *RequestColorMarkerEngine) Process(req *octollm.Request) (*octollm.Respo
 	// Use allow method to perform rate limiting and priority marking
 	newCtx, done, err := e.allow(ctx)
 	if err != nil {
-		if err == errRateLimitReached {
-			slog.WarnContext(ctx, fmt.Sprintf("[RequestColorMarkerEngine] rate limit reached, keyPrefix: %s", e.keyPrefix))
-			return nil, &errutils.UpstreamRespError{
-				StatusCode: 429,
-				Body:       []byte("rate limit reached"),
-			}
-		}
 		slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorMarkerEngine] marker error: %v, keyPrefix: %s", err, e.keyPrefix))
-		return nil, &errutils.UpstreamRespError{
-			StatusCode: 500,
-			Body:       []byte("internal server error"),
-		}
+		return nil, err
 	}
 
 	// Use WithContext method to set new context with priority

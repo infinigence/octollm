@@ -2,14 +2,15 @@ package limiter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"time"
 
-	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 // RequestLimiterEngine is a token bucket-based request rate limiter
@@ -26,7 +27,7 @@ type RequestLimiterEngine struct {
 
 var _ octollm.Engine = (*RequestLimiterEngine)(nil)
 
-var errRequestLimitReached = fmt.Errorf("request limit reached")
+var ErrRateLimitReached = errors.New("rate limit reached")
 
 // NewRequestLimiterEngine creates a token bucket-based request rate limiter engine
 // redisClient: Redis client
@@ -112,7 +113,7 @@ func (e *RequestLimiterEngine) allow(ctx context.Context) (done func(), err erro
 
 	if allowed == 0 {
 		slog.WarnContext(ctx, fmt.Sprintf("[RequestLimiterEngine] request limit reached, key: %s, tokens: %d, burst: %d", e.key, tokens, e.burst))
-		return func() {}, errRequestLimitReached
+		return func() {}, ErrRequestLimitReached
 	}
 
 	slog.DebugContext(ctx, fmt.Sprintf("[RequestLimiterEngine] request allowed, key: %s, tokens: %d/%d", e.key, tokens, e.burst))
@@ -129,18 +130,8 @@ func (e *RequestLimiterEngine) Process(req *octollm.Request) (*octollm.Response,
 	// Use allow method to perform rate limiting
 	done, err := e.allow(ctx)
 	if err != nil {
-		if err == errRequestLimitReached {
-			slog.WarnContext(ctx, fmt.Sprintf("[RequestLimiterEngine] request limit reached, key: %s", e.key))
-			return nil, &errutils.UpstreamRespError{
-				StatusCode: 429,
-				Body:       []byte("request limit reached"),
-			}
-		}
 		slog.ErrorContext(ctx, fmt.Sprintf("[RequestLimiterEngine] request limiter error: %v, key: %s", err, e.key))
-		return nil, &errutils.UpstreamRespError{
-			StatusCode: 500,
-			Body:       []byte("internal server error"),
-		}
+		return nil, err
 	}
 
 	// Process request

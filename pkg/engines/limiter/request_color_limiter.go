@@ -2,14 +2,15 @@ package limiter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"time"
 
-	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 // RequestColorLimiterEngine is a multi-tier token bucket-based priority rate limiter.
@@ -29,7 +30,7 @@ type RequestColorLimiterEngine struct {
 
 var _ octollm.Engine = (*RequestColorLimiterEngine)(nil)
 
-var errRequestRateLimitReached = fmt.Errorf("request rate limit reached")
+var ErrRequestLimitReached = errors.New("request limit reached")
 
 // NewRequestColorLimiterEngine creates a multi-tier token bucket-based priority rate limiter
 // redisClient: Redis client
@@ -188,7 +189,7 @@ func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), err
 			slog.InfoContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] max priority request allowed, consumed from tier 0, tokens: %d/%d", tokens, burst))
 		} else {
 			slog.WarnContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] tier 0 rejected, tokens: %d/%d, key: %s", tokens, burst, key))
-			return func() {}, errRequestRateLimitReached
+			return func() {}, ErrRateLimitReached
 		}
 	} else {
 		// Non-max priority: atomically consume from both own tier and tier 0 with reservation
@@ -227,7 +228,7 @@ func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), err
 		} else {
 			slog.WarnContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] request rejected with priority %d (tier %d), ownTokens: %d/%d, tier0Tokens: %d/%d (reserved: %d)",
 				priority, tierIdx, ownTokens, ownBurst, tier0Tokens, tier0Burst, reservedTokens))
-			return func() {}, errRequestRateLimitReached
+			return func() {}, ErrRateLimitReached
 		}
 	}
 
@@ -242,18 +243,8 @@ func (e *RequestColorLimiterEngine) Process(req *octollm.Request) (*octollm.Resp
 	// Use allow method to perform rate limiting
 	done, err := e.allow(ctx)
 	if err != nil {
-		if err == errRequestRateLimitReached {
-			slog.WarnContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] request rate limit reached, keyPrefix: %s", e.keyPrefix))
-			return nil, &errutils.UpstreamRespError{
-				StatusCode: 429,
-				Body:       []byte("request rate limit reached"),
-			}
-		}
 		slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] request rate limiter error: %v, keyPrefix: %s", err, e.keyPrefix))
-		return nil, &errutils.UpstreamRespError{
-			StatusCode: 500,
-			Body:       []byte("internal server error"),
-		}
+		return nil, err
 	}
 
 	// Process request

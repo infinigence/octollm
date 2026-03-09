@@ -2,14 +2,15 @@ package limiter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 type ConcurrencyLimiterEngine struct {
@@ -25,7 +26,7 @@ type ConcurrencyLimiterEngine struct {
 
 var _ octollm.Engine = (*ConcurrencyLimiterEngine)(nil)
 
-var errConcurrencyLimitReached = fmt.Errorf("concurrency limit reached")
+var ErrConcurrencyLimitReached = errors.New("concurrency limit reached")
 
 // NewConcurrencyLimiterEngine creates a simple concurrency limiter engine
 // redisClient: Redis client
@@ -100,7 +101,7 @@ func (e *ConcurrencyLimiterEngine) allow(ctx context.Context) (done func(), err 
 
 	if acquiredInt == 0 {
 		slog.WarnContext(ctx, fmt.Sprintf("concurrency limit %d reached, current: %d, key: %s", e.concurrency, currentCount, e.key))
-		return func() {}, errConcurrencyLimitReached
+		return func() {}, ErrConcurrencyLimitReached
 	}
 
 	// Start renewal goroutine
@@ -134,18 +135,8 @@ func (e *ConcurrencyLimiterEngine) Process(req *octollm.Request) (*octollm.Respo
 	// Use allow method to perform rate limiting
 	done, err := e.allow(ctx)
 	if err != nil {
-		if err == errConcurrencyLimitReached {
-			slog.WarnContext(ctx, fmt.Sprintf("concurrency limiter: limit reached, key: %s", e.key))
-			return nil, &errutils.UpstreamRespError{
-				StatusCode: 429,
-				Body:       []byte("concurrency limit reached"),
-			}
-		}
 		slog.ErrorContext(ctx, fmt.Sprintf("concurrency limiter error: %v, key: %s", err, e.key))
-		return nil, &errutils.UpstreamRespError{
-			StatusCode: 500,
-			Body:       []byte("internal server error"),
-		}
+		return nil, err
 	}
 
 	// Process request
