@@ -36,6 +36,25 @@ type TextModeratorEngine struct {
 	Next octollm.Engine
 }
 
+type moderatorMetadataKey string
+
+const (
+	// isSpamKey is the metadata key used to mark a request whose output was blocked by the moderator. Value type: bool.
+	isSpamKey moderatorMetadataKey = "is_spam"
+)
+
+func GetIsSpam(req *octollm.Request) (bool, bool) {
+	if req == nil {
+		return false, false
+	}
+	value, ok := req.GetMetadataValue(isSpamKey)
+	if !ok {
+		return false, false
+	}
+	isSpam, ok := value.(bool)
+	return isSpam, ok
+}
+
 var _ octollm.Engine = (*TextModeratorEngine)(nil)
 
 func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, error) {
@@ -78,6 +97,7 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 		if err := e.ModeratorService.Allow(req.Context(), text); err != nil {
 			replacement := e.TextModeratorAdapter.GetReplacementBody(req.Context(), resp.Body)
 			resp.Body.Close()
+			req.SetMetadataValue(isSpamKey, true)
 			if replacement != nil {
 				resp.Body = replacement
 				return resp, nil
@@ -163,6 +183,8 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 
 		if moderationFailedErr != nil {
 			// get replacement chunk
+			req.SetMetadataValue(isSpamKey, true)
+
 			originalChunks.Close()
 			if len(chunkBuffer) > 0 {
 				replacement := e.TextModeratorAdapter.GetReplacementBody(req.Context(), chunkBuffer[0].Body)
