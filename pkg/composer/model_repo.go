@@ -232,11 +232,14 @@ func (m *ModelRepoFileBased) BuildEngineByBackend(b *Backend) (octollm.Engine, e
 	}
 
 	llmGE := client.NewGeneralEndpoint(*generalConf)
-	llmEngine = llmGE
+	// Always use cliManager to get a client with otelhttp wrapper for trace propagation
+	// GetClient("") returns the default client if no proxy is specified
+	var proxyURL string
 	if b.HTTPProxy != nil {
-		httpCli := m.cliManager.GetClient(*b.HTTPProxy)
-		llmEngine = llmGE.WithClient(httpCli)
+		proxyURL = *b.HTTPProxy
 	}
+	httpCli := m.cliManager.GetClient(proxyURL)
+	llmEngine = llmGE.WithClient(httpCli)
 
 	if b.PostRequestRewrites != nil {
 		llmEngine = engines.NewRewriteEngine(
