@@ -8,7 +8,6 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
-	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -24,6 +23,7 @@ func newRequestLimiterTestRequest(t *testing.T) *octollm.Request {
 // TestRequestLimiter_2PerMinute_1PerSecond_35Seconds tests: 2 requests per minute, 1 request per second, for 35 seconds.
 // Expected: first 2 pass, ~28 rejected in between, 3rd passes around second 31 (token refills in ~30s).
 func TestRequestLimiter_2PerMinute_1PerSecond_35Seconds(t *testing.T) {
+	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 
@@ -49,12 +49,7 @@ func TestRequestLimiter_2PerMinute_1PerSecond_35Seconds(t *testing.T) {
 			t.Logf("[sec %2d] request #%2d: allowed (next.callCount=%d)", i, i+1, next.callCount)
 		} else {
 			deniedCount++
-			var upErr *errutils.UpstreamRespError
-			statusCode := 0
-			if assert.ErrorAs(t, err, &upErr) {
-				statusCode = upErr.StatusCode
-			}
-			t.Logf("[sec %2d] request #%2d: rate limited (status=%d, err=%v)", i, i+1, statusCode, err)
+			t.Logf("[sec %2d] request #%2d: rate limited (err=%v)", i, i+1, err)
 		}
 
 		// 1 request per second

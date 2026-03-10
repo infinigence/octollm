@@ -8,7 +8,6 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
-	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -59,6 +58,7 @@ func TestRequestColorMarker_PassThroughWhenDisabled(t *testing.T) {
 }
 
 func TestRequestColorMarker_MultiTier_AcquirePriority(t *testing.T) {
+	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 
@@ -102,13 +102,12 @@ func TestRequestColorMarker_MultiTier_AcquirePriority(t *testing.T) {
 	resp, err := e.Process(req)
 	assert.Error(t, err)
 	assert.Nil(t, resp)
-	var upErr *errutils.UpstreamRespError
-	assert.ErrorAs(t, err, &upErr)
-	assert.Equal(t, 429, upErr.StatusCode)
+	assert.ErrorIs(t, err, ErrRateLimitReached)
 	assert.Equal(t, 10, next.callCount)
 }
 
 func TestRequestColorMarker_RefillOverTime(t *testing.T) {
+	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 

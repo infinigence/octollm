@@ -9,10 +9,10 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
-	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 func newRequestColorLimiterTestRequest(t *testing.T, nameSpace string, priority int) *octollm.Request {
@@ -63,6 +63,7 @@ func TestRequestColorLimiter_PassThroughWhenDisabled(t *testing.T) {
 }
 
 func TestRequestColorLimiter_PriorityInContext(t *testing.T) {
+	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 
@@ -88,9 +89,7 @@ func TestRequestColorLimiter_PriorityInContext(t *testing.T) {
 	req := newRequestColorLimiterTestRequest(t, ns, 2)
 	_, err = e.Process(req)
 	assert.Error(t, err)
-	var upErr *errutils.UpstreamRespError
-	assert.ErrorAs(t, err, &upErr)
-	assert.Equal(t, 429, upErr.StatusCode)
+	assert.ErrorIs(t, err, ErrRateLimitReached)
 	assert.Equal(t, 5, next.callCount)
 
 	// Priority 1: use fresh engine/keyPrefix so tier 0 has tokens
@@ -125,6 +124,7 @@ func TestRequestColorLimiter_PriorityInContext(t *testing.T) {
 }
 
 func TestRequestColorLimiter_MarkerChain(t *testing.T) {
+	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 
@@ -159,6 +159,7 @@ func TestRequestColorLimiter_MarkerChain(t *testing.T) {
 }
 
 func TestRequestColorLimiter_NoPriorityDefaultsToLowest(t *testing.T) {
+	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 
