@@ -8,8 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 // ShardKeyWeightedRoundRobin implements a weighted round-robin load balancer with shard key support.
@@ -229,6 +230,11 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			return resp, nil
 		}
 		retryCount++
+		if req.Context().Err() != nil {
+			// if context is done, return immediately without retrying
+			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] request context error: %v", req.Context().Err()))
+			return resp, err
+		}
 		if time.Since(start) >= l.retryTimeout {
 			// retry period reached, return last resp and err
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] retry period %v reached, return last resp and err", l.retryTimeout))
@@ -245,11 +251,11 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 
 // GetNextEngine applies the shard-key aware WRR selection.
 // Step for each pick:
-//   1) Compute totalWeight and threshold = -minWeightMultiple * totalWeight.
-//   2) If prioritizedBackend is non-empty and its backend's currentWeight >= threshold, pick it;
-//      otherwise pick the backend with the largest currentWeight among those whose currentWeight >= threshold.
-//   3) For the selected backend, subtract totalWeight from its currentWeight.
-//   4) Then, for all backends, add their own weight once (currentWeight += weight).
+//  1. Compute totalWeight and threshold = -minWeightMultiple * totalWeight.
+//  2. If prioritizedBackend is non-empty and its backend's currentWeight >= threshold, pick it;
+//     otherwise pick the backend with the largest currentWeight among those whose currentWeight >= threshold.
+//  3. For the selected backend, subtract totalWeight from its currentWeight.
+//  4. Then, for all backends, add their own weight once (currentWeight += weight).
 func (l *ShardKeyWeightedRoundRobin) GetNextEngine(prioritizedBackend string) (string, octollm.Engine) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

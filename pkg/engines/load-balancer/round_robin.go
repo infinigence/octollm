@@ -101,6 +101,10 @@ func (l *WeightedRoundRobin) Process(req *octollm.Request) (*octollm.Response, e
 			return resp, nil
 		}
 		retryCount++
+		if req.Context().Err() != nil {
+			slog.WarnContext(req.Context(), fmt.Sprintf("[WRR load balancer] request context error: %v", req.Context().Err()))
+			return resp, err
+		}
 		if time.Since(start) >= l.retryTimeout {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[WRR load balancer] retry peroid %v reached, return last resp and err", l.retryTimeout))
 			return resp, err
