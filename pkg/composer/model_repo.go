@@ -2,12 +2,14 @@ package composer
 
 import (
 	"fmt"
+	"net/http"
 	"sync"
 
 	"github.com/infinigence/octollm/pkg/engines"
 	"github.com/infinigence/octollm/pkg/engines/client"
 	"github.com/infinigence/octollm/pkg/engines/converter"
 	"github.com/infinigence/octollm/pkg/octollm"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type ModelRepo interface {
@@ -27,7 +29,9 @@ var _ ModelRepo = (*ModelRepoFileBased)(nil)
 
 func NewModelRepoFileBased() *ModelRepoFileBased {
 	return &ModelRepoFileBased{
-		cliManager:         NewProxyClientManager(nil),
+		cliManager: NewProxyClientManager(func(base http.RoundTripper) http.RoundTripper {
+			return otelhttp.NewTransport(base)
+		}),
 		modelBackendConfig: make(map[string]map[string]*Backend),
 		modelBackendEngine: make(map[string]map[string]octollm.Engine),
 	}
