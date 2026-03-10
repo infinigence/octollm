@@ -6,6 +6,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
@@ -40,6 +41,14 @@ func initOpenTelemetry(ctx context.Context, serviceName string) (func(context.Co
 
 	// Set global tracer provider
 	otel.SetTracerProvider(tp)
+
+	// CRITICAL: Set global propagator to enable trace context propagation
+	// This allows trace IDs to be extracted from incoming HTTP requests
+	// and injected into outgoing HTTP requests
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{}, // W3C Trace Context format (traceparent header)
+		propagation.Baggage{},      // W3C Baggage format
+	))
 
 	slog.Info("OpenTelemetry initialized", slog.String("service_name", serviceName))
 
