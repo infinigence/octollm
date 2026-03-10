@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/infinigence/octollm/pkg/errutils"
@@ -18,6 +19,7 @@ type RequestLimiterEngine struct {
 	burst             int           // Maximum number of tokens
 	rate              float64       // Number of tokens added per second
 	window            time.Duration // Time window
+	ttlSec            int64         // Redis key TTL in seconds; when expired, bucket is guaranteed full
 	tokenBucketScript *redis.Script
 	next              octollm.Engine
 }
@@ -49,6 +51,7 @@ func NewRequestLimiterEngine(redisClient *redis.Client, key string, burst int, l
 			burst:             0,
 			rate:              0,
 			window:            0,
+			ttlSec:            0,
 			tokenBucketScript: nil,
 			next:              next,
 		}, nil
@@ -62,12 +65,19 @@ func NewRequestLimiterEngine(redisClient *redis.Client, key string, burst int, l
 	// This ensures that within the time window, at most 'limit' requests can pass through
 	rate := float64(limit) / window.Seconds()
 
+	// TTL = time to refill from 0 to burst + 1s buffer; when expired, bucket is guaranteed full
+	ttlSec := int64(math.Ceil(float64(burst)/rate)) + 1
+	if ttlSec < 1 {
+		ttlSec = 1
+	}
+
 	return &RequestLimiterEngine{
 		redisClient:       redisClient,
 		key:               key,
 		burst:             burst,
 		rate:              rate,
 		window:            window,
+		ttlSec:            ttlSec,
 		tokenBucketScript: redis.NewScript(tokenBucketLuaScript),
 		next:              next,
 	}, nil
@@ -82,11 +92,10 @@ func (e *RequestLimiterEngine) allow(ctx context.Context) (done func(), err erro
 
 	now := time.Now()
 	nowUnix := now.Unix()
-	windowSeconds := int64(e.window.Seconds())
 
 	// Use Lua script to implement token bucket algorithm
 	result, err := e.tokenBucketScript.Run(ctx, e.redisClient, []string{e.key},
-		e.burst, e.rate, nowUnix, windowSeconds).Result()
+		e.burst, e.rate, nowUnix, e.ttlSec).Result()
 	if err != nil {
 		slog.ErrorContext(ctx, fmt.Sprintf("[RequestLimiterEngine] token bucket script error: %v, key: %s", err, e.key))
 		return func() {}, fmt.Errorf("token bucket script error: %w", err)
@@ -148,13 +157,13 @@ func (e *RequestLimiterEngine) Process(req *octollm.Request) (*octollm.Response,
 // ARGV[1]: burst (maximum number of tokens)
 // ARGV[2]: rate (number of tokens added per second)
 // ARGV[3]: nowUnix (current timestamp)
-// ARGV[4]: windowSeconds (time window in seconds)
+// ARGV[4]: ttlSec (Redis key TTL in seconds; when expired, bucket is guaranteed full)
 const tokenBucketLuaScript = `
 local key = KEYS[1]
 local burst = tonumber(ARGV[1])
 local rate = tonumber(ARGV[2])
 local nowUnix = tonumber(ARGV[3])
-local windowSeconds = tonumber(ARGV[4])
+local ttlSec = tonumber(ARGV[4])
 
 -- Get current token bucket state
 local bucket = redis.call('HMGET', key, 'tokens', 'lastRefill')
@@ -173,11 +182,10 @@ local allowed = 0
 if tokens >= 1 then
     tokens = tokens - 1
     allowed = 1
+	redis.call('HMSET', key, 'tokens', tokens, 'lastRefill', nowUnix)
+	redis.call('EXPIRE', key, ttlSec)
 end
 
--- Update token bucket state
-redis.call('HMSET', key, 'tokens', tokens, 'lastRefill', nowUnix)
-redis.call('EXPIRE', key, windowSeconds * 2)
 
 return {allowed, tokens}
 `

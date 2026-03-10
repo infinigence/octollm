@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/infinigence/octollm/pkg/errutils"
@@ -18,6 +19,7 @@ type RequestColorLimiterEngine struct {
 	keyPrefix             string        // Redis key prefix for storing token bucket states
 	limits                []int         // Request limits for each supported priority tier (must be strictly decreasing)
 	rates                 []float64     // Token refill rates for each priority tier (calculated from limits and window)
+	ttls                  []int64       // Redis key TTL in seconds per tier; when expired, bucket is guaranteed full
 	window                time.Duration // Time window
 	nameSpace             string        // Namespace for priority context isolation
 	tokenBucketScript     *redis.Script
@@ -81,6 +83,7 @@ func NewRequestColorLimiterEngine(redisClient *redis.Client, keyPrefix string, l
 			keyPrefix:             keyPrefix,
 			limits:                nil,
 			rates:                 nil,
+			ttls:                  nil,
 			window:                0,
 			nameSpace:             nameSpace,
 			tokenBucketScript:     nil,
@@ -99,10 +102,16 @@ func NewRequestColorLimiterEngine(redisClient *redis.Client, keyPrefix string, l
 		return nil, fmt.Errorf("window must be positive")
 	}
 
-	// Calculate rate for each tier: rate = limit / window (in seconds)
+	// Calculate rate and TTL for each tier
 	rates := make([]float64, len(filteredLimits))
+	ttls := make([]int64, len(filteredLimits))
 	for i, limit := range filteredLimits {
 		rates[i] = float64(limit) / window.Seconds()
+		ttlSec := int64(math.Ceil(float64(limit)/rates[i])) + 1
+		if ttlSec < 1 {
+			ttlSec = 1
+		}
+		ttls[i] = ttlSec
 	}
 
 	return &RequestColorLimiterEngine{
@@ -110,6 +119,7 @@ func NewRequestColorLimiterEngine(redisClient *redis.Client, keyPrefix string, l
 		keyPrefix:             keyPrefix,
 		limits:                filteredLimits,
 		rates:                 rates,
+		ttls:                  ttls,
 		window:                window,
 		nameSpace:             nameSpace,
 		tokenBucketScript:     redis.NewScript(tokenBucketLuaScript),
@@ -133,7 +143,6 @@ func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), err
 
 	now := time.Now()
 	nowUnix := now.Unix()
-	windowSeconds := int64(e.window.Seconds())
 
 	// Calculate max supported priority: len(limits) - 1
 	maxSupportedPriority := len(e.limits) - 1
@@ -160,7 +169,7 @@ func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), err
 		rate := e.rates[0]
 
 		result, err := e.tokenBucketScript.Run(ctx, e.redisClient, []string{key},
-			burst, rate, nowUnix, windowSeconds).Result()
+			burst, rate, nowUnix, e.ttls[0]).Result()
 		if err != nil {
 			slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] token bucket script error for tier 0: %v, key: %s", err, key))
 			return func() {}, fmt.Errorf("token bucket script error: %w", err)
@@ -196,7 +205,7 @@ func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), err
 
 		// Use atomic dual-key Lua script: check both, consume both or consume neither
 		result, err := e.dualTokenBucketScript.Run(ctx, e.redisClient, []string{ownKey, tier0Key},
-			ownBurst, ownRate, tier0Burst, tier0Rate, nowUnix, windowSeconds, reservedTokens).Result()
+			ownBurst, ownRate, tier0Burst, tier0Rate, nowUnix, e.ttls[tierIdx], e.ttls[0], reservedTokens).Result()
 		if err != nil {
 			slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] dual token bucket script error: %v, ownKey: %s, tier0Key: %s", err, ownKey, tier0Key))
 			return func() {}, fmt.Errorf("token bucket script error: %w", err)
@@ -279,8 +288,9 @@ func (e *RequestColorLimiterEngine) getPriorityFromContext(ctx context.Context) 
 // ARGV[3]: tier0Burst (maximum tokens for tier 0)
 // ARGV[4]: tier0Rate (refill rate for tier 0)
 // ARGV[5]: nowUnix (current timestamp)
-// ARGV[6]: windowSeconds (time window in seconds)
-// ARGV[7]: reservedTokens (tokens to reserve in tier 0 for higher priority)
+// ARGV[6]: ownTtl (Redis key TTL in seconds for own tier)
+// ARGV[7]: tier0Ttl (Redis key TTL in seconds for tier 0)
+// ARGV[8]: reservedTokens (tokens to reserve in tier 0 for higher priority)
 // Returns: {allowed, ownTokens, tier0Tokens}
 const dualTokenBucketLuaScript = `
 local ownKey = KEYS[1]
@@ -290,8 +300,9 @@ local ownRate = tonumber(ARGV[2])
 local tier0Burst = tonumber(ARGV[3])
 local tier0Rate = tonumber(ARGV[4])
 local nowUnix = tonumber(ARGV[5])
-local windowSeconds = tonumber(ARGV[6])
-local reservedTokens = tonumber(ARGV[7])
+local ownTtl = tonumber(ARGV[6])
+local tier0Ttl = tonumber(ARGV[7])
+local reservedTokens = tonumber(ARGV[8])
 
 -- Get own tier bucket state
 local ownBucket = redis.call('HMGET', ownKey, 'tokens', 'lastRefill')
@@ -323,15 +334,9 @@ if ownTokens >= 1 and tier0Tokens > reservedTokens then
     
     -- Update both buckets
     redis.call('HMSET', ownKey, 'tokens', ownTokens, 'lastRefill', nowUnix)
-    redis.call('EXPIRE', ownKey, windowSeconds * 2)
     redis.call('HMSET', tier0Key, 'tokens', tier0Tokens, 'lastRefill', nowUnix)
-    redis.call('EXPIRE', tier0Key, windowSeconds * 2)
-else
-    -- Conditions not met, only update refill times without consuming
-    redis.call('HMSET', ownKey, 'tokens', ownTokens, 'lastRefill', nowUnix)
-    redis.call('EXPIRE', ownKey, windowSeconds * 2)
-    redis.call('HMSET', tier0Key, 'tokens', tier0Tokens, 'lastRefill', nowUnix)
-    redis.call('EXPIRE', tier0Key, windowSeconds * 2)
+	redis.call('EXPIRE', ownKey, ownTtl)
+    redis.call('EXPIRE', tier0Key, tier0Ttl)
 end
 
 return {allowed, ownTokens, tier0Tokens}

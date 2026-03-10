@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/infinigence/octollm/pkg/errutils"
@@ -18,6 +19,7 @@ type RequestColorMarkerEngine struct {
 	keyPrefix         string        // Redis key prefix for storing token bucket states
 	limits            []int         // Request limits for each priority tier (must be strictly increasing)
 	rates             []float64     // Token refill rates for each priority tier (calculated from limits and window)
+	ttls              []int64       // Redis key TTL in seconds per tier; when expired, bucket is guaranteed full
 	window            time.Duration // Time window
 	nameSpace         string        // Namespace for priority context isolation
 	tokenBucketScript *redis.Script
@@ -71,6 +73,7 @@ func NewRequestColorMarkerEngine(redisClient *redis.Client, keyPrefix string, li
 			keyPrefix:         keyPrefix,
 			limits:            nil,
 			rates:             nil,
+			ttls:              nil,
 			window:            0,
 			nameSpace:         nameSpace,
 			tokenBucketScript: nil,
@@ -88,10 +91,16 @@ func NewRequestColorMarkerEngine(redisClient *redis.Client, keyPrefix string, li
 		return nil, fmt.Errorf("window must be positive")
 	}
 
-	// Calculate rate for each tier: rate = limit / window (in seconds)
+	// Calculate rate and TTL for each tier
 	rates := make([]float64, len(filteredLimits))
+	ttls := make([]int64, len(filteredLimits))
 	for i, limit := range filteredLimits {
 		rates[i] = float64(limit) / window.Seconds()
+		ttlSec := int64(math.Ceil(float64(limit)/rates[i])) + 1
+		if ttlSec < 1 {
+			ttlSec = 1
+		}
+		ttls[i] = ttlSec
 	}
 
 	return &RequestColorMarkerEngine{
@@ -99,6 +108,7 @@ func NewRequestColorMarkerEngine(redisClient *redis.Client, keyPrefix string, li
 		keyPrefix:         keyPrefix,
 		limits:            filteredLimits,
 		rates:             rates,
+		ttls:              ttls,
 		window:            window,
 		nameSpace:         nameSpace,
 		tokenBucketScript: redis.NewScript(tokenBucketColorMarkerAquireLuaScript),
@@ -116,7 +126,6 @@ func (e *RequestColorMarkerEngine) allow(ctx context.Context) (newCtx context.Co
 
 	now := time.Now()
 	nowUnix := now.Unix()
-	windowSeconds := int64(e.window.Seconds())
 
 	// Build all tier keys
 	numTiers := len(e.limits)
@@ -125,13 +134,16 @@ func (e *RequestColorMarkerEngine) allow(ctx context.Context) (newCtx context.Co
 		keys[i] = fmt.Sprintf("%s:tier_%d", e.keyPrefix, i)
 	}
 
-	// Build ARGV: numTiers, burst1, rate1, burst2, rate2, ..., nowUnix, windowSeconds
-	args := make([]interface{}, 0, 1+numTiers*2+2)
+	// Build ARGV: numTiers, burst1, rate1, burst2, rate2, ..., nowUnix, ttl1, ttl2, ...
+	args := make([]interface{}, 0, 1+numTiers*2+1+numTiers)
 	args = append(args, numTiers)
 	for i := 0; i < numTiers; i++ {
 		args = append(args, e.limits[i], e.rates[i])
 	}
-	args = append(args, nowUnix, windowSeconds)
+	args = append(args, nowUnix)
+	for i := 0; i < numTiers; i++ {
+		args = append(args, e.ttls[i])
+	}
 
 	// Call Lua script
 	result, err := e.tokenBucketScript.Run(ctx, e.redisClient, keys, args...).Result()
@@ -208,7 +220,7 @@ func (e *RequestColorMarkerEngine) setPriorityToContext(ctx context.Context, pri
 // ARGV[1]: numTiers
 // ARGV[2..2*numTiers+1]: burst1, rate1, burst2, rate2, ...
 // ARGV[2*numTiers+2]: nowUnix
-// ARGV[2*numTiers+3]: windowSeconds
+// ARGV[2*numTiers+3..2*numTiers+2+numTiers]: ttl1, ttl2, ...
 //
 // Returns: {priority, acquiredKeysIndices}
 // - priority: 0 means rejected, >0 means acquired with priority (1-based, convert to 0-based in Go)
@@ -217,12 +229,15 @@ const tokenBucketColorMarkerAquireLuaScript = `
 local numTiers = tonumber(ARGV[1])
 local bursts = {}
 local rates = {}
+local ttls = {}
 for i = 1, numTiers do
     bursts[i] = tonumber(ARGV[1 + (i-1)*2 + 1])
     rates[i] = tonumber(ARGV[1 + (i-1)*2 + 2])
 end
 local nowUnix = tonumber(ARGV[2*numTiers + 2])
-local windowSeconds = tonumber(ARGV[2*numTiers + 3])
+for i = 1, numTiers do
+    ttls[i] = tonumber(ARGV[2*numTiers + 2 + i])
+end
 
 local lastTierIdx = numTiers
 
@@ -242,7 +257,7 @@ end
 -- Helper function to update bucket
 local function updateBucket(keyIdx, tokens)
     redis.call('HMSET', KEYS[keyIdx], 'tokens', tokens, 'lastRefill', nowUnix)
-    redis.call('EXPIRE', KEYS[keyIdx], windowSeconds * 2)
+    redis.call('EXPIRE', KEYS[keyIdx], ttls[keyIdx])
 end
 
 -- Phase 1: Find first available tier from tier 0 (highest priority) to last tier
@@ -259,11 +274,8 @@ for tierIdx = 1, numTiers do
     end
 end
 
--- If no tier is available, update all buckets and reject
+-- If no tier is available, reject without updating (don't update lastRefill when not consuming)
 if foundTierIdx == nil then
-    for tierIdx = 1, numTiers do
-        updateBucket(tierIdx, tiersTokens[tierIdx])
-    end
     return {0, ""}
 end
 
@@ -287,37 +299,16 @@ else
         keysToConsume[1] = {keyIdx = foundTierIdx, tokens = tiersTokens[foundTierIdx]}
         keysToConsume[2] = {keyIdx = lastTierIdx, tokens = lastTierTokens}
     else
-        -- Last tier not available: update all checked buckets and reject
-        for tierIdx = 1, numTiers do
-            if tiersTokens[tierIdx] ~= nil then
-                updateBucket(tierIdx, tiersTokens[tierIdx])
-            end
-        end
+        -- Last tier not available: reject without updating (don't update lastRefill when not consuming)
         return {0, ""}
     end
 end
 
--- Phase 3: Consume tokens from required buckets
+-- Phase 3: Consume tokens from required buckets (only update lastRefill when consuming)
 for i = 1, #keysToConsume do
     local keyIdx = keysToConsume[i].keyIdx
     local tokens = keysToConsume[i].tokens - 1
     updateBucket(keyIdx, tokens)
-end
-
--- Update buckets that were checked but not consumed
-for tierIdx = 1, numTiers do
-    if tiersTokens[tierIdx] ~= nil then
-        local isConsumed = false
-        for i = 1, #keysToConsume do
-            if keysToConsume[i].keyIdx == tierIdx then
-                isConsumed = true
-                break
-            end
-        end
-        if not isConsumed then
-            updateBucket(tierIdx, tiersTokens[tierIdx])
-        end
-    end
 end
 
 -- Build acquired keys indices string
