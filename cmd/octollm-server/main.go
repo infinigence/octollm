@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/infinigence/octollm/pkg/composer"
 	"github.com/mattn/go-isatty"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
 	_ "net/http/pprof"
 )
@@ -39,9 +40,25 @@ func main() {
 	} else {
 		logHandler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level, AddSource: true})
 	}
+	// Wrap with contextFieldsHandler to inject OpenTelemetry trace info
+	logHandler = newContextFieldsHandler(logHandler)
 	slog.SetDefault(slog.New(logHandler))
 
+	// Initialize OpenTelemetry
+	ctx := context.Background()
+	otelShutdown, err := initOpenTelemetry(ctx, "octollm-server")
+	if err != nil {
+		slog.Error(fmt.Sprintf("failed to initialize OpenTelemetry: %v", err))
+		os.Exit(1)
+	}
+	defer func() {
+		if err := otelShutdown(ctx); err != nil {
+			slog.Error(fmt.Sprintf("failed to shutdown OpenTelemetry: %v", err))
+		}
+	}()
+
 	r := gin.New()
+	r.Use(otelgin.Middleware("octollm-server"))
 	r.Use(ginslog.SetLogger(ginslog.WithLogger(func(c *gin.Context, l *slog.Logger) *slog.Logger {
 		return slog.Default()
 	})), gin.Recovery())
