@@ -9,7 +9,6 @@ import (
 	"github.com/infinigence/octollm/pkg/engines/client"
 	"github.com/infinigence/octollm/pkg/engines/converter"
 	"github.com/infinigence/octollm/pkg/octollm"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type ModelRepo interface {
@@ -27,14 +26,31 @@ type ModelRepoFileBased struct {
 
 var _ ModelRepo = (*ModelRepoFileBased)(nil)
 
-func NewModelRepoFileBased() *ModelRepoFileBased {
-	return &ModelRepoFileBased{
-		cliManager: NewProxyClientManager(func(base http.RoundTripper) http.RoundTripper {
-			return otelhttp.NewTransport(base)
-		}),
+// ModelRepoOption defines configuration options for ModelRepoFileBased
+type ModelRepoOption func(*ModelRepoFileBased)
+
+// WithTransportWrapper configures an HTTP transport wrapper
+// Used to add additional functionality like OpenTelemetry tracing, retries, etc.
+func WithTransportWrapper(wrapper func(base http.RoundTripper) http.RoundTripper) ModelRepoOption {
+	return func(m *ModelRepoFileBased) {
+		m.cliManager = NewProxyClientManager(wrapper)
+	}
+}
+
+func NewModelRepoFileBased(opts ...ModelRepoOption) *ModelRepoFileBased {
+	m := &ModelRepoFileBased{
+		// Default: no transport wrapper (nil means no wrapping)
+		cliManager:         NewProxyClientManager(nil),
 		modelBackendConfig: make(map[string]map[string]*Backend),
 		modelBackendEngine: make(map[string]map[string]octollm.Engine),
 	}
+
+	// Apply all options
+	for _, opt := range opts {
+		opt(m)
+	}
+
+	return m
 }
 
 func (m *ModelRepoFileBased) UpdateFromConfig(conf *ConfigFile) error {
@@ -232,7 +248,7 @@ func (m *ModelRepoFileBased) BuildEngineByBackend(b *Backend) (octollm.Engine, e
 	}
 
 	llmGE := client.NewGeneralEndpoint(*generalConf)
-	// Always use cliManager to get a client with otelhttp wrapper for trace propagation
+	// Always use cliManager to get a client with transport wrapper for trace propagation
 	// GetClient("") returns the default client if no proxy is specified
 	var proxyURL string
 	if b.HTTPProxy != nil {

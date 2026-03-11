@@ -3,12 +3,14 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/infinigence/octollm/pkg/composer"
 	"github.com/infinigence/octollm/pkg/octollm"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type Server struct {
@@ -18,7 +20,12 @@ type Server struct {
 }
 
 func NewServer(conf *composer.ConfigFile) *Server {
-	modelRepo := composer.NewModelRepoFileBased()
+	// Create ModelRepo with OpenTelemetry transport wrapper
+	modelRepo := composer.NewModelRepoFileBased(
+		composer.WithTransportWrapper(func(base http.RoundTripper) http.RoundTripper {
+			return otelhttp.NewTransport(base)
+		}),
+	)
 	err := modelRepo.UpdateFromConfig(conf)
 	if err != nil {
 		slog.Error(fmt.Sprintf("failed to update model repo from config: %v", err))
