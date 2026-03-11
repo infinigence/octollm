@@ -223,7 +223,11 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, req *octollm.Reques
 
 		// process the line according to https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation
 		if len(line) == 0 {
-			// dispatch the event and continue
+			// dispatch the event and continue; per spec, skip if data buffer is empty
+			if len(bodyBuffer) == 0 {
+				metaBuffer = make(map[string]string)
+				continue
+			}
 			body := octollm.NewBodyFromBytes(bodyBuffer, streamParser)
 			bodyLen := len(bodyBuffer)
 			bodyBuffer = make([]byte, 0, 512)

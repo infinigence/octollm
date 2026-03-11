@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/infinigence/octollm/pkg/exprenv"
 	"github.com/infinigence/octollm/pkg/octollm"
+	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
 )
 
@@ -17,6 +20,7 @@ type reqOptions struct {
 	HttpMethod string
 	URL        string
 	Body       io.Reader
+	ReqParser  octollm.Parser
 
 	recvHeader http.Header
 	features   map[string]exprenv.FeatureExtractor
@@ -40,6 +44,7 @@ func defaultReqOpts() *reqOptions {
 	return &reqOptions{
 		HttpMethod: http.MethodPost,
 		URL:        "http://localhost:8000/v1/chat/completions",
+		ReqParser:  &octollm.JSONParser[openai.ChatCompletionRequest]{},
 		Body:       bytes.NewReader(bodyJSON),
 	}
 }
@@ -64,7 +69,7 @@ func CreateTestRequest(opts ...reqOptFunc) *octollm.Request {
 		r = r.WithContext(rctx)
 	}
 
-	parser := &octollm.JSONParser[openai.ChatCompletionRequest]{}
+	parser := o.ReqParser
 	req := octollm.NewRequest(r, octollm.APIFormatChatCompletions)
 	req.Body.SetParser(parser)
 
@@ -97,6 +102,10 @@ func WithBody(body any) reqOptFunc {
 			opts.Body = bytes.NewReader([]byte(v))
 		case []byte:
 			opts.Body = bytes.NewReader(v)
+		case anthropic.ClaudeMessagesRequest:
+			opts.ReqParser = &octollm.JSONParser[anthropic.ClaudeMessagesRequest]{}
+			buffer, _ := json.Marshal(v)
+			opts.Body = bytes.NewReader(buffer)
 		default:
 			buffer, _ := json.Marshal(v)
 			opts.Body = bytes.NewReader(buffer)
@@ -119,5 +128,38 @@ func WithFeature(name string, extractor exprenv.FeatureExtractor) reqOptFunc {
 			opts.features = make(map[string]exprenv.FeatureExtractor)
 		}
 		opts.features[name] = extractor
+	}
+}
+
+// CollectSSEStream drains a stream response and returns its SSE wire bytes,
+// mirroring the encoding done by octollm.httpSSEHandler.
+// Returns an error if the timeout elapses or any chunk body cannot be read.
+func CollectSSEStream(stream *octollm.StreamChan, timeout time.Duration) ([]byte, error) {
+	defer stream.Close()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	var buf bytes.Buffer
+	for {
+		select {
+		case <-timer.C:
+			return nil, fmt.Errorf("CollectSSEStream timed out after %s", timeout)
+		case chunk, ok := <-stream.Chan():
+			if !ok {
+				return buf.Bytes(), nil
+			}
+			b, err := chunk.Body.Bytes()
+			if err != nil {
+				return nil, err
+			}
+			if event, ok := chunk.Metadata["event"]; ok {
+				buf.WriteString("event: " + event + "\n")
+			}
+			if id, ok := chunk.Metadata["id"]; ok {
+				buf.WriteString("id: " + id + "\n")
+			}
+			buf.WriteString("data: ")
+			buf.Write(b)
+			buf.WriteString("\n\n")
+		}
 	}
 }

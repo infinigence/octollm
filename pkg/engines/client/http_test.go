@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/octollm"
+	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/vertex"
 )
 
@@ -123,4 +126,47 @@ func TestProcessJSONStream(t *testing.T) {
 			t.Errorf("Second chunk is not valid JSON: %v", err)
 		}
 	}
+}
+
+func TestProcessSSEStream_DoubleNewline(t *testing.T) {
+	// two newlines between events
+	sseStream := `event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}
+
+
+event: message_stop
+data: {"type":"message_stop"}
+
+
+`
+	sseStreamNormalized := strings.ReplaceAll(sseStream, "\n\n\n", "\n\n")
+
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(sseStream)),
+	}
+
+	ch := make(chan *octollm.StreamChunk, 10)
+	parser := &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := octollm.NewStreamChan(ch, cancel)
+
+	endpoint := NewHTTPEndpoint()
+	req := testhelper.CreateTestRequest(
+		testhelper.WithBody(
+			anthropic.ClaudeMessagesRequest{
+				Model:     "claude-sonnet-4-6",
+				MaxTokens: 1024,
+				Messages: []*anthropic.MessageParam{
+					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("Hello")}},
+				},
+			},
+		),
+	)
+
+	go endpoint.processSSEStream(ctx, req, resp, ch, parser)
+
+	got, err := testhelper.CollectSSEStream(stream, 5*time.Second)
+	assert.NoError(t, err)
+	assert.Equal(t, string(got), sseStreamNormalized)
 }
