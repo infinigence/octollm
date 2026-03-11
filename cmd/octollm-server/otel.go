@@ -5,7 +5,7 @@ import (
 	"log/slog"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	// "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -16,10 +16,10 @@ import (
 // In production, you should replace this with OTLP exporter or other backends.
 func initOpenTelemetry(ctx context.Context, serviceName string) (func(context.Context) error, error) {
 	// Create stdout exporter
-	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
-	if err != nil {
-		return nil, err
-	}
+	// exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+	// if err != nil {
+	// 	return nil, err
+	// }
 
 	// Create resource with service name
 	res, err := resource.New(ctx,
@@ -33,7 +33,7 @@ func initOpenTelemetry(ctx context.Context, serviceName string) (func(context.Co
 
 	// Create tracer provider
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		// sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
 		// Uncomment to sample all traces in development
 		// sdktrace.WithSampler(sdktrace.AlwaysSample()),
