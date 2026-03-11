@@ -130,6 +130,7 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 			if err != nil {
 				// stream done 是正常结束信号，不应该视为错误
 				if errors.Is(err, octollm.ErrStreamDone) {
+					chunkBuffer = append(chunkBuffer, chunk)
 					slog.DebugContext(ctx, fmt.Sprintf("stream done, will process remaining chunks"))
 					break
 				}
