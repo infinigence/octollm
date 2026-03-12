@@ -39,6 +39,8 @@ type UnifiedBody struct {
 	parser   Parser // parser (must be set before use)
 	parseErr error  // parsing error
 	isDirty  bool   // marks if parsed data is manually modified
+
+	closeFunc func()
 }
 
 func NewBodyFromReader(reader io.ReadCloser, parser Parser) *UnifiedBody {
@@ -166,10 +168,25 @@ func (b *UnifiedBody) SetParsed(v any) {
 }
 
 func (b *UnifiedBody) Close() error {
+	if b.closeFunc != nil {
+		b.closeFunc()
+	}
 	if b.reader == nil {
 		return nil
 	}
 	return b.reader.Close()
+}
+
+func (b *UnifiedBody) OnClose(closeFunc func()) {
+	if b.closeFunc == nil {
+		b.closeFunc = closeFunc
+	} else {
+		prevClose := b.closeFunc
+		b.closeFunc = func() {
+			prevClose()
+			closeFunc()
+		}
+	}
 }
 
 type Request struct {
@@ -235,6 +252,18 @@ func (sc *StreamChan) Chan() <-chan *StreamChunk {
 func (sc *StreamChan) Close() {
 	if sc.closeFunc != nil {
 		sc.closeFunc()
+	}
+}
+
+func (sc *StreamChan) OnClose(closeFunc func()) {
+	if sc.closeFunc == nil {
+		sc.closeFunc = closeFunc
+	} else {
+		prevClose := sc.closeFunc
+		sc.closeFunc = func() {
+			prevClose()
+			closeFunc()
+		}
 	}
 }
 
