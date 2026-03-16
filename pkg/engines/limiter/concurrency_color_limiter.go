@@ -243,6 +243,10 @@ func (e *ConcurrencyColorLimiterEngine) Process(req *octollm.Request) (*octollm.
 	resp, err := e.next.Process(req)
 
 	// Call done to cleanup regardless of success or failure
+	if err != nil || resp == nil {
+		done()
+		return resp, err
+	}
 	if resp.Stream != nil {
 		resp.Stream.OnClose(done)
 	} else if resp.Body != nil {
