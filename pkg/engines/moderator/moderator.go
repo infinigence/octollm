@@ -125,7 +125,7 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 
 		slog.DebugContext(ctx, fmt.Sprintf("[moderate] begin reading upstream stream"))
 		for chunk := range originalChunks.Chan() {
-			slog.DebugContext(ctx, fmt.Sprintf("[moderate] stream chunk"))
+			// slog.DebugContext(ctx, fmt.Sprintf("[moderate] stream chunk"))
 			text, err := e.TextModeratorAdapter.ExtractTextFromBody(ctx, chunk.Body)
 			if err != nil {
 				// stream done 是正常结束信号，不应该视为错误
@@ -138,7 +138,7 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 				moderationFailedErr = fmt.Errorf("%w: %w", ErrModeratorInternalError, err)
 				break
 			}
-			slog.DebugContext(ctx, fmt.Sprintf("[moderate] extract text from stream chunk: %s", string(text)))
+			// slog.DebugContext(ctx, fmt.Sprintf("[moderate] extract text from stream chunk: %s", string(text)))
 			textBuffer = append(textBuffer, text...)
 			if len(textBuffer) > maxRuneLen {
 				// truncate text to last max rune len

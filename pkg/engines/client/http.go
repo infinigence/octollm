@@ -229,7 +229,7 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, req *octollm.Reques
 				continue
 			}
 			body := octollm.NewBodyFromBytes(bodyBuffer, streamParser)
-			bodyLen := len(bodyBuffer)
+			// bodyLen := len(bodyBuffer)
 			bodyBuffer = make([]byte, 0, 512)
 			chunk := &octollm.StreamChunk{Body: body}
 			if len(metaBuffer) > 0 {
@@ -238,7 +238,7 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, req *octollm.Reques
 			}
 			select {
 			case ch <- chunk:
-				slog.DebugContext(ctx, fmt.Sprintf("[http-endpoint] pushed stream chunk: len=%d", bodyLen))
+				// slog.DebugContext(ctx, fmt.Sprintf("[http-endpoint] pushed stream chunk: len=%d", bodyLen))
 			case <-ctx.Done():
 				slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] context error during stream response: %v", ctx.Err()))
 				return
@@ -328,7 +328,7 @@ func (e *HTTPEndpoint) processJSONStream(ctx context.Context, req *octollm.Reque
 
 		select {
 		case ch <- chunk:
-			slog.DebugContext(ctx, fmt.Sprintf("[http-endpoint] pushed JSON stream chunk: len=%d", len(rawMsg)))
+			// slog.DebugContext(ctx, fmt.Sprintf("[http-endpoint] pushed JSON stream chunk: len=%d", len(rawMsg)))
 		case <-ctx.Done():
 			slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] context error during JSON stream response: %v", ctx.Err()))
 			return
