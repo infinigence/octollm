@@ -302,7 +302,7 @@ func TestTokenLimiter_Process_SuccessAndDeduction(t *testing.T) {
 	}
 	assert.Equal(t, 1, next.callCount)
 
-	// Process sets DeDuctionCallback in metadata; simulate downstream calling DoDeduction with used=4
+	// Process sets DeductionCallback in metadata; simulate downstream calling DoDeduction with used=4
 	assert.NoError(t, DoDeduction(ctx, req, 4))
 
 	// Deduction callback should have persisted updated tokens (burst - 4)
@@ -319,7 +319,7 @@ func TestDoDeduction_WithoutCallbackReturnsError(t *testing.T) {
 	req := newLimiterTestRequest(t)
 	err := DoDeduction(context.Background(), req, 10)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "deDuctionCallbacks not found")
+	assert.Contains(t, err.Error(), "deductionCallbacks not found")
 }
 
 func TestTokenLimiter_Process_StackedEnginesBothKeysDeducted(t *testing.T) {
@@ -345,9 +345,9 @@ func TestTokenLimiter_Process_StackedEnginesBothKeysDeducted(t *testing.T) {
 	assert.Equal(t, 1, next.callCount)
 
 	// Ensure both limiters appended their callbacks to the same request metadata.
-	raw, ok := req.GetMetadataValue(deDuctionCallbackKey{})
+	raw, ok := req.GetMetadataValue(deductionCallbackKey{})
 	assert.True(t, ok)
-	callbacks, ok := raw.(DeDuctionCallbacks)
+	callbacks, ok := raw.(DeductionCallbacks)
 	assert.True(t, ok)
 	assert.Len(t, callbacks.callbacks, 2)
 

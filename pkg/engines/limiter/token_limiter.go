@@ -31,18 +31,18 @@ type TokenLimiterEngine struct {
 	next octollm.Engine
 }
 
-type DeDuctionCallback func(ctx context.Context, used int64) error
+type DeductionCallback func(ctx context.Context, used int64) error
 
-type DeDuctionCallbacks struct {
-	callbacks []DeDuctionCallback
+type DeductionCallbacks struct {
+	callbacks []DeductionCallback
 }
 
-// deDuctionCallbackKey is a strongly-typed metadata key used for token deduction.
+// deductionCallbackKey is a strongly-typed metadata key used for token deduction.
 // The corresponding metadata value MUST be an int (number of tokens to deduct).
-type deDuctionCallbackKey struct{}
+type deductionCallbackKey struct{}
 
 // DoDeduction performs the token deduction based on the value in request metadata.
-// The deduction amount is read from req.GetMetadataValue(deDuctionCallbackKey{}) as int (if present).
+// The deduction amount is read from req.GetMetadataValue(deductionCallbackKey{}) as int (if present).
 //
 // The ctx parameter is separate from req's context so that deduction can still run when
 // the request context is canceled (e.g., client disconnect, timeout). In such cases,
@@ -50,18 +50,18 @@ type deDuctionCallbackKey struct{}
 func DoDeduction(ctx context.Context, req *octollm.Request, used int64) (err error) {
 	defer func() {
 		if err != nil {
-			slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] deDuction error: %v", err))
+			slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] deduction error: %v", err))
 		}
 	}()
-	deDuctionCallbacks, ok := req.GetMetadataValue(deDuctionCallbackKey{})
+	deductionCallbacks, ok := req.GetMetadataValue(deductionCallbackKey{})
 	if !ok {
-		slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] deDuctionCallbacks not found in request metadata"))
-		return fmt.Errorf("deDuctionCallbacks not found in request metadata")
+		slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] deductionCallbacks not found in request metadata"))
+		return fmt.Errorf("deductionCallbacks not found in request metadata")
 	}
-	callbacks, ok := deDuctionCallbacks.(DeDuctionCallbacks)
+	callbacks, ok := deductionCallbacks.(DeductionCallbacks)
 	if !ok {
-		slog.ErrorContext(ctx, fmt.Sprintf("DeDuctionCallbacks type assertion failed"))
-		return fmt.Errorf("DeDuctionCallbacks type assertion failed")
+		slog.ErrorContext(ctx, fmt.Sprintf("DeductionCallbacks type assertion failed"))
+		return fmt.Errorf("DeductionCallbacks type assertion failed")
 	}
 	for _, callback := range callbacks.callbacks {
 		err = errors.Join(err, callback(ctx, used))
@@ -300,22 +300,22 @@ func (e *TokenLimiterEngine) Process(req *octollm.Request) (*octollm.Response, e
 	}
 
 	// Add deduction callback to request metadata
-	deDuctionCallbacks, ok := req.GetMetadataValue(deDuctionCallbackKey{})
+	deductionCallbacks, ok := req.GetMetadataValue(deductionCallbackKey{})
 	if !ok {
-		deDuctionCallbacks = DeDuctionCallbacks{callbacks: []DeDuctionCallback{func(ctx context.Context, used int64) error {
+		deductionCallbacks = DeductionCallbacks{callbacks: []DeductionCallback{func(ctx context.Context, used int64) error {
 			return e.deduction(ctx, used)
 		}}}
-		req.SetMetadataValue(deDuctionCallbackKey{}, deDuctionCallbacks)
+		req.SetMetadataValue(deductionCallbackKey{}, deductionCallbacks)
 	} else {
-		callbacks, ok := deDuctionCallbacks.(DeDuctionCallbacks)
+		callbacks, ok := deductionCallbacks.(DeductionCallbacks)
 		if !ok {
-			slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] DeDuctionCallbacks type assertion failed in token limiter engine"))
-			return nil, fmt.Errorf("%w: DeDuctionCallbacks type assertion failed", ErrLimiterInternalError)
+			slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] DeductionCallbacks type assertion failed in token limiter engine"))
+			return nil, fmt.Errorf("%w: DeductionCallbacks type assertion failed", ErrLimiterInternalError)
 		}
 		callbacks.callbacks = append(callbacks.callbacks, func(ctx context.Context, used int64) error {
 			return e.deduction(ctx, used)
 		})
-		req.SetMetadataValue(deDuctionCallbackKey{}, callbacks)
+		req.SetMetadataValue(deductionCallbackKey{}, callbacks)
 	}
 
 	// Process request
