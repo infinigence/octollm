@@ -95,9 +95,9 @@ func (l *WeightedRoundRobin) Process(req *octollm.Request) (*octollm.Response, e
 	for {
 		n, eng := l.GetNextEngine()
 		slog.InfoContext(req.Context(), fmt.Sprintf("[WRR load balancer] will use engine name: %s", n))
+		req.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(req)
 		if err == nil {
-			req.SetMetadataValue(backendName, n)
 			return resp, nil
 		}
 		retryCount++
