@@ -51,10 +51,14 @@ func ErrorHandlingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if err, ok := r.Context().Value(errorKey).(*HandlerError); ok {
 			slog.ErrorContext(r.Context(), fmt.Sprintf("Handler error: %v (returned as: %v)", err.Err, err.Message))
 
+			errMsgBytes := []byte(err.Message)
+			if json.Valid(errMsgBytes) {
+				w.Header().Set("Content-Type", "application/json")
+			} else {
+				w.Header().Set("Content-Type", "text/plain")
+			}
 			w.WriteHeader(err.StatusCode)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error": err.Message,
-			})
+			w.Write(errMsgBytes)
 		}
 	})
 }
