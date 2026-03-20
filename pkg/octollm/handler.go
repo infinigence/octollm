@@ -104,7 +104,7 @@ func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.Handler
 				if flusher, ok := w.(http.Flusher); ok {
 					flusher.Flush()
 				}
-				slog.DebugContext(r.Context(), fmt.Sprintf("[httpHandler] Write chunk: len=%d", len(b)))
+				// slog.DebugContext(r.Context(), fmt.Sprintf("[httpHandler] Write chunk: len=%d", len(b)))
 			}
 		} else if resp.Body != nil {
 			defer resp.Body.Close()
