@@ -148,6 +148,11 @@ func (b *UnifiedBody) Reader() (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
+// Parser returns the parser associated with this body.
+func (b *UnifiedBody) Parser() Parser {
+	return b.parser
+}
+
 // SetParser set the parser and reset the cached state
 func (b *UnifiedBody) SetParser(p Parser) {
 	b.parser = p

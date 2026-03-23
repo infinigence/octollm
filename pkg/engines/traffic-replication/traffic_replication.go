@@ -102,7 +102,7 @@ func CloneForReplication(req *octollm.Request, expiration time.Duration) (clone 
 		if bodyBytes, err := req.Body.Bytes(); err == nil {
 			bytesCopy := make([]byte, len(bodyBytes))
 			copy(bytesCopy, bodyBytes)
-			clone.Body = octollm.NewBodyFromBytes(bytesCopy, nil)
+			clone.Body = octollm.NewBodyFromBytes(bytesCopy, req.Body.Parser())
 		}
 	}
 
