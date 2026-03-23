@@ -8,9 +8,6 @@ import (
 	"sync"
 	"time"
 
-	anthropicSDK "github.com/anthropics/anthropic-sdk-go"
-	openaiSDK "github.com/openai/openai-go/v3"
-
 	loadbalancer "github.com/infinigence/octollm/pkg/engines/load-balancer"
 	ruleengine "github.com/infinigence/octollm/pkg/engines/rule-engine"
 	"github.com/infinigence/octollm/pkg/errutils"
@@ -260,6 +257,31 @@ type RuleComposerEngine struct {
 	OrgName string
 }
 
+func checkIsStream(req *octollm.Request) (bool, error) {
+	if action, ok := octollm.GetCtxValue[string](req, octollm.ContextKeyAction); ok {
+		return octollm.IsStreamAction(action), nil
+	}
+
+	parsed, err := req.Body.Parsed()
+	if err != nil {
+		return false, err
+	}
+
+	switch body := parsed.(type) {
+	case *openai.ChatCompletionRequest:
+		if body.Stream != nil && *body.Stream {
+			return true, nil
+		}
+	case *openai.CompletionRequest:
+		return body.Stream, nil
+	case *anthropic.ClaudeMessagesRequest:
+		if body.Stream != nil && *body.Stream {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 var _ octollm.Engine = (*RuleComposerEngine)(nil)
 
 func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, error) {
@@ -275,8 +297,6 @@ func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, e
 			switch body := body.(type) {
 			case *openai.ChatCompletionRequest:
 				r.Model = body.Model
-			case *openaiSDK.ChatCompletionNewParams:
-				r.Model = body.Model
 			case *openai.CompletionRequest:
 				r.Model = body.Model
 			case *openai.EmbeddingRequest:
@@ -285,8 +305,6 @@ func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, e
 				r.Model = body.Model
 			case *anthropic.ClaudeMessagesRequest:
 				r.Model = body.Model
-			case *anthropicSDK.MessageNewParams:
-				r.Model = string(body.Model)
 			case *vertex.GenerateContentRequest:
 				// For Vertex AI, model should already be pre-set in server.go or extracted from context.
 				// If we reach here, it means neither happened.
@@ -294,6 +312,17 @@ func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, e
 			default:
 				return nil, fmt.Errorf("unsupported model request type: %T", body)
 			}
+		}
+	}
+
+	if signalIsStream, ok := octollm.GetCtxValue[func(bool)](req, octollm.ContextKeyStreamSignaler); ok && signalIsStream != nil {
+		isStream, err := checkIsStream(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check if request is stream: %w", err)
+		}
+		signalIsStream(isStream)
+		if isStream {
+			slog.InfoContext(req.Context(), "[RuleComposerEngine] Detected stream request")
 		}
 	}
 

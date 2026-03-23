@@ -7,8 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/types/anthropic"
@@ -23,6 +26,7 @@ const (
 	ContextKeyModelName      contextKey = "model_name"
 	ContextKeyAction         contextKey = "action"
 	ContextKeyReceivedHeader contextKey = "received_header"
+	ContextKeyStreamSignaler contextKey = "stream_signaler"
 )
 
 type Server struct {
@@ -46,11 +50,71 @@ func (s *Server) SetEngine(ep Engine) {
 // Otherwise, it will write the response as a plain text.
 func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.HandlerFunc {
 	return errutils.ErrorHandlingMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		isReqStreamCh := make(chan bool, 1)
+		signalStream := func(isStream bool) {
+			select {
+			case isReqStreamCh <- isStream:
+			default:
+			}
+		}
+
 		// store received headers in context
-		*r = *r.WithContext(context.WithValue(r.Context(), ContextKeyReceivedHeader, r.Header))
+		ctx := context.WithValue(r.Context(), ContextKeyReceivedHeader, r.Header)
+		ctx = context.WithValue(ctx, ContextKeyStreamSignaler, signalStream)
+		*r = *r.WithContext(ctx)
 		u := NewRequest(r, format)
 		u.Body.SetParser(parser)
+
+		keepAliveCtx, cancelKeepAlive := context.WithCancel(r.Context())
+		// there is no guarantee that the goroutine exits immediately after cancelKeepAlive is called
+		var wg sync.WaitGroup
+
+		var heartbeatIntervalSecs int
+		heartbeatIntervalStr := os.Getenv("OCTOLLM_HEARTBEAT_INTERVAL_SECOND")
+		if heartbeatIntervalStr != "" {
+			heartbeatIntervalSecs, _ = strconv.Atoi(heartbeatIntervalStr)
+		}
+		if heartbeatIntervalSecs == 0 {
+			heartbeatIntervalSecs = 30
+		}
+
+		if flusher, ok := w.(http.Flusher); ok && heartbeatIntervalSecs > 0 {
+			wg.Go(func() {
+				select {
+				case <-keepAliveCtx.Done():
+					return
+				case isStream := <-isReqStreamCh:
+					if isStream {
+						return
+					}
+					slog.InfoContext(r.Context(), "[httpHandler] keep-alive start")
+				}
+
+				ticker := time.NewTicker(time.Duration(heartbeatIntervalSecs) * time.Second)
+				headSent := false
+				defer ticker.Stop()
+
+				for {
+					select {
+					case <-keepAliveCtx.Done():
+						return
+					case <-ticker.C:
+						if !headSent {
+							w.Header().Set("Content-Type", "application/json")
+							w.WriteHeader(http.StatusOK)
+							headSent = true
+						}
+						w.Write([]byte("\n"))
+						flusher.Flush()
+						slog.InfoContext(r.Context(), "[httpHandler] Send keep-alive signal")
+					}
+				}
+			})
+		}
 		resp, err := engine.Process(u)
+		cancelKeepAlive()
+		wg.Wait()
+
 		if err != nil {
 			slog.ErrorContext(r.Context(), fmt.Sprintf("Do error: %v", err))
 			httpErr := &errutils.UpstreamRespError{}
