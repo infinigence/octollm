@@ -31,6 +31,10 @@ func (h *contextFieldsHandler) Handle(ctx context.Context, r slog.Record) error 
 				slog.String("span_id", sc.SpanID().String()),
 			)
 		}
+
+		if v, _ := ctx.Value("is_duplicate_request").(bool); v {
+			r.AddAttrs(slog.Bool("is_duplicate_request", true))
+		}
 	}
 	return h.inner.Handle(ctx, r)
 }

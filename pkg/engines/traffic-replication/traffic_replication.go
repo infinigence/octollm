@@ -16,11 +16,18 @@ import (
 // that have already been replicated, preventing infinite replication loops.
 type trafficReplicationMetadataKey string
 
+type isDuplicateRequestContextKey = string
+
 const (
 	IsTrafficReplication trafficReplicationMetadataKey = "is_traffic_replication"
 
 	// DefaultReplicationExpiration is used when expiration <= 0.
 	DefaultReplicationExpiration = 10 * time.Minute
+
+	// IsDuplicateRequest is stored in the cloned request's context.
+	// contextFieldsHandler reads this key to add a "is_duplicate_request" field
+	// to log entries, indicating the log came from a replicated (cloned) request.
+	IsDuplicateRequest isDuplicateRequestContextKey = "is_duplicate_request"
 )
 
 // TrafficReplicationTarget defines a replication target with a sampling ratio.
@@ -62,7 +69,8 @@ func CloneForReplication(req *octollm.Request, expiration time.Duration) (clone 
 	if expiration <= 0 {
 		expiration = DefaultReplicationExpiration
 	}
-	ctx := context.WithoutCancel(req.Context())
+	ctx := context.WithValue(req.Context(), IsDuplicateRequest, true)
+	ctx = context.WithoutCancel(ctx)
 	ctx, cancel = context.WithDeadline(ctx, time.Now().Add(expiration))
 	clone = req.WithContext(ctx)
 
