@@ -27,6 +27,7 @@ type ShardKeyWeightedRoundRobin struct {
 	shardKeyListGetter func(req *octollm.Request) []string
 	redisClient        *redis.Client
 	shardKeyTTL        time.Duration
+	keyPrefix          string
 
 	retryTimeout  time.Duration
 	retryMaxCount int
@@ -48,6 +49,7 @@ var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
 //   - minWeightMultiple: used to compute the lower bound threshold = -minWeightMultiple * totalWeight
 //   - shardKeyList: shard keys for this request (string array, later elements have higher priority)
 //   - redisClient: Redis client, used to resolve shard keys to backend names with pipeline
+//   - keyPrefix: prefix prepended to all Redis keys to namespace shard keys per model/instance
 func NewShardKeyWeightedRoundRobin(
 	backends []BackendItem,
 	retryTimeout time.Duration,
@@ -56,6 +58,7 @@ func NewShardKeyWeightedRoundRobin(
 	minWeightMultiple int,
 	shardKeyListGetter func(req *octollm.Request) []string,
 	redisClient *redis.Client,
+	keyPrefix string,
 ) (*ShardKeyWeightedRoundRobin, error) {
 	if len(backends) == 0 {
 		return nil, fmt.Errorf("backends must have at least one item")
@@ -92,12 +95,20 @@ func NewShardKeyWeightedRoundRobin(
 		shardKeyListGetter: shardKeyListGetter,
 		redisClient:        redisClient,
 		shardKeyTTL:        shardKeyTTL,
+		keyPrefix:          keyPrefix,
 		retryTimeout:       retryTimeout,
 		retryMaxCount:      retryMaxCount,
 		minWeightMultiple:  minWeightMultiple,
 	}
 
 	return lb, nil
+}
+
+func (l *ShardKeyWeightedRoundRobin) redisKey(shardKey string) string {
+	if l.keyPrefix == "" {
+		return shardKey
+	}
+	return l.keyPrefix + ":" + shardKey
 }
 
 // resolvePrioritizedBackends resolves shardKeyList -> backendName via Redis ZSETs and returns
@@ -119,7 +130,7 @@ func (l *ShardKeyWeightedRoundRobin) resolvePrioritizedBackends(
 			continue
 		}
 		// Get all members ordered from newest to oldest (by score).
-		cmds[i] = readPipe.ZRevRange(ctx, shardKey, 0, -1)
+		cmds[i] = readPipe.ZRevRange(ctx, l.redisKey(shardKey), 0, -1)
 	}
 
 	if _, err := readPipe.Exec(ctx); err != nil && err != redis.Nil {
@@ -154,7 +165,7 @@ func (l *ShardKeyWeightedRoundRobin) resolvePrioritizedBackends(
 			// Remove ranks [0, len-4] so that only the latest 3 remain.
 			stop := int64(len(backendNames) - 4)
 			if stop >= 0 {
-				trimPipe.ZRemRangeByRank(ctx, shardKeyList[i], 0, stop)
+				trimPipe.ZRemRangeByRank(ctx, l.redisKey(shardKeyList[i]), 0, stop)
 			}
 		}
 		// backendNames are already ordered from most recent to oldest
@@ -215,11 +226,11 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 					if shardKey == "" {
 						continue
 					}
-					pipe.ZAdd(req.Context(), shardKey, redis.Z{
+					pipe.ZAdd(req.Context(), l.redisKey(shardKey), redis.Z{
 						Score:  float64(time.Now().Unix()),
 						Member: n,
 					})
-					pipe.Expire(req.Context(), shardKey, l.shardKeyTTL)
+					pipe.Expire(req.Context(), l.redisKey(shardKey), l.shardKeyTTL)
 				}
 				if _, err := pipe.Exec(req.Context()); err != nil && err != redis.Nil {
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] failed to update shard key mapping in Redis: %v", err))

@@ -43,7 +43,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 	backendEngine := &stubEngine{}
 
 	// empty backends
-	_, err := NewShardKeyWeightedRoundRobin(nil, time.Second, 1, time.Minute, 5, nil, nil)
+	_, err := NewShardKeyWeightedRoundRobin(nil, time.Second, 1, time.Minute, 5, nil, nil, "")
 	assert.Error(t, err)
 
 	// negative weight
@@ -51,7 +51,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 		[]BackendItem{
 			{Name: "b1", Weight: -1, Engine: backendEngine},
 		},
-		time.Second, 1, time.Minute, 5, nil, nil,
+		time.Second, 1, time.Minute, 5, nil, nil, "",
 	)
 	assert.Error(t, err)
 
@@ -61,7 +61,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 			{Name: "b1", Weight: 0, Engine: backendEngine},
 			{Name: "b2", Weight: 0, Engine: backendEngine},
 		},
-		time.Second, 1, time.Minute, 5, nil, nil,
+		time.Second, 1, time.Minute, 5, nil, nil, "",
 	)
 	assert.NoError(t, err)
 	if assert.Len(t, lb.backends, 2) {
@@ -243,6 +243,7 @@ func TestShardKeyWeightedRoundRobin_Process_SuccessAndRedisUpdate(t *testing.T) 
 			return []string{"shard-key-1"}
 		},
 		client,
+		"model-prefix",
 	)
 	assert.NoError(t, err)
 
@@ -260,13 +261,13 @@ func TestShardKeyWeightedRoundRobin_Process_SuccessAndRedisUpdate(t *testing.T) 
 
 	// Redis ZSET should be updated
 	ctx := context.Background()
-	members, err := client.ZRange(ctx, "shard-key-1", 0, -1).Result()
+	members, err := client.ZRange(ctx, "model-prefix:shard-key-1", 0, -1).Result()
 	assert.NoError(t, err)
 	if assert.Len(t, members, 1) {
 		assert.Equal(t, "backend1", members[0])
 	}
 
-	ttl, err := client.TTL(ctx, "shard-key-1").Result()
+	ttl, err := client.TTL(ctx, "model-prefix:shard-key-1").Result()
 	assert.NoError(t, err)
 	assert.Greater(t, ttl, time.Duration(0))
 }
