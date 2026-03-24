@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/infinigence/octollm/pkg/octollm"
+	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
 )
 
@@ -15,6 +16,92 @@ func combinedTextForChatCompletionsMessage(msg *openai.Message) string {
 		return msg.Content.ExtractText()
 	}
 	return ""
+}
+
+// combinedTextForAnthropicMessage concatenates ExtractText() from all content blocks.
+func combinedTextForAnthropicMessage(msg *anthropic.MessageParam) string {
+	var sb strings.Builder
+	for _, c := range msg.Content {
+		sb.WriteString(c.ExtractText())
+	}
+	return sb.String()
+}
+
+// anthropicSystemText extracts plain text from a system field (SystemString or SystemBlocks).
+func anthropicSystemText(system anthropic.SystemContent) string {
+	if system == nil {
+		return ""
+	}
+	switch s := system.(type) {
+	case anthropic.SystemString:
+		return string(s)
+	case anthropic.SystemBlocks:
+		var sb strings.Builder
+		for _, b := range s {
+			sb.WriteString(b.Text)
+		}
+		return sb.String()
+	}
+	return ""
+}
+
+// anthropicFirstMessageText returns the text of the "first message" in an Anthropic request,
+// treating the system prompt as the first entry (matching converter behaviour).
+func anthropicFirstMessageText(v *anthropic.ClaudeMessagesRequest) string {
+	if sysTxt := strings.TrimSpace(anthropicSystemText(v.System)); sysTxt != "" {
+		return sysTxt
+	}
+	if len(v.Messages) > 0 {
+		return strings.TrimSpace(combinedTextForAnthropicMessage(v.Messages[0]))
+	}
+	return ""
+}
+
+// anthropicMessageTextForHash returns text for hashing: combined content text, or if empty,
+// the Input JSON of the first tool_use block.
+func anthropicMessageTextForHash(msg *anthropic.MessageParam) string {
+	txt := combinedTextForAnthropicMessage(msg)
+	if strings.TrimSpace(txt) != "" {
+		return txt
+	}
+	for _, c := range msg.Content {
+		if b, ok := c.(*anthropic.MessageContentBlock); ok && b.Type == "tool_use" && b.MessageContentToolUse != nil {
+			return string(b.MessageContentToolUse.Input)
+		}
+	}
+	return ""
+}
+
+// computeAnthropicMessage5Hashes computes cumulative FNV-32a hashes over the first 5 non-empty
+// entries (system prompt first, then messages), taking the first 100 bytes of each text.
+// This mirrors the converter which prepends the system prompt as the first OpenAI message.
+func computeAnthropicMessage5Hashes(system anthropic.SystemContent, messages []*anthropic.MessageParam) []string {
+	hasher := fnv.New32a()
+	hashes := make([]string, 0, 5)
+
+	hashOne := func(txt string) {
+		if len(hashes) >= 5 || strings.TrimSpace(txt) == "" {
+			return
+		}
+		b := []byte(txt)
+		if len(b) > 100 {
+			b = b[:100]
+		}
+		hasher.Write(b)
+		hashes = append(hashes, fmt.Sprintf("%08x", hasher.Sum32()))
+	}
+
+	// System prompt counts as the first message (matches converter prepend logic).
+	hashOne(anthropicSystemText(system))
+
+	for i := 0; i < len(messages) && len(hashes) < 5; i++ {
+		msg := messages[i]
+		if msg == nil {
+			continue
+		}
+		hashOne(anthropicMessageTextForHash(msg))
+	}
+	return hashes
 }
 
 // PromptTextLenExtractor extracts the total length of all message texts
@@ -31,6 +118,12 @@ func (e *PromptTextLenExtractor) Features(req *octollm.Request) (any, error) {
 		allMsgTextLen := 0
 		for _, msg := range v.Messages {
 			allMsgTextLen += len([]rune(combinedTextForChatCompletionsMessage(msg)))
+		}
+		return allMsgTextLen, nil
+	case *anthropic.ClaudeMessagesRequest:
+		allMsgTextLen := len([]rune(anthropicSystemText(v.System)))
+		for _, msg := range v.Messages {
+			allMsgTextLen += len([]rune(combinedTextForAnthropicMessage(msg)))
 		}
 		return allMsgTextLen, nil
 	default:
@@ -57,6 +150,21 @@ func (e *PrefixHashExtractor) Features(req *octollm.Request) (any, error) {
 		msg0txt := combinedTextForChatCompletionsMessage(v.Messages[0])
 		msg0txt = strings.TrimSpace(msg0txt)
 		// first l runes
+		prefix := []rune(msg0txt)
+		if len(prefix) > e.Length {
+			prefix = prefix[:e.Length]
+		}
+
+		hasher := fnv.New32a()
+		hasher.Write([]byte(v.Model))
+		hasher.Write([]byte(string(prefix)))
+
+		return fmt.Sprintf("%08x", hasher.Sum32()), nil
+	case *anthropic.ClaudeMessagesRequest:
+		msg0txt := anthropicFirstMessageText(v)
+		if msg0txt == "" {
+			return "", nil
+		}
 		prefix := []rune(msg0txt)
 		if len(prefix) > e.Length {
 			prefix = prefix[:e.Length]
@@ -101,6 +209,21 @@ func (e *SuffixHashExtractor) Features(req *octollm.Request) (any, error) {
 		hasher.Write([]byte(string(suffix)))
 
 		return fmt.Sprintf("%08x", hasher.Sum32()), nil
+	case *anthropic.ClaudeMessagesRequest:
+		msg0txt := anthropicFirstMessageText(v)
+		if msg0txt == "" {
+			return "", nil
+		}
+		suffix := []rune(msg0txt)
+		if len(suffix) > e.Length {
+			suffix = suffix[len(suffix)-e.Length:]
+		}
+
+		hasher := fnv.New32a()
+		hasher.Write([]byte(v.Model))
+		hasher.Write([]byte(string(suffix)))
+
+		return fmt.Sprintf("%08x", hasher.Sum32()), nil
 	default:
 		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
 	}
@@ -120,6 +243,8 @@ func (e *Message5HashExtractor) Features(req *octollm.Request) (any, error) {
 	switch v := reqBody.(type) {
 	case *openai.ChatCompletionRequest:
 		return strings.Join(computeMessage5Hashes(v.Messages), "-"), nil
+	case *anthropic.ClaudeMessagesRequest:
+		return strings.Join(computeAnthropicMessage5Hashes(v.System, v.Messages), "-"), nil
 	default:
 		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
 	}
@@ -138,6 +263,8 @@ func (e *Message5HashArrayExtractor) Features(req *octollm.Request) (any, error)
 	switch v := reqBody.(type) {
 	case *openai.ChatCompletionRequest:
 		return computeMessage5Hashes(v.Messages), nil
+	case *anthropic.ClaudeMessagesRequest:
+		return computeAnthropicMessage5Hashes(v.System, v.Messages), nil
 	default:
 		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
 	}

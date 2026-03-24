@@ -128,10 +128,16 @@ func (m *MessageContentBlock) GetType() string {
 	return m.Type
 }
 func (m *MessageContentBlock) ExtractText() string {
-	if m == nil || m.Text == nil {
+	if m == nil {
 		return ""
 	}
-	return *m.Text
+	if m.Text != nil {
+		return *m.Text
+	}
+	if m.Type == "tool_use" && m.MessageContentToolUse != nil {
+		return string(m.MessageContentToolUse.Input)
+	}
+	return ""
 }
 
 type MessageContentToolUse struct {
