@@ -19,6 +19,7 @@ func main() {
 	exprenv.RegisterDefaultExtractor("prefix20", &ruleengine.PrefixHashExtractor{Length: 20})
 	exprenv.RegisterDefaultExtractor("suffix20", &ruleengine.SuffixHashExtractor{Length: 20})
 	exprenv.RegisterDefaultExtractor("message5Hash", &ruleengine.Message5HashExtractor{})
+	exprenv.RegisterDefaultExtractor("message5HashArray", &ruleengine.Message5HashArrayExtractor{})
 
 	engine := mock.NewWithFixedOutput(`
 归档

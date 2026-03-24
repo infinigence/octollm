@@ -106,6 +106,43 @@ func (e *SuffixHashExtractor) Features(req *octollm.Request) (any, error) {
 	}
 }
 
+// Message5HashExtractor produces a composite hash of the first 5 messages: for each message
+// takes the first 100 bytes of text (from Content or first tool call's Arguments), feeds
+// them into FNV-32a cumulatively, and returns the hex hashes joined by "-" (e.g. "a1b2c3d4-e5f6a7b8-...").
+type Message5HashExtractor struct{}
+
+func (e *Message5HashExtractor) Features(req *octollm.Request) (any, error) {
+	reqBody, err := req.Body.Parsed()
+	if err != nil {
+		return nil, fmt.Errorf("parse request body failed: %w", err)
+	}
+
+	switch v := reqBody.(type) {
+	case *openai.ChatCompletionRequest:
+		return strings.Join(computeMessage5Hashes(v.Messages), "-"), nil
+	default:
+		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
+	}
+}
+
+// Message5HashArrayExtractor produces the same hashes as Message5HashExtractor but returns []string
+// instead of a joined string.
+type Message5HashArrayExtractor struct{}
+
+func (e *Message5HashArrayExtractor) Features(req *octollm.Request) (any, error) {
+	reqBody, err := req.Body.Parsed()
+	if err != nil {
+		return nil, fmt.Errorf("parse request body failed: %w", err)
+	}
+
+	switch v := reqBody.(type) {
+	case *openai.ChatCompletionRequest:
+		return computeMessage5Hashes(v.Messages), nil
+	default:
+		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
+	}
+}
+
 // messageTextForHash returns text from a message for hashing: Content.ExtractText(), or if empty
 // and the message has ToolCalls, the first tool call's Function.Arguments.
 func messageTextForHash(msg *openai.Message) string {
@@ -123,42 +160,26 @@ func messageTextForHash(msg *openai.Message) string {
 	return ""
 }
 
-// Message5HashExtractor produces a composite hash of the first 5 messages: for each message
-// takes the first 100 bytes of text (from Content or first tool call's Arguments), feeds
-// them into FNV-32a cumulatively, and returns the hex hashes joined by "-" (e.g. "a1b2c3d4-e5f6a7b8-...").
-type Message5HashExtractor struct{}
-
-func (e *Message5HashExtractor) Features(req *octollm.Request) (any, error) {
-	reqBody, err := req.Body.Parsed()
-	if err != nil {
-		return nil, fmt.Errorf("parse request body failed: %w", err)
-	}
-
-	switch v := reqBody.(type) {
-	case *openai.ChatCompletionRequest:
-		if len(v.Messages) == 0 {
-			return "", nil
+// computeMessage5Hashes computes cumulative FNV-32a hashes over the first 5 non-empty messages,
+// taking the first 100 bytes of each message's text. Returns hex hash strings in order.
+func computeMessage5Hashes(messages []*openai.Message) []string {
+	hasher := fnv.New32a()
+	hashes := make([]string, 0, 5)
+	for i := 0; i < len(messages) && len(hashes) < 5; i++ {
+		msg := messages[i]
+		if msg == nil {
+			continue
 		}
-		hasher := fnv.New32a()
-		hashes := make([]string, 0, 5)
-		for i := 0; i < len(v.Messages) && len(hashes) < 5; i++ {
-			msg := v.Messages[i]
-			if msg == nil {
-				continue
-			}
-			msgTxt := messageTextForHash(msg)
-			if msgTxt == "" {
-				continue
-			}
-			prefix := []byte(msgTxt)
-			if len(prefix) > 100 {
-				prefix = prefix[:100]
-			}
-			hasher.Write(prefix)
-			hashes = append(hashes, fmt.Sprintf("%08x", hasher.Sum32()))
+		msgTxt := messageTextForHash(msg)
+		if msgTxt == "" {
+			continue
 		}
-		return strings.Join(hashes, "-"), nil
-	default:
-		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
+		prefix := []byte(msgTxt)
+		if len(prefix) > 100 {
+			prefix = prefix[:100]
+		}
+		hasher.Write(prefix)
+		hashes = append(hashes, fmt.Sprintf("%08x", hasher.Sum32()))
 	}
+	return hashes
 }

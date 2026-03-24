@@ -1,17 +1,17 @@
 package ruleengine
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/types/openai"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestMessage5HashExtractor_Features(t *testing.T) {
-	extractor := &Message5HashExtractor{}
-
+func TestMessage5Hash_Features(t *testing.T) {
 	type testCase struct {
 		name     string
 		req      *openai.ChatCompletionRequest
@@ -217,13 +217,34 @@ func TestMessage5HashExtractor_Features(t *testing.T) {
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := testhelper.CreateTestRequest(testhelper.WithBody(tc.req))
-			val, err := extractor.Features(req)
-			require.NoError(t, err)
-			str, _ := val.(string)
-			assert.Equal(t, tc.expected, str, "message5Hash mismatch")
-		})
-	}
+	t.Run("string", func(t *testing.T) {
+		extractor := &Message5HashExtractor{}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				req := testhelper.CreateTestRequest(testhelper.WithBody(tc.req))
+				val, err := extractor.Features(req)
+				require.NoError(t, err)
+				str, _ := val.(string)
+				assert.Equal(t, tc.expected, str, "message5Hash mismatch")
+			})
+		}
+	})
+
+	t.Run("array", func(t *testing.T) {
+		extractor := &Message5HashArrayExtractor{}
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				req := testhelper.CreateTestRequest(testhelper.WithBody(tc.req))
+				val, err := extractor.Features(req)
+				require.NoError(t, err)
+				if tc.expected == "" {
+					assert.Empty(t, val, "message5HashArray should be empty")
+				} else {
+					expectedArray := strings.Split(tc.expected, "-")
+					assert.Equal(t, expectedArray, val, "message5HashArray mismatch")
+				}
+			})
+		}
+	})
 }
