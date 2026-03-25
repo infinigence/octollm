@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"unicode"
 
 	"github.com/infinigence/octollm/pkg/octollm"
 )
@@ -43,6 +44,19 @@ const (
 	isSpamKey moderatorMetadataKey = "is_spam"
 )
 
+// trimRune trims leading and trailing whitespace from a []rune slice.
+// Operates directly on the rune slice instead of using strings.TrimSpace(string(text))
+// to avoid two allocations: rune→byte (string conversion) and byte→rune (back-conversion).
+func trimRune(text []rune) []rune {
+	for len(text) > 0 && unicode.IsSpace(text[0]) {
+		text = text[1:]
+	}
+	for len(text) > 0 && unicode.IsSpace(text[len(text)-1]) {
+		text = text[:len(text)-1]
+	}
+	return text
+}
+
 func GetIsSpam(req *octollm.Request) (bool, bool) {
 	if req == nil {
 		return false, false
@@ -65,12 +79,15 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrModeratorInternalError, err)
 		}
+		text = trimRune(text)
 		if len(text) > maxRuneLen {
 			// truncate text to last max rune len
 			text = text[len(text)-maxRuneLen:]
 		}
-		if err := e.ModeratorService.Allow(req.Context(), text); err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrInputNotAllowed, err)
+		if len(text) != 0 {
+			if err := e.ModeratorService.Allow(req.Context(), text); err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrInputNotAllowed, err)
+			}
 		}
 	}
 
@@ -93,6 +110,10 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 		if len(text) > maxRuneLen {
 			// truncate text to last max rune len
 			text = text[len(text)-maxRuneLen:]
+		}
+		text = trimRune(text)
+		if len(text) == 0 {
+			return resp, nil
 		}
 		if err := e.ModeratorService.Allow(req.Context(), text); err != nil {
 			replacement := e.TextModeratorAdapter.GetReplacementBody(req.Context(), resp.Body)
@@ -147,10 +168,13 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 			chunkBuffer = append(chunkBuffer, chunk)
 			chunkCountSinceLast++
 			if chunkCountSinceLast >= moderateEvery {
-				if err := e.ModeratorService.Allow(ctx, textBuffer); err != nil {
-					slog.DebugContext(ctx, fmt.Sprintf("moderate stream chunk error: %s", err))
-					moderationFailedErr = fmt.Errorf("%w: %w", ErrOutputNotAllowed, err)
-					break
+				textBufferTrimmed := trimRune(textBuffer)
+				if len(textBufferTrimmed) != 0 {
+					if err := e.ModeratorService.Allow(ctx, textBufferTrimmed); err != nil {
+						slog.DebugContext(ctx, fmt.Sprintf("moderate stream chunk error: %s", err))
+						moderationFailedErr = fmt.Errorf("%w: %w", ErrOutputNotAllowed, err)
+						break
+					}
 				}
 				chunkCountSinceLast = 0
 				for _, chunk := range chunkBuffer {
@@ -167,10 +191,14 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 		// Handle remaining chunks after stream ends
 		if moderationFailedErr == nil && len(chunkBuffer) > 0 {
 			slog.DebugContext(ctx, fmt.Sprintf("[moderate] processing %d remaining chunks", len(chunkBuffer)))
-			if err := e.ModeratorService.Allow(ctx, textBuffer); err != nil {
-				slog.DebugContext(ctx, fmt.Sprintf("moderate remaining stream chunks error: %s", err))
-				moderationFailedErr = fmt.Errorf("%w: %w", ErrOutputNotAllowed, err)
-			} else {
+			textBufferTrimmed := trimRune(textBuffer)
+			if len(textBufferTrimmed) != 0 {
+				if err := e.ModeratorService.Allow(ctx, textBufferTrimmed); err != nil {
+					slog.DebugContext(ctx, fmt.Sprintf("moderate remaining stream chunks error: %s", err))
+					moderationFailedErr = fmt.Errorf("%w: %w", ErrOutputNotAllowed, err)
+				}
+			}
+			if moderationFailedErr == nil {
 				// Send remaining chunks if moderation passed
 				for _, chunk := range chunkBuffer {
 					select {
