@@ -7,11 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/infinigence/octollm/pkg/engines/moderator"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/openai"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // MockEngine 用于测试的 mock engine
@@ -25,8 +26,8 @@ func (m *mockEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 }
 
 // 辅助函数：创建使用 TextModeratorEngine 的重复检测器
-func newRepeatDetectorEngine(config *RepeatDetectorConfig, modelName string, next octollm.Engine) *moderator.TextModeratorEngine {
-	service := NewRepeatDetectorService(config, modelName)
+func newRepeatDetectorEngine(config *RepeatDetectorConfig, modelName string, svcName string, next octollm.Engine) *moderator.TextModeratorEngine {
+	service := NewRepeatDetectorService(config, modelName, svcName)
 	return &moderator.TextModeratorEngine{
 		ModeratorService:     service,
 		TextModeratorAdapter: moderator.NewUniversalAdapter(), // 使用通用 adapter
@@ -67,6 +68,7 @@ func TestRepeatDetector_NonStream_WithRepetition(t *testing.T) {
 			BlockOnDetect:   false, // 不拦截，只记录日志
 		},
 		"gpt-4",
+		"default:1",
 		mockEngine,
 	)
 
@@ -112,6 +114,7 @@ func TestRepeatDetector_NonStream_NoRepetition(t *testing.T) {
 			BlockOnDetect:   false, // 不拦截，只记录日志
 		},
 		"gpt-4",
+		"default:1",
 		mockEngine,
 	)
 
@@ -167,6 +170,7 @@ func TestRepeatDetector_Stream_WithRepetition(t *testing.T) {
 			BlockOnDetect:   false, // 不拦截，只记录日志
 		},
 		"gpt-4",
+		"default:1",
 		mockEngine,
 	)
 
@@ -229,6 +233,7 @@ func TestRepeatDetector_Stream_NoRepetition(t *testing.T) {
 			BlockOnDetect:   false, // 不拦截，只记录日志
 		},
 		"gpt-4",
+		"default:1",
 		mockEngine,
 	)
 
@@ -279,6 +284,7 @@ func TestRepeatDetector_EmptyResponse(t *testing.T) {
 			BlockOnDetect:   false, // 不拦截，只记录日志
 		},
 		"gpt-4",
+		"default:1",
 		mockEngine,
 	)
 
@@ -328,6 +334,7 @@ func TestRepeatDetector_BlockOnDetect(t *testing.T) {
 				BlockMessage:    blockMessage,
 			},
 			"gpt-4",
+			"default:1",
 		),
 		TextModeratorAdapter: moderator.NewUniversalAdapterWithConfig(
 			blockMessage,                // 流式拦截消息
@@ -406,6 +413,7 @@ func TestRepeatDetector_BlockOnDetect_Stream(t *testing.T) {
 				BlockMessage:    blockMessage,
 			},
 			"gpt-4",
+			"default:1",
 		),
 		TextModeratorAdapter: moderator.NewUniversalAdapterWithConfig(
 			blockMessage,                // 流式拦截消息

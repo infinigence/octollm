@@ -32,6 +32,7 @@ func DefaultRepeatDetectorConfig() *RepeatDetectorConfig {
 type RepeatDetectorService struct {
 	config    *RepeatDetectorConfig
 	modelName string
+	svcName   string
 }
 
 var _ moderator.TextModeratorService = (*RepeatDetectorService)(nil)
@@ -40,6 +41,7 @@ var _ moderator.TextModeratorService = (*RepeatDetectorService)(nil)
 func NewRepeatDetectorService(
 	config *RepeatDetectorConfig,
 	modelName string,
+	svcName string,
 ) *RepeatDetectorService {
 	if config == nil {
 		config = DefaultRepeatDetectorConfig()
@@ -47,6 +49,7 @@ func NewRepeatDetectorService(
 	return &RepeatDetectorService{
 		config:    config,
 		modelName: modelName,
+		svcName:   svcName,
 	}
 }
 
@@ -87,11 +90,10 @@ func (s *RepeatDetectorService) logRepeatDetection(ctx context.Context, content,
 	}
 
 	traceID := extractTraceID(ctx)
-	svcName := extractBackendName(ctx)
 
 	slog.WarnContext(ctx, "[RepeatDetector] Repeated pattern detected",
 		"model", s.modelName,
-		"svc_name", svcName,
+		"svc_name", s.svcName,
 		"trace_id", traceID,
 		"detection_time", detectionTime,
 		"content_length", len([]rune(content)),
@@ -100,7 +102,7 @@ func (s *RepeatDetectorService) logRepeatDetection(ctx context.Context, content,
 		"pattern_length", len(pattern))
 
 	// record metrics to Grafana
-	moderator.RepeatDetectionCounter.WithLabelValues(svcName, s.modelName).Inc()
+	moderator.RepeatDetectionCounter.WithLabelValues(s.svcName, s.modelName).Inc()
 }
 
 // extract trace_id from context
@@ -111,18 +113,6 @@ func extractTraceID(ctx context.Context) string {
 
 	if traceID, ok := ctx.Value("trace_id").(string); ok {
 		return traceID
-	}
-	return ""
-}
-
-// extract backend_name from context
-func extractBackendName(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-
-	if backendName, ok := ctx.Value("backend_name").(string); ok {
-		return backendName
 	}
 	return ""
 }
