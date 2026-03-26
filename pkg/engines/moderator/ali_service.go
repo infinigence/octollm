@@ -185,7 +185,7 @@ func (s *AliModeratorService) Allow(ctx context.Context, text []rune) error {
 
 	// Check HTTP status code
 	if *apiResult.StatusCode != http.StatusOK {
-		slog.WarnContext(ctx, fmt.Sprintf("[AliModeratorService.Allow] aliyun API returned error status: %d", *apiResult.StatusCode))
+		slog.WarnContext(ctx, fmt.Sprintf("[AliModeratorService.Allow] aliyun API returned error status: %d, serviceParameters: %s", *apiResult.StatusCode, string(serviceParameters)))
 		result, status = ModerationResultNil, ModerationRequestFailed
 		return fmt.Errorf("aliyun API returned error status: %d", *apiResult.StatusCode)
 	}
@@ -193,7 +193,11 @@ func (s *AliModeratorService) Allow(ctx context.Context, text []rune) error {
 	// Check business status code
 	body := apiResult.Body
 	if *body.Code != http.StatusOK {
-		slog.WarnContext(ctx, fmt.Sprintf("[AliModeratorService.Allow] aliyun API returned error code: %d", *body.Code))
+		var msg string
+		if body.Message != nil {
+			msg = *body.Message
+		}
+		slog.WarnContext(ctx, fmt.Sprintf("[AliModeratorService.Allow] aliyun API returned error code: %d, message: %s, serviceParameters: %s", *body.Code, msg, string(serviceParameters)))
 		result, status = ModerationResultNil, ModerationRequestFailed
 		return fmt.Errorf("aliyun API returned error code: %d", *body.Code)
 	}
