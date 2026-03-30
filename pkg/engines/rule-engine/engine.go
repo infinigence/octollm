@@ -73,7 +73,6 @@ func (e *RuleEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 			return resp, nil
 		}
 
-		slog.ErrorContext(req.Context(), fmt.Sprintf("[rule-engine] rule %s exec error: %s", r.Name, err.Error()))
 		eAct := &ErrWithAction{}
 		if !errors.As(err, &eAct) {
 			return nil, fmt.Errorf("%w: %w", ErrRuleActionError, err)
@@ -81,7 +80,7 @@ func (e *RuleEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 
 		switch eAct.Action {
 		case RuleEngineActionContinue:
-			slog.DebugContext(req.Context(), "[rule-engine] continue to next rule")
+			slog.ErrorContext(req.Context(), fmt.Sprintf("[rule-engine] rule %s exec error: %s, continue to next rule", r.Name, err.Error()))
 			continue
 		default:
 			return nil, fmt.Errorf("%w: %w", ErrRuleActionError, err)
