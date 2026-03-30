@@ -13,7 +13,7 @@ type ChatCompletionResponse struct {
 	ServiceTier       *string                 `json:"service_tier,omitempty"`       // 服务层级信息
 }
 
-// ChatCompletionStreamResponse represents a streaming chat completion response chunk
+// ChatCompletionStreamChunk represents a streaming chat completion response chunk
 type ChatCompletionStreamChunk struct {
 	ID                string                        `json:"id"`
 	Created           int                           `json:"created"`

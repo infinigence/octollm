@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// MessagesRequest represents a complete Anthropic Messages API request
+// ClaudeMessagesRequest represents a complete Anthropic Messages API request
 type ClaudeMessagesRequest struct {
 	MaxTokens   int64           `json:"max_tokens"`
 	Messages    []*MessageParam `json:"messages"`
@@ -242,7 +242,7 @@ type ThinkingConfig struct {
 	BudgetTokens *int64 `json:"budget_tokens,omitempty"` // Minimum 1024 tokens
 }
 
-// Tool definition
+// ToolDefinition for defining tools that the model can use
 type ToolDefinition struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
@@ -292,29 +292,29 @@ type MessageCacheControl struct {
 	TTL  *string `json:"ttl,omitempty"`
 }
 
-func (m ClaudeMessagesRequest) MarshalJSON() ([]byte, error) {
+func (r ClaudeMessagesRequest) MarshalJSON() ([]byte, error) {
 	type Alias ClaudeMessagesRequest
 	aux := struct {
 		System interface{} `json:"system,omitempty"`
 		Alias
 	}{
-		Alias: (Alias)(m),
+		Alias: (Alias)(r),
 	}
 
-	if m.System != nil {
-		aux.System = m.System
+	if r.System != nil {
+		aux.System = r.System
 	}
 
 	return json.Marshal(aux)
 }
 
-func (m *ClaudeMessagesRequest) UnmarshalJSON(data []byte) error {
+func (r *ClaudeMessagesRequest) UnmarshalJSON(data []byte) error {
 	type Alias ClaudeMessagesRequest
 	aux := &struct {
 		System json.RawMessage `json:"system,omitempty"`
 		*Alias
 	}{
-		Alias: (*Alias)(m),
+		Alias: (*Alias)(r),
 	}
 
 	if err := json.Unmarshal(data, &aux); err != nil {
@@ -326,14 +326,14 @@ func (m *ClaudeMessagesRequest) UnmarshalJSON(data []byte) error {
 		// Try to unmarshal as string first
 		var systemStr string
 		if err := json.Unmarshal(aux.System, &systemStr); err == nil {
-			m.System = SystemString(systemStr)
+			r.System = SystemString(systemStr)
 			return nil
 		}
 
 		// Try to unmarshal as array of system blocks
 		var systemBlocks []SystemBlock
 		if err := json.Unmarshal(aux.System, &systemBlocks); err == nil {
-			m.System = SystemBlocks(systemBlocks)
+			r.System = SystemBlocks(systemBlocks)
 			return nil
 		}
 

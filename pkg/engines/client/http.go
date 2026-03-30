@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/http/httputil"
 	"slices"
 	"strings"
 	"time"
@@ -38,6 +39,16 @@ const (
 )
 
 var ErrStreamScan = errors.New("scanner error reading stream body")
+
+var sensitiveHeaders = []string{"Authorization", "X-Api-Key", "X-Auth-Token", "Api-Key"}
+
+func redactSensitiveHeaders(h http.Header) {
+	for _, key := range sensitiveHeaders {
+		if h.Get(key) != "" {
+			h.Set(key, "[REDACTED]")
+		}
+	}
+}
 
 func GetClientRecvFirstChunkTime(req *octollm.Request) (time.Time, bool) {
 	if req == nil {
@@ -113,6 +124,11 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 		e.client = http.DefaultClient
 	}
 
+	parsed, err := req.Body.Parsed()
+	if err != nil {
+		return nil, fmt.Errorf("parse request body error: %w", err)
+	}
+
 	bodyReader, err := req.Body.Reader()
 	if err != nil {
 		return nil, fmt.Errorf("get request body reader error: %w", err)
@@ -135,11 +151,20 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 
+	dumpReq := httpReq.Clone(httpReq.Context())
+	redactSensitiveHeaders(dumpReq.Header)
+	if reqDump, dumpErr := httputil.DumpRequestOut(dumpReq, false); dumpErr == nil {
+		slog.DebugContext(req.Context(), fmt.Sprintf("[http-endpoint] outgoing request:\n%s%v", string(reqDump), parsed))
+	}
+
 	resp, err := e.client.Do(httpReq)
 	if err != nil {
 		return nil, &errutils.UpstreamHTTPError{
 			Err: fmt.Errorf("do request error: %w", err),
 		}
+	}
+	if respDump, dumpErr := httputil.DumpResponse(resp, false); dumpErr == nil {
+		slog.DebugContext(req.Context(), fmt.Sprintf("[http-endpoint] incoming response:\n%s", string(respDump)))
 	}
 
 	if resp.StatusCode != http.StatusOK {

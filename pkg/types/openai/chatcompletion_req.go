@@ -280,7 +280,7 @@ type MessageContentItemInputAudio struct {
 	Format string `json:"format" binding:"required"`
 }
 
-// Added for Gemini file support
+// MessageContentItemFile Added for Gemini file support
 type MessageContentItemFile struct {
 	FileURI  string `json:"file_uri" binding:"required"`
 	MIMEType string `json:"mime_type,omitempty"`
