@@ -213,6 +213,7 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, req *octollm.Reques
 
 	var recvFirstChunkTime time.Time
 
+	var totalChunkSent int
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -238,6 +239,7 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, req *octollm.Reques
 			}
 			select {
 			case ch <- chunk:
+				totalChunkSent++
 				// slog.DebugContext(ctx, fmt.Sprintf("[http-endpoint] pushed stream chunk: len=%d", bodyLen))
 			case <-ctx.Done():
 				slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] context error during stream response: %v", ctx.Err()))
@@ -280,7 +282,9 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, req *octollm.Reques
 	}
 	if err := scanner.Err(); err != nil {
 		req.SetMetadataValue(clientProcessStreamError, fmt.Errorf("%w: %w", ErrStreamScan, err))
-		slog.WarnContext(ctx, fmt.Sprintf("[http-endpoint] scan response body error: %v", err))
+		slog.WarnContext(ctx, fmt.Sprintf("[http-endpoint] scan response body error: %v, total chunks sent: %d", err, totalChunkSent))
+	} else {
+		slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] stream ended: normal completion, total chunks sent: %d", totalChunkSent))
 	}
 }
 
@@ -303,6 +307,7 @@ func (e *HTTPEndpoint) processJSONStream(ctx context.Context, req *octollm.Reque
 	}
 
 	var recvFirstChunkTime time.Time
+	var totalChunkSent int
 
 	// Read array elements
 	for dec.More() {
@@ -328,9 +333,10 @@ func (e *HTTPEndpoint) processJSONStream(ctx context.Context, req *octollm.Reque
 
 		select {
 		case ch <- chunk:
+			totalChunkSent++
 			// slog.DebugContext(ctx, fmt.Sprintf("[http-endpoint] pushed JSON stream chunk: len=%d", len(rawMsg)))
 		case <-ctx.Done():
-			slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] context error during JSON stream response: %v", ctx.Err()))
+			slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] context error during JSON stream response: %v, total chunks sent: %d", ctx.Err(), totalChunkSent))
 			return
 		}
 	}
@@ -338,7 +344,14 @@ func (e *HTTPEndpoint) processJSONStream(ctx context.Context, req *octollm.Reque
 	// Read closing bracket ']'
 	_, err = dec.Token()
 	if err != nil {
-		slog.WarnContext(ctx, fmt.Sprintf("[http-endpoint] failed to read closing bracket: %v", err))
+		req.SetMetadataValue(clientProcessStreamError, err)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] stream ended: context cancelled: %v, total chunks sent: %d", err, totalChunkSent))
+		} else {
+			slog.WarnContext(ctx, fmt.Sprintf("[http-endpoint] stream ended: failed to read closing bracket (upstream engine may have crashed): %v, total chunks sent: %d", err, totalChunkSent))
+		}
 		return
+	} else {
+		slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] stream ended: normal completion, total chunks sent: %d", totalChunkSent))
 	}
 }
