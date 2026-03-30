@@ -245,14 +245,21 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			b := prioritized[prioritizedIndex]
 			prioritizedIndex++
 			n, eng = b.name, b.engine
+			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] prioritized backend hit: %s (index %d/%d), shardKeys: %v", n, prioritizedIndex, len(prioritized), shardKeyList))
 		} else {
+			candidates := make([]string, 0, len(l.backends))
+			for _, b := range l.backends {
+				if b != nil && !excludeNames[b.name] {
+					candidates = append(candidates, b.name)
+				}
+			}
 			n, eng = l.selectByConcurrency(req, excludeNames)
+			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no prioritized backend available (exhausted %d), fallback to concurrency-based selection: %s, shardKeys: %v, candidates: %v", len(prioritized), n, shardKeyList, candidates))
 		}
 
 		if eng == nil {
 			return nil, fmt.Errorf("no backend engine available")
 		}
-		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] will use engine name: %s", n))
 		req.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(req)
 		if err == nil {

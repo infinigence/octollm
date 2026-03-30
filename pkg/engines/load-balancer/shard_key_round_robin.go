@@ -199,6 +199,12 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 	}
 	prioritizedBackends := l.resolvePrioritizedBackends(req.Context(), shardKeyList)
 	prioritizedIndex := 0
+	candidates := make([]string, 0, len(l.backends))
+	for _, b := range l.backends {
+		if b != nil && b.weight > 0 {
+			candidates = append(candidates, b.name)
+		}
+	}
 
 	start := time.Now()
 	retryCount := 0
@@ -215,7 +221,11 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 		if eng == nil {
 			return nil, fmt.Errorf("no backend engine available")
 		}
-		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] will use engine name: %s", n))
+		if prioritizedBackend != "" && n == prioritizedBackend {
+			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] prioritized backend hit: %s (index %d/%d), shardKeys: %v, candidates: %v", n, prioritizedIndex, len(prioritizedBackends), shardKeyList, candidates))
+		} else {
+			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] no prioritized backend available (exhausted %d), fallback to WRR: %s, shardKeys: %v, candidates: %v", len(prioritizedBackends), n, shardKeyList, candidates))
+		}
 		req.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(req)
 		if err == nil {
