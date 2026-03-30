@@ -66,7 +66,7 @@ func GetClientProcessStreamError(req *octollm.Request) (error, bool) {
 type HTTPEndpoint struct {
 	client          *http.Client
 	getURL          func(req *octollm.Request) (string, error)
-	reqModifier     func(req *octollm.Request, hreq *http.Request) *http.Request
+	reqModifiers    []func(req *octollm.Request, hreq *http.Request) *http.Request
 	nonstreamParser func(req *octollm.Request) octollm.Parser
 	streamParser    func(req *octollm.Request) (octollm.Parser, StreamingType)
 }
@@ -89,7 +89,7 @@ func (e *HTTPEndpoint) WithURLGetter(getURL func(req *octollm.Request) (string, 
 }
 
 func (e *HTTPEndpoint) WithRequestModifier(reqModifier func(req *octollm.Request, hreq *http.Request) *http.Request) *HTTPEndpoint {
-	e.reqModifier = reqModifier
+	e.reqModifiers = append(e.reqModifiers, reqModifier)
 	return e
 }
 
@@ -127,9 +127,12 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 		return nil, fmt.Errorf("new request error: %w", err)
 	}
 
-	httpReq.Header = req.Header
-	if e.reqModifier != nil {
-		httpReq = e.reqModifier(req, httpReq)
+	httpReq.Header = req.Header.Clone()
+	for _, modifier := range e.reqModifiers {
+		if modifier == nil {
+			continue
+		}
+		httpReq = modifier(req, httpReq)
 	}
 	if httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", "application/json")

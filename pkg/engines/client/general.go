@@ -1,8 +1,11 @@
 package client
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -30,6 +33,10 @@ type GeneralEndpointConfig struct {
 	AnthropicAPIKeyAsBearer bool
 
 	GoogleAPIKeyAsBearer bool
+
+	// RequestCompression specifies the compression algorithm for outbound request bodies.
+	// Currently only "gzip" is supported.
+	RequestCompression string
 }
 
 var DefaultURLPathChatCompletions = "/v1/chat/completions"
@@ -118,17 +125,32 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 
 	if apiKey != "" {
 		httpEndpoint = httpEndpoint.WithRequestModifier(func(req *octollm.Request, httpReq *http.Request) *http.Request {
-			// Handle different authentication methods
 			if req.Format == octollm.APIFormatClaudeMessages && !conf.AnthropicAPIKeyAsBearer {
-				// Claude with x-api-key header
 				httpReq.Header.Set("x-api-key", apiKey)
 			} else if req.Format == octollm.APIFormatGoogleGenerateContent && !conf.GoogleAPIKeyAsBearer {
-				// Google Vertex AI with API Key
 				httpReq.Header.Set("x-goog-api-key", apiKey)
 			} else {
-				// Default: Bearer token for OpenAI, Google OAuth, and others
 				httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 			}
+			return httpReq
+		})
+	}
+
+	if conf.RequestCompression == "gzip" {
+		httpEndpoint = httpEndpoint.WithRequestModifier(func(req *octollm.Request, httpReq *http.Request) *http.Request {
+			bodyBytes, err := req.Body.Bytes()
+			if err != nil {
+				slog.WarnContext(req.Context(), fmt.Sprintf("[general-endpoint] failed to read body for gzip compression: %v", err))
+				return httpReq
+			}
+			var buf bytes.Buffer
+			gz := gzip.NewWriter(&buf)
+			gz.Write(bodyBytes)
+			gz.Close()
+			compressed := buf.Bytes()
+			httpReq.Body = io.NopCloser(bytes.NewReader(compressed))
+			httpReq.ContentLength = int64(len(compressed))
+			httpReq.Header.Set("Content-Encoding", "gzip")
 			return httpReq
 		})
 	}

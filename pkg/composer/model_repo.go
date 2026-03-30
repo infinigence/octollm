@@ -118,6 +118,9 @@ func (m *ModelRepoFileBased) UpdateFromConfig(conf *ConfigFile) error {
 			if backend.URLPathRerank != nil {
 				finalBackend.URLPathRerank = backend.URLPathRerank
 			}
+			if backend.RequestCompression != "" {
+				finalBackend.RequestCompression = backend.RequestCompression
+			}
 			if backend.ConvertToChat != "" {
 				finalBackend.ConvertToChat = backend.ConvertToChat
 			}
@@ -253,6 +256,9 @@ func (m *ModelRepoFileBased) BuildEngineByBackend(b *Backend) (octollm.Engine, e
 	}
 	if len(generalConf.Endpoints) == 0 {
 		return nil, fmt.Errorf("backend must specify at least one URL path (chat, messages, vertex, embedding, or rerank)")
+	}
+	if b.RequestCompression != "" {
+		generalConf.RequestCompression = b.RequestCompression
 	}
 
 	llmGE := client.NewGeneralEndpoint(*generalConf)
