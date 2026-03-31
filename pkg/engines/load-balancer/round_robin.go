@@ -114,6 +114,8 @@ func (l *WeightedRoundRobin) Process(req *octollm.Request) (*octollm.Response, e
 			return resp, err
 		}
 		slog.InfoContext(req.Context(), fmt.Sprintf("[WRR load balancer] will retry, count %d, time %v", retryCount, time.Since(start)))
+		modelName, _ := octollm.GetCtxValue[string](req, octollm.ContextKeyModelName)
+		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
 	}
 }
 

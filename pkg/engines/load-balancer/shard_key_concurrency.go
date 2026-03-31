@@ -300,5 +300,7 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			return resp, err
 		}
 		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] will retry, count %d, time %v", retryCount, time.Since(start)))
+		modelName, _ := octollm.GetCtxValue[string](req, octollm.ContextKeyModelName)
+		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
 	}
 }

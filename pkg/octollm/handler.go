@@ -27,6 +27,7 @@ const (
 	ContextKeyAction         contextKey = "action"
 	ContextKeyReceivedHeader contextKey = "received_header"
 	ContextKeyStreamSignaler contextKey = "stream_signaler"
+	ContextKeyIsStream       contextKey = "is_stream"
 )
 
 type Server struct {

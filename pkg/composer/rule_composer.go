@@ -1,6 +1,7 @@
 package composer
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -312,6 +313,8 @@ func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, e
 			default:
 				return nil, fmt.Errorf("unsupported model request type: %T", body)
 			}
+			ctx := context.WithValue(req.Context(), octollm.ContextKeyModelName, r.Model)
+			req = req.WithContext(ctx)
 		}
 	}
 
@@ -324,6 +327,8 @@ func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, e
 		if isStream {
 			slog.InfoContext(req.Context(), "[RuleComposerEngine] Detected stream request")
 		}
+		ctx := context.WithValue(req.Context(), octollm.ContextKeyIsStream, isStream)
+		req = req.WithContext(ctx)
 	}
 
 	engine, err := r.getEngine(r.OrgName, r.Model)

@@ -30,7 +30,7 @@ var (
 			Help:    "Time spent processing moderation requests",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"service"},
+		[]string{"service_name"},
 	)
 
 	// Content length histogram
@@ -40,7 +40,7 @@ var (
 			Help:    "Length of content being moderated in runes",
 			Buckets: []float64{5, 20, 50, 100, 200, 500, 1000},
 		},
-		[]string{"service"},
+		[]string{"service_name"},
 	)
 
 	// Request counter
@@ -49,7 +49,7 @@ var (
 			Name: "octollm_moderator_requests_total",
 			Help: "Total number of moderation requests",
 		},
-		[]string{"service", "result", "status"},
+		[]string{"service_name", "result", "status"},
 	)
 
 	// Duplication detection counter
@@ -58,7 +58,7 @@ var (
 			Name: "octollm_repeat_detection_total",
 			Help: "Total number of repeat pattern detections",
 		},
-		[]string{"service", "model"},
+		[]string{"backend_name", "model_name"},
 	)
 )
 
