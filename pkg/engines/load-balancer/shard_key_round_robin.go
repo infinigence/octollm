@@ -199,32 +199,28 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 	}
 	prioritizedBackends := l.resolvePrioritizedBackends(req.Context(), shardKeyList)
 	prioritizedIndex := 0
-	candidates := make([]string, 0, len(l.backends))
-	for _, b := range l.backends {
-		if b != nil && b.weight > 0 {
-			candidates = append(candidates, b.name)
-		}
-	}
+	excludeNames := make(map[string]bool)
 
 	start := time.Now()
 	retryCount := 0
 	for {
 		var prioritizedBackend string
 		if prioritizedIndex < len(prioritizedBackends) {
-			if b := prioritizedBackends[prioritizedIndex]; b != nil {
+			if b := prioritizedBackends[prioritizedIndex]; b != nil && !excludeNames[b.name] {
 				prioritizedBackend = b.name
-				prioritizedIndex++
 			}
+			prioritizedIndex++
 		}
 
-		n, eng := l.GetNextEngine(prioritizedBackend)
+		n, eng := l.GetNextEngine(req.Context(), prioritizedBackend, excludeNames)
 		if eng == nil {
+			// should not happen: the loop exits before all backends are excluded (line 264 above); panic guard only
 			return nil, fmt.Errorf("no backend engine available")
 		}
 		if prioritizedBackend != "" && n == prioritizedBackend {
-			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] prioritized backend hit: %s (index %d/%d), shardKeys: %v, candidates: %v", n, prioritizedIndex, len(prioritizedBackends), shardKeyList, candidates))
+			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] prioritized backend hit: %s (index %d/%d), shardKeys: %v", n, prioritizedIndex, len(prioritizedBackends), shardKeyList))
 		} else {
-			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] no prioritized backend available (exhausted %d), fallback to WRR: %s, shardKeys: %v, candidates: %v", len(prioritizedBackends), n, shardKeyList, candidates))
+			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] no prioritized backend available (exhausted %d), fallback to WRR: %s, shardKeys: %v", len(prioritizedBackends), n, shardKeyList))
 		}
 		req.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(req)
@@ -249,6 +245,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 
 			return resp, nil
 		}
+		excludeNames[n] = true
 		retryCount++
 		if req.Context().Err() != nil {
 			// if context is done, return immediately without retrying
@@ -265,6 +262,10 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] retry max count %d reached, return last resp and err", l.retryMaxCount))
 			return resp, err
 		}
+		if len(excludeNames) >= len(l.backends) {
+			slog.WarnContext(req.Context(), "[ShardKey WRR load balancer] all backends have been tried, return last resp and err")
+			return resp, err
+		}
 		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] will retry, count %d, time %v", retryCount, time.Since(start)))
 		modelName, _ := octollm.GetCtxValue[string](req, octollm.ContextKeyModelName)
 		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
@@ -275,10 +276,11 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 // Step for each pick:
 //  1. Compute totalWeight and threshold = -minWeightMultiple * totalWeight.
 //  2. If prioritizedBackend is non-empty and its backend's currentWeight >= threshold, pick it;
-//     otherwise pick the backend with the largest currentWeight among those whose currentWeight >= threshold.
+//     otherwise pick the backend with the largest currentWeight among those whose currentWeight >= threshold,
+//     skipping any backend in excludeNames.
 //  3. For the selected backend, subtract totalWeight from its currentWeight.
 //  4. Then, for all backends, add their own weight once (currentWeight += weight).
-func (l *ShardKeyWeightedRoundRobin) GetNextEngine(prioritizedBackend string) (string, octollm.Engine) {
+func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioritizedBackend string, excludeNames map[string]bool) (string, octollm.Engine) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -314,10 +316,13 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(prioritizedBackend string) (s
 		}
 	}
 
-	// Fallback to normal WRR among backends whose currentWeight >= threshold.
+	// Fallback to normal WRR among non-excluded backends whose currentWeight >= threshold.
 	if selected == nil {
 		for _, backend := range l.backends {
 			if backend == nil || backend.weight <= 0 {
+				continue
+			}
+			if excludeNames[backend.name] {
 				continue
 			}
 			if backend.currentWeight < threshold {
@@ -332,6 +337,20 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(prioritizedBackend string) (s
 	if selected == nil {
 		return "", nil
 	}
+
+	// Capture weight snapshot of remaining candidates (inside lock, before weight update).
+	type snapshot struct {
+		name          string
+		currentWeight int
+	}
+	candidates := make([]snapshot, 0, len(l.backends))
+	for _, backend := range l.backends {
+		if backend == nil || excludeNames[backend.name] {
+			continue
+		}
+		candidates = append(candidates, snapshot{name: backend.name, currentWeight: backend.currentWeight})
+	}
+	slog.InfoContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] selected: %s (currentWeight=%d), candidates: %v", selected.name, selected.currentWeight, candidates))
 
 	// Step 3: subtract totalWeight from selected backend.
 	selected.currentWeight -= totalWeight

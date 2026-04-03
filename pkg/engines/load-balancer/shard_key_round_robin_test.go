@@ -11,26 +11,36 @@ import (
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 type stubEngine struct {
-	resp       *octollm.Response
-	err        error
-	callCount  int
-	lastReqCtx context.Context
+	resp         *octollm.Response
+	err          error
+	callCount    int
+	lastReqCtx   context.Context
+	lastCalledTs time.Time
 }
 
 func (s *stubEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	s.callCount++
+	s.lastCalledTs = time.Now()
 	if req != nil {
 		s.lastReqCtx = req.Context()
 	}
-	if s.resp == nil {
+	if s.resp == nil && s.err == nil {
 		return &octollm.Response{StatusCode: 200}, s.err
 	}
 	return s.resp, s.err
+}
+
+func (s *stubEngine) reset() {
+	s.callCount = 0
+	s.lastReqCtx = nil
+	s.lastCalledTs = time.Time{}
 }
 
 func newTestRequest(t *testing.T) *octollm.Request {
@@ -151,7 +161,7 @@ func TestGetNextEngine_PrioritizedHit(t *testing.T) {
 		minWeightMultiple: 5,
 	}
 
-	name, eng := lb.GetNextEngine("b")
+	name, eng := lb.GetNextEngine(context.Background(), "b", nil)
 	assert.Equal(t, "b", name)
 	assert.Equal(t, e2, eng)
 
@@ -175,7 +185,7 @@ func TestGetNextEngine_FallbackWhenPrioritizedBelowThreshold(t *testing.T) {
 		minWeightMultiple: 5,
 	}
 
-	name, eng := lb.GetNextEngine("prior")
+	name, eng := lb.GetNextEngine(context.Background(), "prior", nil)
 	assert.Equal(t, "other", name)
 	assert.Equal(t, eOther, eng)
 }
@@ -189,7 +199,7 @@ func TestGetNextEngine_NoEligibleBackend(t *testing.T) {
 		minWeightMultiple: 5,
 	}
 
-	name, eng := lb.GetNextEngine("")
+	name, eng := lb.GetNextEngine(context.Background(), "", nil)
 	assert.Equal(t, "", name)
 	assert.Nil(t, eng)
 }
@@ -318,7 +328,8 @@ func TestShardKeyWeightedRoundRobin_Process_RetryMaxCount(t *testing.T) {
 	if assert.NotNil(t, resp) {
 		assert.Equal(t, 500, resp.StatusCode)
 	}
-	assert.Equal(t, 2, failEngine.callCount)
+	// With excludeNames, once all backends are exhausted (1 backend tried), we stop.
+	assert.Equal(t, 1, failEngine.callCount)
 }
 
 func TestGetNextEngine_SmoothWeightedRoundRobin_NoShard(t *testing.T) {
@@ -339,7 +350,7 @@ func TestGetNextEngine_SmoothWeightedRoundRobin_NoShard(t *testing.T) {
 	sequence := make([]string, 0, totalPicks)
 
 	for i := 0; i < totalPicks; i++ {
-		name, eng := lb.GetNextEngine("")
+		name, eng := lb.GetNextEngine(context.Background(), "", nil)
 		assert.NotEmpty(t, name)
 		assert.NotNil(t, eng)
 		counts[name]++
@@ -382,7 +393,7 @@ func TestGetNextEngine_ShardHitEventuallyFallsBackWhenBelowThreshold(t *testing.
 	sawNonAAfterA := false
 
 	for i := 0; i < iterations; i++ {
-		name, eng := lb.GetNextEngine("A")
+		name, eng := lb.GetNextEngine(context.Background(), "A", nil)
 		assert.NotEmpty(t, name)
 		assert.NotNil(t, eng)
 
@@ -397,4 +408,63 @@ func TestGetNextEngine_ShardHitEventuallyFallsBackWhenBelowThreshold(t *testing.
 
 	assert.True(t, sawA, "shard-hit backend A should be selected at least once")
 	assert.True(t, sawNonAAfterA, "after enough hits, selection should eventually fall back to a non-A backend even when shard key keeps hitting A")
+}
+
+func TestShardKeyWeightedRoundRobin_Process_AllBackendExhausted(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	stubA := &stubEngine{err: errors.New("failure")}
+	stubB := &stubEngine{err: errors.New("failure")}
+	stubC := &stubEngine{err: errors.New("failure")}
+
+	lbItems := []BackendItem{
+		{Name: "A", Weight: 10, Engine: stubA},
+		{Name: "B", Weight: 5, Engine: stubB},
+		{Name: "C", Weight: 1, Engine: stubC},
+	}
+	shardKeyListFunc := func(req *octollm.Request) []string {
+		return []string{"shard-key-1"}
+	}
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, time.Minute, 5, shardKeyListFunc, rd, "shard-key:all-backend-exhausted")
+	require.NoError(t, err)
+
+	t.Run("all backends exhausted without shard key prioritization", func(t *testing.T) {
+		// 1. all backends should be tried exactly once before giving up
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.Error(t, err)
+		require.Nil(t, resp)
+		// All backends should have been tried once before giving up
+		assert.Equal(t, 1, stubA.callCount, "stubA should be called once")
+		assert.Equal(t, 1, stubB.callCount, "stubB should be called once")
+		assert.Equal(t, 1, stubC.callCount, "stubC should be called once")
+	})
+
+	stubA.reset()
+	stubB.reset()
+	stubC.reset()
+
+	t.Run("all backends exhausted with shard key prioritization", func(t *testing.T) {
+		ctx := context.Background()
+		_, err = rd.ZAdd(ctx, "shard-key:all-backend-exhausted:shard-key-1",
+			redis.Z{Score: float64(time.Now().Unix() - 2), Member: "A"},
+			redis.Z{Score: float64(time.Now().Unix() - 1), Member: "B"},
+			redis.Z{Score: float64(time.Now().Unix()), Member: "C"},
+		).Result()
+		require.NoError(t, err)
+
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.Error(t, err)
+		require.Nil(t, resp)
+		// All backends should have been tried once before giving up, even with prioritization
+		assert.Equal(t, 1, stubA.callCount, "stubA should be called once")
+		assert.Equal(t, 1, stubB.callCount, "stubB should be called once")
+		assert.Equal(t, 1, stubC.callCount, "stubC should be called once")
+
+		assert.Greater(t, stubA.lastCalledTs, stubB.lastCalledTs, "stubA and stubB should be called in order of prioritization")
+		assert.Greater(t, stubB.lastCalledTs, stubC.lastCalledTs, "stubB and stubC should be called in order of prioritization")
+	})
 }
