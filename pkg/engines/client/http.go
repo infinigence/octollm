@@ -166,7 +166,12 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 			Err: fmt.Errorf("do request error: %w", err),
 		}
 	}
-	if respDump, dumpErr := httputil.DumpResponse(resp, false); dumpErr == nil {
+
+	dumpRespBody := false
+	if resp.StatusCode != http.StatusOK {
+		dumpRespBody = true
+	}
+	if respDump, dumpErr := httputil.DumpResponse(resp, dumpRespBody); dumpErr == nil {
 		slog.DebugContext(req.Context(), fmt.Sprintf("[http-endpoint] incoming response:\n%s", string(respDump)))
 	}
 
