@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -129,16 +130,15 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 		return nil, fmt.Errorf("parse request body error: %w", err)
 	}
 
-	bodyReader, err := req.Body.Reader()
+	bodyBytes, err := req.Body.Bytes()
 	if err != nil {
 		return nil, fmt.Errorf("get request body reader error: %w", err)
 	}
-	defer bodyReader.Close()
 	httpReq, err := http.NewRequestWithContext(
 		req.Context(),
 		http.MethodPost,
 		url,
-		bodyReader)
+		bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("new request error: %w", err)
 	}
