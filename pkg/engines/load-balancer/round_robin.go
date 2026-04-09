@@ -23,6 +23,10 @@ type wrrBackend struct {
 	currentWeight int
 }
 
+func (b *wrrBackend) String() string {
+	return fmt.Sprintf("{%s w=%d cw=%d}", b.name, b.weight, b.currentWeight)
+}
+
 type WeightedRoundRobin struct {
 	mu       sync.Mutex
 	backends []*wrrBackend

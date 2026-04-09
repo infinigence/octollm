@@ -98,23 +98,23 @@ func TestResolvePrioritizedBackends_WithRedisAndTrim(t *testing.T) {
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 
-	backends := []*wrrBackend{
-		{name: "b1"},
-		{name: "b2"},
-		{name: "b3"},
-		{name: "b4"},
-		{name: "b5"},
+	backends := []BackendItem{
+		{Name: "b1"},
+		{Name: "b2"},
+		{Name: "b3"},
+		{Name: "b4"},
+		{Name: "b5"},
 	}
-	lb := &ShardKeyWeightedRoundRobin{
-		backends:    backends,
-		redisClient: client,
-	}
+	lb, err := NewShardKeyWeightedRoundRobin(
+		backends, 5*time.Second, 5, 5*time.Minute, nil, client, "",
+	)
+	require.NoError(t, err)
 
 	ctx := context.Background()
 	now := time.Now().Unix()
 
 	// k1 has 2 members
-	_, err := client.ZAdd(ctx, "k1",
+	_, err = client.ZAdd(ctx, "k1",
 		redis.Z{Score: float64(now - 10), Member: "b1"},
 		redis.Z{Score: float64(now - 5), Member: "b2"},
 	).Result()
@@ -159,7 +159,7 @@ func TestGetNextEngine_PrioritizedHit(t *testing.T) {
 		},
 	}
 
-	name, eng := lb.GetNextEngine(context.Background(), "b", nil)
+	name, eng, _ := lb.GetNextEngine(context.Background(), "b", nil)
 	assert.Equal(t, "b", name)
 	assert.Equal(t, e2, eng)
 
@@ -169,17 +169,18 @@ func TestGetNextEngine_PrioritizedHit(t *testing.T) {
 	assert.NotZero(t, lb.backends[0].currentWeight)
 }
 
-func TestGetNextEngine_NoEligibleBackend(t *testing.T) {
+func TestGetNextEngine_AllWeightZeroBackends(t *testing.T) {
 	lb := &ShardKeyWeightedRoundRobin{
 		backends: []*wrrBackend{
-			// weight <= 0 -> ignored
 			{name: "a", weight: 0, engine: &stubEngine{}, currentWeight: 0},
+			{name: "b", weight: 0, engine: &stubEngine{}, currentWeight: 0},
 		},
 	}
 
-	name, eng := lb.GetNextEngine(context.Background(), "", nil)
-	assert.Equal(t, "", name)
-	assert.Nil(t, eng)
+	name, eng, _ := lb.GetNextEngine(context.Background(), "", nil)
+	assert.NotEmpty(t, name)
+	assert.Contains(t, []string{"a", "b"}, name)
+	assert.NotNil(t, eng)
 }
 
 type failingReader struct{}
@@ -324,7 +325,7 @@ func TestGetNextEngine_SmoothWeightedRoundRobin_NoShard(t *testing.T) {
 	sequence := make([]string, 0, totalPicks)
 
 	for i := 0; i < totalPicks; i++ {
-		name, eng := lb.GetNextEngine(context.Background(), "", nil)
+		name, eng, _ := lb.GetNextEngine(context.Background(), "", nil)
 		assert.NotEmpty(t, name)
 		assert.NotNil(t, eng)
 		counts[name]++
@@ -405,5 +406,91 @@ func TestShardKeyWeightedRoundRobin_Process_AllBackendExhausted(t *testing.T) {
 
 		assert.Greater(t, stubA.lastCalledTs, stubB.lastCalledTs, "stubA and stubB should be called in order of prioritization")
 		assert.Greater(t, stubB.lastCalledTs, stubC.lastCalledTs, "stubB and stubC should be called in order of prioritization")
+	})
+}
+
+func TestShardKeyWeightedRoundRobin_Process_FailoverToZeroWeightedBackend(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	stubA := &stubEngine{err: errors.New("failure")}
+	stubB := &stubEngine{err: errors.New("failure")}
+	stubC := &stubEngine{}
+
+	lbItems := []BackendItem{
+		{Name: "A", Weight: 10, Engine: stubA},
+		{Name: "B", Weight: 5, Engine: stubB},
+		{Name: "C", Weight: 0, Engine: stubC},
+	}
+	shardKeyListFunc := func(req *octollm.Request) []string {
+		return []string{"shard-key-1"}
+	}
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, time.Minute, shardKeyListFunc, rd, "shard-key:failover-zero-weight")
+	require.NoError(t, err)
+
+	t.Run("weighted backends fail, zero-weight backend succeeds", func(t *testing.T) {
+		// A B should be tried first (in order of prioritization), then failover to C which has zero weight but should still be tried and succeed
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		// All backends should have been tried once
+		assert.Equal(t, 1, stubA.callCount, "stubA should be called once")
+		assert.Equal(t, 1, stubB.callCount, "stubB should be called once")
+		assert.Equal(t, 1, stubC.callCount, "stubC should be called once")
+	})
+
+	stubA.reset()
+	stubB.reset()
+	stubC.reset()
+
+	t.Run("shard-key prioritizes weighted backends, zero-weight backend succeeds as last resort", func(t *testing.T) {
+		ctx := context.Background()
+		// b -> a -> c
+		_, err = rd.ZAdd(ctx, "shard-key:failover-zero-weight:shard-key-1",
+			redis.Z{Score: float64(time.Now().Unix() - 2), Member: "A"},
+			redis.Z{Score: float64(time.Now().Unix() - 1), Member: "B"},
+			redis.Z{Score: float64(time.Now().Unix()), Member: "C"},
+		).Result()
+		require.NoError(t, err)
+
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+
+		assert.Equal(t, 1, stubA.callCount, "stubA should be called once")
+		assert.Equal(t, 1, stubB.callCount, "stubB should be called once")
+		assert.Equal(t, 1, stubC.callCount, "stubC should be called once")
+
+		assert.Greater(t, stubA.lastCalledTs, stubB.lastCalledTs, "stubA and stubB should be called in order of prioritization")
+		assert.Greater(t, stubC.lastCalledTs, stubB.lastCalledTs, "stubC should be called for failover after stubB")
+	})
+}
+
+func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineNotFirstChoice(t *testing.T) {
+	stubA := &stubEngine{}
+	stubB := &stubEngine{}
+	stubC := &stubEngine{}
+
+	lbItems := []BackendItem{
+		{Name: "A", Weight: 10, Engine: stubA},
+		{Name: "B", Weight: 5, Engine: stubB},
+		{Name: "C", Weight: 0, Engine: stubC},
+	}
+
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, time.Minute, nil, nil, "")
+	require.NoError(t, err)
+
+	t.Run("shard-key prioritizes weighted backends, zero-weight backend succeeds as last resort", func(t *testing.T) {
+		for range 5 {
+			req := testhelper.CreateTestRequest()
+			resp, err := lb.Process(req)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+		}
+		assert.Equal(t, 0, stubC.callCount, "stubC with zero weight should not be called when other weighted backends are available and healthy")
+		assert.Equal(t, 5, stubA.callCount+stubB.callCount, "stubA and stubB should be called for all requests since they are healthy and have non-zero weight")
 	})
 }

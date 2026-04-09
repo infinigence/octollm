@@ -166,7 +166,7 @@ func (l *ShardKeyWeightedRoundRobin) resolvePrioritizedBackends(
 			if backendName == "" || seen[backendName] {
 				continue
 			}
-			if backend, ok := backendByName[backendName]; ok {
+			if backend, ok := backendByName[backendName]; ok && backend.weight > 0 {
 				prioritizedBackends = append(prioritizedBackends, backend)
 				seen[backendName] = true
 			}
@@ -205,7 +205,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			prioritizedIndex++
 		}
 
-		n, eng := l.GetNextEngine(req.Context(), prioritizedBackend, excludeNames)
+		n, eng, isAllZero := l.GetNextEngine(req.Context(), prioritizedBackend, excludeNames)
 		if eng == nil {
 			// should not happen: the loop exits before all backends are excluded (line 264 above); panic guard only
 			return nil, fmt.Errorf("no backend engine available")
@@ -219,7 +219,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 		resp, err := eng.Process(req)
 		if err == nil {
 			// Update Redis: shardKeyList -> ZSET of backend names (score = current timestamp), with configured TTL.
-			if l.redisClient != nil && len(shardKeyList) > 0 && l.shardKeyTTL > 0 {
+			if l.redisClient != nil && len(shardKeyList) > 0 && l.shardKeyTTL > 0 && !isAllZero {
 				pipe := l.redisClient.Pipeline()
 				for _, shardKey := range shardKeyList {
 					if shardKey == "" {
@@ -266,48 +266,57 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 }
 
 // GetNextEngine applies the shard-key aware WRR selection.
-// Step for each pick:
-//  1. Compute totalWeight.
-//  2. If prioritizedBackend is non-empty, pick it directly;
-//     otherwise pick the backend with the largest currentWeight among non-excluded backends.
-//  3. For the selected backend, subtract totalWeight from its currentWeight.
-//  4. Then, for all backends, add their own weight once (currentWeight += weight).
-func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioritizedBackend string, excludeNames map[string]bool) (string, octollm.Engine) {
+// Per-pick algorithm:
+//  1. Build candidates: non-excluded backends with weight >= 0. Compute totalWeight.
+//  2. If totalWeight == 0 (all-zero weights), pick a random candidate and return immediately
+//     — no WRR state is mutated.
+//  3. Otherwise, try prioritizedBackend first (if set); fall back to the candidate with
+//     the highest currentWeight.
+//  4. Penalize selected: selected.currentWeight -= totalWeight.
+//  5. Accumulate: every non-zero-weight candidate adds its own weight to currentWeight.
+func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioritizedBackend string, excludeNames map[string]bool) (string, octollm.Engine, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	totalWeight := 0
+	var candidates []*wrrBackend
 	for _, backend := range l.backends {
-		if backend == nil || backend.weight <= 0 {
+		if backend == nil || backend.weight < 0 {
+			continue
+		}
+		if excludeNames[backend.name] {
 			continue
 		}
 		totalWeight += backend.weight
+		candidates = append(candidates, backend)
 	}
-	if totalWeight <= 0 {
-		return "", nil
+	isAllZero := totalWeight == 0
+
+	// When all weights are zero, pick randomly — no WRR penalty needed.
+	if isAllZero {
+		if len(candidates) == 0 {
+			return "", nil, true
+		}
+		selected := candidates[rand.Intn(len(candidates))]
+		slog.InfoContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] all-zero weights, random pick: %s, candidates: %v", selected.name, candidates))
+		return selected.name, selected.engine, true
 	}
 
-	// Try shard-hit backend first (if any).
+	// Step 2a: try the prioritized (shard-hit) backend first.
 	var selected *wrrBackend
 	if prioritizedBackend != "" {
-		for _, backend := range l.backends {
-			if backend == nil || backend.weight <= 0 {
-				continue
-			}
-			if backend.name == prioritizedBackend {
+		for _, backend := range candidates {
+			if backend.name == prioritizedBackend && backend.weight > 0 {
 				selected = backend
 				break
 			}
 		}
 	}
 
-	// Fallback to normal WRR among non-excluded backends whose currentWeight >= threshold.
+	// Step 2b: fall back to normal WRR — pick non-excluded backend with highest currentWeight.
 	if selected == nil {
-		for _, backend := range l.backends {
-			if backend == nil || backend.weight <= 0 {
-				continue
-			}
-			if excludeNames[backend.name] {
+		for _, backend := range candidates {
+			if backend.weight == 0 {
 				continue
 			}
 			if selected == nil || backend.currentWeight > selected.currentWeight {
@@ -317,33 +326,21 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioriti
 	}
 
 	if selected == nil {
-		return "", nil
+		return "", nil, false
 	}
 
-	// Capture weight snapshot of remaining candidates (inside lock, before weight update).
-	type snapshot struct {
-		name          string
-		currentWeight int
-	}
-	candidates := make([]snapshot, 0, len(l.backends))
-	for _, backend := range l.backends {
-		if backend == nil || excludeNames[backend.name] {
-			continue
-		}
-		candidates = append(candidates, snapshot{name: backend.name, currentWeight: backend.currentWeight})
-	}
 	slog.InfoContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] selected: %s (currentWeight=%d), candidates: %v", selected.name, selected.currentWeight, candidates))
 
-	// Step 3: subtract totalWeight from selected backend.
+	// Step 3: penalize selected backend by totalWeight.
 	selected.currentWeight -= totalWeight
 
-	// Step 4: then every backend adds its own weight once.
-	for _, backend := range l.backends {
+	// Step 4: accumulate weight for all non-zero-weight backends.
+	for _, backend := range candidates {
 		if backend == nil || backend.weight <= 0 {
 			continue
 		}
 		backend.currentWeight += backend.weight
 	}
 
-	return selected.name, selected.engine
+	return selected.name, selected.engine, false
 }
