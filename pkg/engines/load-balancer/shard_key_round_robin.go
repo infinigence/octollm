@@ -31,10 +31,6 @@ type ShardKeyWeightedRoundRobin struct {
 
 	retryTimeout  time.Duration
 	retryMaxCount int
-
-	// minWeightMultiple controls the lower bound for currentWeight:
-	// a backend is temporarily not selectable when currentWeight < -minWeightMultiple * totalWeight.
-	minWeightMultiple int
 }
 
 var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
@@ -46,7 +42,6 @@ var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
 //   - retryTimeout: maximum time to retry failed requests
 //   - retryMaxCount: maximum number of retries
 //   - shardKeyTTL: expiration time for shard key -> backend mapping in Redis
-//   - minWeightMultiple: used to compute the lower bound threshold = -minWeightMultiple * totalWeight
 //   - shardKeyList: shard keys for this request (string array, later elements have higher priority)
 //   - redisClient: Redis client, used to resolve shard keys to backend names with pipeline
 //   - keyPrefix: prefix prepended to all Redis keys to namespace shard keys per model/instance
@@ -55,7 +50,6 @@ func NewShardKeyWeightedRoundRobin(
 	retryTimeout time.Duration,
 	retryMaxCount int,
 	shardKeyTTL time.Duration,
-	minWeightMultiple int,
 	shardKeyListGetter func(req *octollm.Request) []string,
 	redisClient *redis.Client,
 	keyPrefix string,
@@ -98,7 +92,6 @@ func NewShardKeyWeightedRoundRobin(
 		keyPrefix:          keyPrefix,
 		retryTimeout:       retryTimeout,
 		retryMaxCount:      retryMaxCount,
-		minWeightMultiple:  minWeightMultiple,
 	}
 
 	return lb, nil
@@ -274,10 +267,9 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 
 // GetNextEngine applies the shard-key aware WRR selection.
 // Step for each pick:
-//  1. Compute totalWeight and threshold = -minWeightMultiple * totalWeight.
-//  2. If prioritizedBackend is non-empty and its backend's currentWeight >= threshold, pick it;
-//     otherwise pick the backend with the largest currentWeight among those whose currentWeight >= threshold,
-//     skipping any backend in excludeNames.
+//  1. Compute totalWeight.
+//  2. If prioritizedBackend is non-empty, pick it directly;
+//     otherwise pick the backend with the largest currentWeight among non-excluded backends.
 //  3. For the selected backend, subtract totalWeight from its currentWeight.
 //  4. Then, for all backends, add their own weight once (currentWeight += weight).
 func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioritizedBackend string, excludeNames map[string]bool) (string, octollm.Engine) {
@@ -294,13 +286,8 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioriti
 	if totalWeight <= 0 {
 		return "", nil
 	}
-	multiple := l.minWeightMultiple
-	if multiple <= 0 {
-		multiple = 5
-	}
-	threshold := -multiple * totalWeight
 
-	// Try shard-hit backend first (if any) and if it hasn't dropped below threshold.
+	// Try shard-hit backend first (if any).
 	var selected *wrrBackend
 	if prioritizedBackend != "" {
 		for _, backend := range l.backends {
@@ -308,9 +295,7 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioriti
 				continue
 			}
 			if backend.name == prioritizedBackend {
-				if backend.currentWeight >= threshold {
-					selected = backend
-				}
+				selected = backend
 				break
 			}
 		}
@@ -323,9 +308,6 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioriti
 				continue
 			}
 			if excludeNames[backend.name] {
-				continue
-			}
-			if backend.currentWeight < threshold {
 				continue
 			}
 			if selected == nil || backend.currentWeight > selected.currentWeight {
