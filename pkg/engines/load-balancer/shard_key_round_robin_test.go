@@ -494,3 +494,107 @@ func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineNotFirstChoice(t *t
 		assert.Equal(t, 5, stubA.callCount+stubB.callCount, "stubA and stubB should be called for all requests since they are healthy and have non-zero weight")
 	})
 }
+
+func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineCanBeLoadBalanced(t *testing.T) {
+	stubA := &stubEngine{err: errors.New("failure")}
+	stubB := &stubEngine{err: errors.New("failure")}
+	stubC := &stubEngine{}
+	stubD := &stubEngine{}
+
+	lbItems := []BackendItem{
+		{Name: "A", Weight: 10, Engine: stubA},
+		{Name: "B", Weight: 5, Engine: stubB},
+		{Name: "C", Weight: 0, Engine: stubC},
+		{Name: "D", Weight: 0, Engine: stubD},
+	}
+
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, time.Minute, nil, nil, "")
+	require.NoError(t, err)
+
+	t.Run("shard-key prioritizes weighted backends, zero-weight backend succeeds as last resort", func(t *testing.T) {
+		for range 100 {
+			req := testhelper.CreateTestRequest()
+			resp, err := lb.Process(req)
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+		}
+		assert.Equal(t, 100, stubA.callCount, "stubA should be called once per request")
+		assert.Equal(t, 100, stubB.callCount, "stubB should be called once per request")
+
+		assert.Equal(t, 100, stubC.callCount+stubD.callCount, "zero-weight backends C and D should handle all 100 requests as fallback")
+
+		assert.InDelta(t, 1.0, float64(stubC.callCount)/float64(stubD.callCount), 0.2, "C and D should be load balanced roughly equally")
+	})
+}
+
+func TestShardKeyWeightedRoundRobin_Process_Priority(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	stubA := &stubEngine{}
+	stubB := &stubEngine{}
+	stubC := &stubEngine{}
+
+	lbItems := []BackendItem{
+		{Name: "A", Weight: 10, Engine: stubA},
+		{Name: "B", Weight: 5, Engine: stubB},
+		{Name: "C", Weight: 0, Engine: stubC},
+	}
+
+	shardKeyListFunc := func(req *octollm.Request) []string {
+		return []string{req.Context().Value("selected-backend").(string)}
+	}
+	ctxA := context.WithValue(context.Background(), "selected-backend", "A")
+	ctxC := context.WithValue(context.Background(), "selected-backend", "C")
+
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, time.Minute, shardKeyListFunc, rd, "shard-key:select-by-ctx")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	t.Run("redis score is updated after successful processing with shard key prioritization", func(t *testing.T) {
+		initialScore := float64(time.Now().Unix() - 10)
+		_, err = rd.ZAdd(ctx, "shard-key:select-by-ctx:A",
+			redis.Z{Score: initialScore, Member: "A"},
+		).Result()
+		require.NoError(t, err)
+
+		req := testhelper.CreateTestRequest(testhelper.WithContext(ctxA))
+		_, err = lb.Process(req)
+		require.NoError(t, err)
+
+		assert.Equal(t, 1, stubA.callCount, "stubA should be called for shard key prioritization")
+
+		// Score should be updated to a more recent timestamp after successful processing
+		updatedScore, err := rd.ZScore(ctx, "shard-key:select-by-ctx:A", "A").Result()
+		require.NoError(t, err)
+		assert.Greater(t, updatedScore, initialScore, "Redis ZSET score for A should be updated to a more recent timestamp after processing")
+	})
+
+	stubA.reset()
+	stubB.reset()
+	stubA.err = errors.New("failure")
+	stubB.err = errors.New("failure")
+
+	t.Run("redis score is not updated after successful processing for zero-weight backend", func(t *testing.T) {
+		initialScore := float64(time.Now().Unix() - 10)
+		_, err = rd.ZAdd(ctx, "shard-key:select-by-ctx:C",
+			redis.Z{Score: initialScore, Member: "C"},
+		).Result()
+		require.NoError(t, err)
+
+		req := testhelper.CreateTestRequest(testhelper.WithContext(ctxC))
+		_, err = lb.Process(req)
+		require.NoError(t, err)
+
+		assert.Equal(t, 1, stubA.callCount)
+		assert.Equal(t, 1, stubB.callCount)
+		assert.Equal(t, 1, stubC.callCount, "stubC should be called for failover")
+
+		// Score should NOT be updated for zero-weight backends
+		scoreAfter, err := rd.ZScore(ctx, "shard-key:select-by-ctx:C", "C").Result()
+		require.NoError(t, err)
+		assert.Equal(t, initialScore, scoreAfter, "Redis ZSET score for zero-weight backend C should not be updated after processing")
+	})
+}
