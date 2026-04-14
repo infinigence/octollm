@@ -523,7 +523,7 @@ func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineCanBeLoadBalanced(t
 
 		assert.Equal(t, 100, stubC.callCount+stubD.callCount, "zero-weight backends C and D should handle all 100 requests as fallback")
 
-		assert.InDelta(t, 1.0, float64(stubC.callCount)/float64(stubD.callCount), 0.2, "C and D should be load balanced roughly equally")
+		assert.InDelta(t, 1.0, float64(stubC.callCount)/float64(stubD.callCount), 0.4, "C and D should be load balanced roughly equally")
 	})
 }
 

@@ -137,6 +137,9 @@ func (a *OpenAIAdapter) GetReplacementBody(ctx context.Context, body *octollm.Un
 
 func (a *OpenAIAdapter) getReplacementNonStreamResponse(ctx context.Context, resp *openai.ChatCompletionResponse) *openai.ChatCompletionResponse {
 	// 非流式响应
+	if len(resp.Choices) == 0 {
+		return nil
+	}
 	if resp.Choices[0].Message != nil && a.ReplacementTextForNonStreaming != "" {
 		r := &openai.ChatCompletionResponse{
 			ID:      resp.ID,
@@ -163,6 +166,9 @@ func (a *OpenAIAdapter) getReplacementNonStreamResponse(ctx context.Context, res
 
 func (a *OpenAIAdapter) getReplacementStreamResponse(ctx context.Context, resp *openai.ChatCompletionStreamChunk) *openai.ChatCompletionStreamChunk {
 	// 流式响应
+	if len(resp.Choices) == 0 {
+		return nil
+	}
 	if resp.Choices[0].Delta != nil && a.ReplacementTextForStreaming != "" {
 		r := &openai.ChatCompletionStreamChunk{
 			ID:      resp.ID,
