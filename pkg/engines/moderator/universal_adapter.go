@@ -7,13 +7,15 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
+	"github.com/infinigence/octollm/pkg/types/vertex"
 )
 
 // UniversalAdapter 通用适配器，根据 Response 格式自动选择对应的 adapter
 type UniversalAdapter struct {
 	openaiAdapter          *OpenAIAdapter
-	openaiResponsesAdapter *OpenAIResponseAdapter
 	claudeAdapter          *ClaudeAdapter
+	openaiResponsesAdapter *OpenAIResponseAdapter
+	vertexAdapter          *VertexAdapter
 }
 
 var _ TextModeratorAdapter = (*UniversalAdapter)(nil)
@@ -22,8 +24,9 @@ var _ TextModeratorAdapter = (*UniversalAdapter)(nil)
 func NewUniversalAdapter() *UniversalAdapter {
 	return &UniversalAdapter{
 		openaiAdapter:          &OpenAIAdapter{},
-		openaiResponsesAdapter: &OpenAIResponseAdapter{},
 		claudeAdapter:          &ClaudeAdapter{},
+		openaiResponsesAdapter: &OpenAIResponseAdapter{},
+		vertexAdapter:          &VertexAdapter{},
 	}
 }
 
@@ -48,6 +51,11 @@ func NewUniversalAdapterWithConfig(
 			ReplacementTextForNonStreaming: replacementTextForNonStreaming,
 			ReplacementStopReason:          replacementFinishReason,
 		},
+		vertexAdapter: &VertexAdapter{
+			ReplacementTextForStreaming:    replacementTextForStreaming,
+			ReplacementTextForNonStreaming: replacementTextForNonStreaming,
+			ReplacementFinishReason:        replacementFinishReason,
+		},
 	}
 }
 
@@ -66,6 +74,8 @@ func (a *UniversalAdapter) ExtractTextFromBody(ctx context.Context, body *octoll
 		return a.openaiAdapter.ExtractTextFromBody(ctx, body)
 	case *anthropic.ClaudeMessagesRequest, *anthropic.ClaudeMessagesResponse, *anthropic.ClaudeMessagesStreamEvent:
 		return a.claudeAdapter.ExtractTextFromBody(ctx, body)
+	case *vertex.GenerateContentRequest, *vertex.GenerateContentResponse, *vertex.StreamGenerateContentResponse:
+		return a.vertexAdapter.ExtractTextFromBody(ctx, body)
 	default:
 		return nil, fmt.Errorf("unsupported body type: %T", parsed)
 	}
@@ -86,6 +96,8 @@ func (a *UniversalAdapter) GetReplacementBody(ctx context.Context, body *octollm
 		return a.openaiAdapter.GetReplacementBody(ctx, body)
 	case *anthropic.ClaudeMessagesResponse, *anthropic.ClaudeMessagesStreamEvent:
 		return a.claudeAdapter.GetReplacementBody(ctx, body)
+	case *vertex.GenerateContentResponse, *vertex.StreamGenerateContentResponse:
+		return a.vertexAdapter.GetReplacementBody(ctx, body)
 	default:
 		return nil
 	}

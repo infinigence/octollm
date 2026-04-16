@@ -5,6 +5,7 @@ type GenerateContentResponse struct {
 	Candidates    []Candidate    `json:"candidates,omitempty"`
 	UsageMetadata *UsageMetadata `json:"usageMetadata,omitempty"`
 	ModelVersion  string         `json:"modelVersion,omitempty"`
+	ResponseID    string         `json:"responseId,omitempty"`
 }
 
 // Candidate represents a generated candidate
@@ -83,4 +84,5 @@ type StreamGenerateContentResponse struct {
 	Candidates    []Candidate    `json:"candidates,omitempty"`
 	UsageMetadata *UsageMetadata `json:"usageMetadata,omitempty"`
 	ModelVersion  string         `json:"modelVersion,omitempty"`
+	ResponseID    string         `json:"responseId,omitempty"`
 }
