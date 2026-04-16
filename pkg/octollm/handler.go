@@ -28,6 +28,7 @@ const (
 	ContextKeyReceivedHeader contextKey = "received_header"
 	ContextKeyStreamSignaler contextKey = "stream_signaler"
 	ContextKeyIsStream       contextKey = "is_stream"
+	ContextKeyIsSSE          contextKey = "is_sse"
 )
 
 type Server struct {
@@ -301,11 +302,22 @@ func VertexAIHandler(engine Engine) http.HandlerFunc {
 		ctx := r.Context()
 		modelName, action := extractVertexModelFromURL(r.URL.Path)
 
+		isSSE := false
+		if IsStreamAction(action) && r.URL.Query().Get("alt") == "sse" {
+			isSSE = true
+			ctx = context.WithValue(ctx, ContextKeyIsSSE, true)
+		}
+
 		ctx = context.WithValue(ctx, ContextKeyModelName, modelName)
 		ctx = context.WithValue(ctx, ContextKeyAction, action)
 
 		r = r.WithContext(ctx)
-		httpJSONArrayHandler(engine, APIFormatGoogleGenerateContent, &JSONParser[vertex.GenerateContentRequest]{})(w, r)
+		// legacy json array format
+		if IsStreamAction(action) && !isSSE {
+			httpJSONArrayHandler(engine, APIFormatGoogleGenerateContent, &JSONParser[vertex.GenerateContentRequest]{})(w, r)
+		} else {
+			httpSSEHandler(engine, APIFormatGoogleGenerateContent, &JSONParser[vertex.GenerateContentRequest]{})(w, r)
+		}
 	}
 }
 

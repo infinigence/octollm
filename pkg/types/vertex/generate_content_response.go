@@ -9,12 +9,12 @@ type GenerateContentResponse struct {
 
 // Candidate represents a generated candidate
 type Candidate struct {
-	Content         *Content         `json:"content,omitempty"`
-	FinishReason    string           `json:"finishReason,omitempty"`
-	SafetyRatings   []SafetyRating   `json:"safetyRatings,omitempty"`
+	Content          *Content          `json:"content,omitempty"`
+	FinishReason     string            `json:"finishReason,omitempty"`
+	SafetyRatings    []SafetyRating    `json:"safetyRatings,omitempty"`
 	CitationMetadata *CitationMetadata `json:"citationMetadata,omitempty"`
-	AvgLogprobs     float64          `json:"avgLogprobs,omitempty"`
-	LogprobsResult  *LogprobsResult  `json:"logprobsResult,omitempty"`
+	AvgLogprobs      float64           `json:"avgLogprobs,omitempty"`
+	LogprobsResult   *LogprobsResult   `json:"logprobsResult,omitempty"`
 }
 
 // SafetyRating represents a safety rating
@@ -71,9 +71,11 @@ type TokenLogprob struct {
 
 // UsageMetadata represents token usage metadata
 type UsageMetadata struct {
-	PromptTokenCount     int `json:"promptTokenCount,omitempty"`
-	CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
-	TotalTokenCount      int `json:"totalTokenCount,omitempty"`
+	PromptTokenCount        int `json:"promptTokenCount,omitempty"`
+	CandidatesTokenCount    int `json:"candidatesTokenCount,omitempty"`
+	TotalTokenCount         int `json:"totalTokenCount,omitempty"`
+	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
+	ThoughtsTokenCount      int `json:"thoughtsTokenCount,omitempty"`
 }
 
 // StreamGenerateContentResponse represents a streaming response chunk

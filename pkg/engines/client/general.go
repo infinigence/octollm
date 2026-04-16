@@ -121,7 +121,11 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 				case octollm.APIFormatClaudeMessages:
 					return &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{}, StreamingTypeSSE
 				case octollm.APIFormatGoogleGenerateContent:
-					return &octollm.JSONParser[vertex.StreamGenerateContentResponse]{}, StreamingTypeJSON
+					if isSSE, _ := octollm.GetCtxValue[bool](req, octollm.ContextKeyIsSSE); isSSE {
+						return &octollm.JSONParser[vertex.StreamGenerateContentResponse]{}, StreamingTypeSSE
+					} else {
+						return &octollm.JSONParser[vertex.StreamGenerateContentResponse]{}, StreamingTypeJSON
+					}
 				case octollm.APIFormatResponses:
 					return &octollm.JSONParser[openai.ResponseStreamChunk]{}, StreamingTypeSSE
 				default:
@@ -182,8 +186,15 @@ func buildVertexEndpoint(endpoint string, req *octollm.Request) (string, error) 
 	if hasAction && action != "" {
 		modelNameWithAction = modelName + ":" + action
 	}
-
 	endpoint = strings.ReplaceAll(endpoint, "{modelNameWithAction}", modelNameWithAction)
+	if hasAction && action != "" {
+		endpoint = strings.ReplaceAll(endpoint, "{action}", action)
+	}
+	isSSE, ok := octollm.GetCtxValue[bool](req, octollm.ContextKeyIsSSE)
+	if ok && isSSE {
+		endpoint += "?alt=sse"
+	}
+
 	slog.DebugContext(req.Context(), fmt.Sprintf("[buildVertexEndpoint] endpoint: %s", endpoint))
 
 	return endpoint, nil
