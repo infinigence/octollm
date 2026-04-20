@@ -17,7 +17,7 @@ import (
 type RequestColorMarkerEngine struct {
 	redisClient       *redis.Client
 	keyPrefix         string        // Redis key prefix for storing token bucket states
-	limits            []int         // Request limits for each priority tier (must be strictly increasing)
+	limits            []int         // Request limits for each priority tier (must be non-decreasing)
 	rates             []float64     // Token refill rates for each priority tier (calculated from limits and window)
 	ttls              []int64       // Redis key TTL in seconds per tier; when expired, bucket is guaranteed full
 	window            time.Duration // Time window
@@ -31,7 +31,7 @@ var _ octollm.Engine = (*RequestColorMarkerEngine)(nil)
 // NewRequestColorMarkerEngine creates a multi-tier token bucket-based request rate limiter with priority marking
 // redisClient: Redis client
 // keyPrefix: Redis key prefix for storing token bucket states (each tier uses keyPrefix:tier_N)
-// limits: Request limit array for each priority tier (must be strictly increasing), e.g., [10, 50, 100]
+// limits: Request limit array for each priority tier (must be non-decreasing), e.g., [10, 50, 100]
 //
 //	means tier 0 allows 10 requests, tier 1 allows 50 requests, tier 2 allows 100 requests within the window
 //	Priority is calculated as: len(limits) - 1 - tierIdx
@@ -81,10 +81,10 @@ func NewRequestColorMarkerEngine(redisClient *redis.Client, keyPrefix string, li
 		}, nil
 	}
 
-	// Validate and filter limits to ensure strictly increasing order
+	// Validate and filter limits to ensure non-decreasing order
 	filteredLimits, filtered := filterIncreasingRates(limits)
 	if filtered {
-		slog.Warn(fmt.Sprintf("request_color_marker_limits must be strictly increasing, filtered from %v to %v (removed %d non-increasing values)", limits, filteredLimits, len(limits)-len(filteredLimits)))
+		slog.Warn(fmt.Sprintf("request_color_marker_limits must be non-decreasing, filtered from %v to %v (removed %d invalid suffix values)", limits, filteredLimits, len(limits)-len(filteredLimits)))
 	}
 
 	if window <= 0 {

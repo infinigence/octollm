@@ -18,7 +18,7 @@ import (
 type RequestColorLimiterEngine struct {
 	redisClient           *redis.Client
 	keyPrefix             string        // Redis key prefix for storing token bucket states
-	limits                []int         // Request limits for each supported priority tier (must be strictly decreasing)
+	limits                []int         // Request limits for each supported priority tier (must be non-increasing)
 	rates                 []float64     // Token refill rates for each priority tier (calculated from limits and window)
 	ttls                  []int64       // Redis key TTL in seconds per tier; when expired, bucket is guaranteed full
 	window                time.Duration // Time window
@@ -35,7 +35,7 @@ var ErrRequestLimitReached = errors.New("request limit reached")
 // NewRequestColorLimiterEngine creates a multi-tier token bucket-based priority rate limiter
 // redisClient: Redis client
 // keyPrefix: Redis key prefix for storing token bucket states (each tier uses keyPrefix:tier_N)
-// limits: Request limit array for each supported priority tier (must be strictly decreasing), e.g., [200, 100, 50]
+// limits: Request limit array for each supported priority tier (must be non-increasing), e.g., [200, 100, 50]
 //
 //	means this limiter supports priority 2, 1, 0
 //	tier 0 (priority 2): 200 requests, tier 1 (priority 1): 100 requests, tier 2 (priority 0): 50 requests within the window
@@ -93,10 +93,10 @@ func NewRequestColorLimiterEngine(redisClient *redis.Client, keyPrefix string, l
 		}, nil
 	}
 
-	// Validate and filter limits to ensure strictly decreasing order
+	// Validate and filter limits to ensure non-increasing order
 	filteredLimits, filtered := filterDecreasingRates(limits)
 	if filtered {
-		slog.Warn(fmt.Sprintf("request_color_limiter_limits must be strictly decreasing, filtered from %v to %v (removed %d non-decreasing values)", limits, filteredLimits, len(limits)-len(filteredLimits)))
+		slog.Warn(fmt.Sprintf("request_color_limiter_limits must be non-increasing, filtered from %v to %v (removed %d invalid suffix values)", limits, filteredLimits, len(limits)-len(filteredLimits)))
 	}
 
 	if window <= 0 {

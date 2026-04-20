@@ -29,7 +29,7 @@ var _ octollm.Engine = (*ConcurrencyColorMarkerEngine)(nil)
 // NewConcurrencyColorMarkerEngine creates a multi-tier concurrency-based marker with priority assignment
 // redisClient: Redis client
 // key: Redis key prefix for storing concurrency counts (each tier uses key:tier_N)
-// rates: Concurrency limit array for each priority tier (must be strictly increasing), e.g., [10, 50, 100]
+// rates: Concurrency limit array for each priority tier (must be non-decreasing), e.g., [10, 50, 100]
 //
 //	means tier 0 allows 10 concurrent, tier 1 allows 50 concurrent, tier 2 allows 100 concurrent
 //	Priority is calculated as: len(rates) - 1 - tierIdx
@@ -40,7 +40,7 @@ var _ octollm.Engine = (*ConcurrencyColorMarkerEngine)(nil)
 // next: Next engine
 //
 // Working principle:
-// - Each tier has its own concurrency limit (strictly increasing)
+// - Each tier has its own concurrency limit (non-decreasing)
 // - Priority number: larger = higher priority (priority 2 > priority 1 > priority 0)
 // - When a request comes in, it tries to acquire from tier 0 (smallest limit, highest priority) first
 // - Occupancy rule:
@@ -80,7 +80,7 @@ func NewConcurrencyColorMarkerEngine(redisClient *redis.Client, key string, rate
 
 	filteredRates, filtered := filterIncreasingRates(rates)
 	if filtered {
-		slog.Warn(fmt.Sprintf("rates must be strictly increasing, filtered from %v to %v (removed %d non-increasing values)", rates, filteredRates, len(rates)-len(filteredRates)))
+		slog.Warn(fmt.Sprintf("rates must be non-decreasing, filtered from %v to %v (removed %d invalid suffix values)", rates, filteredRates, len(rates)-len(filteredRates)))
 	}
 
 	return &ConcurrencyColorMarkerEngine{
@@ -227,7 +227,7 @@ func filterIncreasingRates(rates []int) ([]int, bool) {
 	filteredRates = append(filteredRates, rates[0])
 
 	for i := 1; i < len(rates); i++ {
-		if rates[i] > rates[i-1] {
+		if rates[i] >= rates[i-1] {
 			filteredRates = append(filteredRates, rates[i])
 		} else {
 			break

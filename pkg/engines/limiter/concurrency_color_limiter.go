@@ -32,7 +32,7 @@ var _ octollm.Engine = (*ConcurrencyColorLimiterEngine)(nil)
 // NewConcurrencyColorLimiterEngine creates a concurrency color limiter engine with priority-based limits
 // redisClient: Redis client
 // key: Redis key prefix for storing concurrency counts (each tier uses key:tier_N)
-// rates: Concurrency limit array for each priority tier (must be strictly decreasing), e.g., [200, 100, 50]
+// rates: Concurrency limit array for each priority tier (must be non-increasing), e.g., [200, 100, 50]
 //
 //	means tier 0 (priority 2): 200 concurrent, tier 1 (priority 1): 100 concurrent, tier 2 (priority 0): 50 concurrent
 //
@@ -78,7 +78,7 @@ func NewConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, rat
 	}
 	filteredRates, filtered := filterDecreasingRates(rates)
 	if filtered {
-		slog.Warn(fmt.Sprintf("concurrency_rates must be strictly decreasing, filtered from %v to %v (removed %d non-decreasing values)", rates, filteredRates, len(rates)-len(filteredRates)))
+		slog.Warn(fmt.Sprintf("concurrency_rates must be non-increasing, filtered from %v to %v (removed %d invalid suffix values)", rates, filteredRates, len(rates)-len(filteredRates)))
 	}
 
 	return &ConcurrencyColorLimiterEngine{
@@ -282,7 +282,7 @@ func filterDecreasingRates(rates []int) ([]int, bool) {
 	filteredRates = append(filteredRates, rates[0])
 
 	for i := 1; i < len(rates); i++ {
-		if rates[i] < rates[i-1] {
+		if rates[i] <= rates[i-1] {
 			filteredRates = append(filteredRates, rates[i])
 		} else {
 			break

@@ -34,21 +34,27 @@ func TestFilterIncreasingRates(t *testing.T) {
 			wantFiltered: false,
 		},
 		{
-			name:         "all_strictly_increasing",
+			name:         "all_non_decreasing",
 			in:           []int{1, 5, 10, 100},
 			wantOut:      []int{1, 5, 10, 100},
 			wantFiltered: false,
 		},
 		{
-			name:         "stops_on_non_increasing",
+			name:         "stops_on_decrease",
 			in:           []int{1, 5, 3, 10},
 			wantOut:      []int{1, 5},
 			wantFiltered: true,
 		},
 		{
-			name:         "stops_on_equal",
+			name:         "allows_equal_plateau",
 			in:           []int{1, 2, 2, 3},
-			wantOut:      []int{1, 2},
+			wantOut:      []int{1, 2, 2, 3},
+			wantFiltered: false,
+		},
+		{
+			name:         "stops_after_plateau_on_decrease",
+			in:           []int{1, 2, 2, 1},
+			wantOut:      []int{1, 2, 2},
 			wantFiltered: true,
 		},
 		{
@@ -112,7 +118,7 @@ func TestNewConcurrencyColorMarkerEngine_ValidationAndFiltering(t *testing.T) {
 	_, err = NewConcurrencyColorMarkerEngine(nil, "k", []int{1}, 0, "ns", next)
 	assert.Error(t, err)
 
-	// non-increasing rates get filtered (stop at first violation)
+	// rates that break non-decreasing order get filtered (stop at first decrease)
 	e, err = NewConcurrencyColorMarkerEngine(nil, "k", []int{1, 3, 2, 10}, time.Second, "ns", next)
 	assert.NoError(t, err)
 	assert.Equal(t, []int{1, 3}, e.rates)
@@ -161,5 +167,37 @@ func TestConcurrencyColorMarker_PriorityAssignmentAndExhaustion(t *testing.T) {
 	// cleanup: close bodies to trigger release and stop renew goroutines
 	assert.NoError(t, resp1.Body.Close())
 	assert.NoError(t, resp2.Body.Close())
+}
+
+// [3,3]: asserts every allowed request is colored priority 1, then the next is rejected when both tiers are full.
+func TestConcurrencyColorMarker_EqualTierLimits_AllPriority1(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "marker-ns-eq33"
+	next := &priorityCaptureEngine{ns: ns}
+
+	e, err := NewConcurrencyColorMarkerEngine(client, "marker-key-eq33", []int{3, 3}, 10*time.Second, ns, next)
+	assert.NoError(t, err)
+
+	var resps []*octollm.Response
+	for i := 0; i < 3; i++ {
+		resp, err := e.Process(newConcurrencyColorMarkerTestRequest(t))
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+		assert.Equal(t, 1, next.lastPriority, "request %d should be colored priority 1", i+1)
+		resps = append(resps, resp)
+	}
+
+	_, err = e.Process(newConcurrencyColorMarkerTestRequest(t))
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assert.Equal(t, 3, next.callCount, "denied request must not reach next")
+
+	for _, r := range resps {
+		assert.NoError(t, r.Body.Close())
+	}
 }
 
