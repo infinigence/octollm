@@ -118,6 +118,9 @@ func (m *ModelRepoFileBased) UpdateFromConfig(conf *ConfigFile) error {
 			if backend.URLPathRerank != nil {
 				finalBackend.URLPathRerank = backend.URLPathRerank
 			}
+			if backend.URLPathResponses != nil {
+				finalBackend.URLPathResponses = backend.URLPathResponses
+			}
 			if backend.RequestCompression != "" {
 				finalBackend.RequestCompression = backend.RequestCompression
 			}
@@ -247,6 +250,13 @@ func (m *ModelRepoFileBased) BuildEngineByBackend(b *Backend) (octollm.Engine, e
 	} else {
 		generalConf.Endpoints[octollm.APIFormatRerank] = "" // will use default
 	}
+	if b.URLPathResponses != nil {
+		if *b.URLPathResponses != "" {
+			generalConf.Endpoints[octollm.APIFormatResponses] = *b.URLPathResponses
+		}
+	} else {
+		generalConf.Endpoints[octollm.APIFormatResponses] = "" // will use default
+	}
 	if b.URLPathVertex != nil {
 		if *b.URLPathVertex != "" {
 			generalConf.Endpoints[octollm.APIFormatGoogleGenerateContent] = *b.URLPathVertex
@@ -255,7 +265,7 @@ func (m *ModelRepoFileBased) BuildEngineByBackend(b *Backend) (octollm.Engine, e
 		generalConf.Endpoints[octollm.APIFormatGoogleGenerateContent] = "" // will use default
 	}
 	if len(generalConf.Endpoints) == 0 {
-		return nil, fmt.Errorf("backend must specify at least one URL path (chat, messages, vertex, embedding, or rerank)")
+		return nil, fmt.Errorf("backend must specify at least one URL path (chat, messages, vertex, embedding, rerank, or responses)")
 	}
 	if b.RequestCompression != "" {
 		generalConf.RequestCompression = b.RequestCompression

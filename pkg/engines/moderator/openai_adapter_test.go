@@ -475,3 +475,70 @@ func TestOpenAIAdapter_ExtractTextFromMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestUniversalAdapter_ResponsesFormat(t *testing.T) {
+	adapter := NewUniversalAdapterWithConfig("[stream blocked]", "[blocked]", "content_filter")
+
+	t.Run("extract text from responses request", func(t *testing.T) {
+		req := &openai.ResponsesRequest{
+			Model: "gpt-5.4",
+			Input: &openai.ResponsesInput{
+				Items: []*openai.ResponsesInputItem{
+					{
+						Role: "user",
+						Content: []*openai.ResponsesInputContentItem{
+							{Type: "input_text", Text: "hello responses"},
+						},
+					},
+				},
+			},
+		}
+		body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ResponsesRequest]{})
+		body.SetParsed(req)
+
+		got, err := adapter.ExtractTextFromBody(context.Background(), body)
+		if err != nil {
+			t.Fatalf("ExtractTextFromBody() error = %v", err)
+		}
+		if string(got) != "hello responses" {
+			t.Fatalf("ExtractTextFromBody() = %q, want %q", string(got), "hello responses")
+		}
+	})
+
+	t.Run("get replacement for responses non-stream", func(t *testing.T) {
+		resp := &openai.ResponsesResponse{
+			Id: "resp_123",
+			Output: []*openai.ResponsesOutputItem{
+				{
+					Type: "message",
+					Role: "assistant",
+					Content: []*openai.ResponsesOutputContentItem{
+						{Type: "output_text", Text: "origin"},
+					},
+				},
+			},
+		}
+		body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ResponsesResponse]{})
+		body.SetParsed(resp)
+
+		replaced := adapter.GetReplacementBody(context.Background(), body)
+		if replaced == nil {
+			t.Fatal("GetReplacementBody() returned nil")
+		}
+
+		parsed, err := replaced.Parsed()
+		if err != nil {
+			t.Fatalf("replacement Parsed() error = %v", err)
+		}
+		gotResp, ok := parsed.(*openai.ResponsesResponse)
+		if !ok {
+			t.Fatalf("replacement body type = %T, want *openai.ResponsesResponse", parsed)
+		}
+		if len(gotResp.Output) != 1 || len(gotResp.Output[0].Content) != 1 {
+			t.Fatalf("unexpected replacement output shape: %+v", gotResp.Output)
+		}
+		if gotResp.Output[0].Content[0].Text != "[blocked]" {
+			t.Fatalf("replacement text = %q, want %q", gotResp.Output[0].Content[0].Text, "[blocked]")
+		}
+	})
+}

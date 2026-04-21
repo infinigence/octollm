@@ -1,0 +1,8 @@
+# Example: OpenAI Responses API (gateway route POST /v1/responses → upstream POST .../v1/responses)
+models:
+  gpt-5.2:
+    backends:
+      default:1:
+        base_url: https://api.shubiaobiao.com
+        url_path_responses: /v1/responses
+        # api_key: sk-xxxx

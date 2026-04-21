@@ -11,8 +11,9 @@ import (
 
 // UniversalAdapter 通用适配器，根据 Response 格式自动选择对应的 adapter
 type UniversalAdapter struct {
-	openaiAdapter *OpenAIAdapter
-	claudeAdapter *ClaudeAdapter
+	openaiAdapter          *OpenAIAdapter
+	openaiResponsesAdapter *OpenAIResponseAdapter
+	claudeAdapter          *ClaudeAdapter
 }
 
 var _ TextModeratorAdapter = (*UniversalAdapter)(nil)
@@ -20,8 +21,9 @@ var _ TextModeratorAdapter = (*UniversalAdapter)(nil)
 // NewUniversalAdapter 创建通用适配器
 func NewUniversalAdapter() *UniversalAdapter {
 	return &UniversalAdapter{
-		openaiAdapter: &OpenAIAdapter{},
-		claudeAdapter: &ClaudeAdapter{},
+		openaiAdapter:          &OpenAIAdapter{},
+		openaiResponsesAdapter: &OpenAIResponseAdapter{},
+		claudeAdapter:          &ClaudeAdapter{},
 	}
 }
 
@@ -36,6 +38,10 @@ func NewUniversalAdapterWithConfig(
 			ReplacementTextForStreaming:    replacementTextForStreaming,
 			ReplacementTextForNonStreaming: replacementTextForNonStreaming,
 			ReplacementFinishReason:        replacementFinishReason,
+		},
+		openaiResponsesAdapter: &OpenAIResponseAdapter{
+			ReplacementTextForStreaming:    replacementTextForStreaming,
+			ReplacementTextForNonStreaming: replacementTextForNonStreaming,
 		},
 		claudeAdapter: &ClaudeAdapter{
 			ReplacementTextForStreaming:    replacementTextForStreaming,
@@ -54,6 +60,8 @@ func (a *UniversalAdapter) ExtractTextFromBody(ctx context.Context, body *octoll
 
 	// 根据类型选择对应的 adapter
 	switch parsed.(type) {
+	case *openai.ResponsesRequest, *openai.ResponsesResponse, *openai.ResponseStreamChunk:
+		return a.openaiResponsesAdapter.ExtractTextFromBody(ctx, body)
 	case *openai.ChatCompletionRequest, *openai.ChatCompletionResponse, *openai.ChatCompletionStreamChunk:
 		return a.openaiAdapter.ExtractTextFromBody(ctx, body)
 	case *anthropic.ClaudeMessagesRequest, *anthropic.ClaudeMessagesResponse, *anthropic.ClaudeMessagesStreamEvent:
@@ -72,6 +80,8 @@ func (a *UniversalAdapter) GetReplacementBody(ctx context.Context, body *octollm
 
 	// 根据类型选择对应的 adapter
 	switch parsed.(type) {
+	case *openai.ResponsesResponse, *openai.ResponseStreamChunk:
+		return a.openaiResponsesAdapter.GetReplacementBody(ctx, body)
 	case *openai.ChatCompletionResponse, *openai.ChatCompletionStreamChunk:
 		return a.openaiAdapter.GetReplacementBody(ctx, body)
 	case *anthropic.ClaudeMessagesResponse, *anthropic.ClaudeMessagesStreamEvent:

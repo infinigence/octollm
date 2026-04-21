@@ -20,6 +20,7 @@ const (
 	APIFormatGoogleGenerateContent APIFormat = "generateContent"
 	APIFormatEmbeddings            APIFormat = "embeddings"
 	APIFormatRerank                APIFormat = "rerank"
+	APIFormatResponses             APIFormat = "responses"
 )
 
 // Parser parses and serializes body of requests or responses.

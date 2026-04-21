@@ -275,6 +275,10 @@ func checkIsStream(req *octollm.Request) (bool, error) {
 		}
 	case *openai.CompletionRequest:
 		return body.Stream, nil
+	case *openai.ResponsesRequest:
+		if body.Stream != nil && *body.Stream {
+			return true, nil
+		}
 	case *anthropic.ClaudeMessagesRequest:
 		if body.Stream != nil && *body.Stream {
 			return true, nil
@@ -301,6 +305,8 @@ func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, e
 			case *openai.CompletionRequest:
 				r.Model = body.Model
 			case *openai.EmbeddingRequest:
+				r.Model = body.Model
+			case *openai.ResponsesRequest:
 				r.Model = body.Model
 			case *rerank.RerankRequest:
 				r.Model = body.Model

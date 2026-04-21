@@ -45,6 +45,7 @@ var DefaultURLPathClaudeMessages = "/v1/messages"
 var DefaultURLPathVertex = "v1/models/{modelNameWithAction}" // Path for Vertex AI, {modelNameWithAction} includes action (e.g., "gemini-2.0-flash:generateContent")
 var DefaultURLPathEmbeddings = "/v1/embeddings"
 var DefaultURLPathRerank = "/v1/rerank"
+var DefaultURLPathResponses = "/v1/responses"
 
 func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 	apiKey := conf.APIKey
@@ -73,6 +74,8 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 					endpoint = DefaultURLPathEmbeddings
 				case octollm.APIFormatRerank:
 					endpoint = DefaultURLPathRerank
+				case octollm.APIFormatResponses:
+					endpoint = DefaultURLPathResponses
 				default:
 					return "", fmt.Errorf("invalid format: %s", req.Format)
 				}
@@ -103,6 +106,8 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 					return &octollm.JSONParser[openai.EmbeddingResponse]{}
 				case octollm.APIFormatRerank:
 					return &octollm.JSONParser[rerank.RerankResponse]{}
+				case octollm.APIFormatResponses:
+					return &octollm.JSONParser[openai.ResponsesResponse]{}
 				default:
 					return &octollm.JSONParser[json.RawMessage]{}
 				}
@@ -117,6 +122,8 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 					return &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{}, StreamingTypeSSE
 				case octollm.APIFormatGoogleGenerateContent:
 					return &octollm.JSONParser[vertex.StreamGenerateContentResponse]{}, StreamingTypeJSON
+				case octollm.APIFormatResponses:
+					return &octollm.JSONParser[openai.ResponseStreamChunk]{}, StreamingTypeSSE
 				default:
 					return &octollm.JSONParser[json.RawMessage]{}, StreamingTypeSSE
 				}

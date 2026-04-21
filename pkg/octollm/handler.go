@@ -209,6 +209,11 @@ func RerankHandler(engine Engine) http.HandlerFunc {
 	return httpSSEHandler(engine, APIFormatRerank, &JSONParser[rerank.RerankRequest]{})
 }
 
+// ResponsesHandler handles OpenAI /v1/responses (Responses API) requests.
+func ResponsesHandler(engine Engine) http.HandlerFunc {
+	return httpSSEHandler(engine, APIFormatResponses, &JSONParser[openai.ResponsesRequest]{})
+}
+
 // httpJSONArrayHandler handles HTTP requests with given engine.
 // It is like httpSSEHandler, but if the engine returns a stream channel, it will write the response as a streamed JSON array.
 // This is the format used by Google Vertex AI API.
