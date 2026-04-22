@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/anthropic"
@@ -126,7 +127,10 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 				Content: openai.MessageContentString(sys),
 			})
 		case anthropic.SystemBlocks:
-			for _, block := range sys {
+			for i, block := range sys {
+				if i == 0 && strings.HasPrefix(block.Text, "x-anthropic-billing-header:") {
+					continue
+				}
 				messages = append(messages, &openai.Message{
 					Role:    anthropic.MessageParamRoleSystem,
 					Content: openai.MessageContentString(block.Text),
@@ -161,21 +165,21 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 							Text: *contentBlock.Text,
 						})
 					}
-			case anthropic.MessageContentImageType:
-				if contentBlock.Source != nil {
-					url := ""
-					if contentBlock.Source.Type == "base64" && len(contentBlock.Source.Data) > 0 {
-						mediaType := "image/jpeg"
-						if contentBlock.Source.MediaType != "" {
-							mediaType = contentBlock.Source.MediaType
+				case anthropic.MessageContentImageType:
+					if contentBlock.Source != nil {
+						url := ""
+						if contentBlock.Source.Type == "base64" && len(contentBlock.Source.Data) > 0 {
+							mediaType := "image/jpeg"
+							if contentBlock.Source.MediaType != "" {
+								mediaType = contentBlock.Source.MediaType
+							}
+							var dataStr string
+							if err := json.Unmarshal(contentBlock.Source.Data, &dataStr); err == nil {
+								url = fmt.Sprintf("data:%s;base64,%s", mediaType, dataStr)
+							}
+						} else if contentBlock.Source.Type == "url" {
+							url = contentBlock.Source.Url
 						}
-						var dataStr string
-						if err := json.Unmarshal(contentBlock.Source.Data, &dataStr); err == nil {
-							url = fmt.Sprintf("data:%s;base64,%s", mediaType, dataStr)
-						}
-					} else if contentBlock.Source.Type == "url" {
-						url = contentBlock.Source.Url
-					}
 						contentParts = append(contentParts, &openai.MessageContentItem{
 							Type: "image_url",
 							ImageURL: &openai.MessageContentItemImageURL{

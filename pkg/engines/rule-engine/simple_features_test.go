@@ -392,6 +392,30 @@ func TestMessage5Hash_Features_Anthropic(t *testing.T) {
 			},
 			expected: "8dca59b1-a89afb9a-5bf09c53-54fb23c2-ad98232b",
 		},
+		{
+			name: "ignore_anthropic_header",
+			req: anthropic.ClaudeMessagesRequest{
+				Model: "gpt-3.5-turbo",
+				System: anthropic.SystemBlocks{
+					{
+						Type: "text",
+						Text: "x-anthropic-billing-header: cc_version=2.1.117.e85; cc_entrypoint=cli; cch=00000;",
+					},
+					{
+						Type: "text",
+						Text: "You are Claude Code, Anthropic's official CLI for Claude.",
+					},
+					{
+						Type: "text",
+						Text: "Generate a concise, sentence-case title (3-7 words) that captures the main topic or goal of this coding session. The title should be clear enough that the user recognizes the session in a list. Use sentence case: capitalize only the first word and proper nouns.\n\nReturn JSON with a single \"title\" field.\n\nGood examples:\n{\"title\": \"Fix login button on mobile\"}\n{\"title\": \"Add OAuth authentication\"}\n{\"title\": \"Debug failing CI tests\"}\n{\"title\": \"Refactor API client error handling\"}\n\nBad (too vague): {\"title\": \"Code changes\"}\nBad (too long): {\"title\": \"Investigate and fix the issue where the login button does not respond on mobile devices\"}\nBad (wrong case): {\"title\": \"Fix Login Button On Mobile\"}",
+					},
+				},
+				Messages: []*anthropic.MessageParam{
+					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("hello")}},
+				},
+			},
+			expected: "d6a59d1f-5f5cd586-29790936",
+		},
 	}
 
 	t.Run("string", func(t *testing.T) {

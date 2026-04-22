@@ -27,28 +27,35 @@ func combinedTextForAnthropicMessage(msg *anthropic.MessageParam) string {
 	return sb.String()
 }
 
+func checkIsAnthropicBillingHead(text string) bool {
+	return strings.HasPrefix(text, "x-anthropic-billing-header:")
+}
+
 // anthropicSystemText extracts plain text from a system field (SystemString or SystemBlocks).
-func anthropicSystemText(system anthropic.SystemContent) string {
+func anthropicSystemText(system anthropic.SystemContent) []string {
 	if system == nil {
-		return ""
+		return nil
 	}
 	switch s := system.(type) {
 	case anthropic.SystemString:
-		return string(s)
+		return []string{string(s)}
 	case anthropic.SystemBlocks:
-		var sb strings.Builder
-		for _, b := range s {
-			sb.WriteString(b.Text)
+		var res []string
+		for i, b := range s {
+			if i == 0 && checkIsAnthropicBillingHead(b.Text) {
+				continue
+			}
+			res = append(res, b.Text)
 		}
-		return sb.String()
+		return res
 	}
-	return ""
+	return nil
 }
 
 // anthropicFirstMessageText returns the text of the "first message" in an Anthropic request,
 // treating the system prompt as the first entry (matching converter behaviour).
 func anthropicFirstMessageText(v *anthropic.ClaudeMessagesRequest) string {
-	if sysTxt := strings.TrimSpace(anthropicSystemText(v.System)); sysTxt != "" {
+	if sysTxt := strings.TrimSpace(strings.Join(anthropicSystemText(v.System), "")); sysTxt != "" {
 		return sysTxt
 	}
 	if len(v.Messages) > 0 {
@@ -92,7 +99,10 @@ func computeAnthropicMessage5Hashes(system anthropic.SystemContent, messages []*
 	}
 
 	// System prompt counts as the first message (matches converter prepend logic).
-	hashOne(anthropicSystemText(system))
+	// Use the full text for system blocks (no 100-byte truncation).
+	for _, sysTxt := range anthropicSystemText(system) {
+		hashOne(sysTxt)
+	}
 
 	for i := 0; i < len(messages) && len(hashes) < 5; i++ {
 		msg := messages[i]
@@ -121,7 +131,10 @@ func (e *PromptTextLenExtractor) Features(req *octollm.Request) (any, error) {
 		}
 		return allMsgTextLen, nil
 	case *anthropic.ClaudeMessagesRequest:
-		allMsgTextLen := len([]rune(anthropicSystemText(v.System)))
+		allMsgTextLen := 0
+		for _, sysTxt := range anthropicSystemText(v.System) {
+			allMsgTextLen += len([]rune(sysTxt))
+		}
 		for _, msg := range v.Messages {
 			allMsgTextLen += len([]rune(combinedTextForAnthropicMessage(msg)))
 		}

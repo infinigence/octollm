@@ -262,6 +262,47 @@ func TestChatCompletionsToClaudeMessages_convertRequestBody_MultipleSystem(t *te
 
 	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
 }
+
+func TestChatCompletionsToClaudeMessages_convertRequestBody_IgnoreAnthropicBillingHeader(t *testing.T) {
+	claudeReqJSON := `{
+		"model": "claude-3-5-haiku",
+		"max_tokens": 1024,
+		"system": [
+			{
+				"type": "text",
+				"text": "x-anthropic-billing-header: cc_version=2.1.117.e85; cc_entrypoint=cli; cch=00000;"
+			},
+			{
+				"type": "text",
+				"text": "You are Claude Code, Anthropic's official CLI for Claude."
+			}
+		],
+		"messages": [
+			{
+				"role": "user",
+				"content": "Hello, how are you?"
+			}
+		]
+	}`
+
+	expectedOpenaiReqJSON := `{
+		"model": "claude-3-5-haiku",
+		"max_tokens": 1024,
+		"messages": [
+			{
+				"role": "system",
+				"content": "You are Claude Code, Anthropic's official CLI for Claude."
+			},
+			{
+				"role": "user",
+				"content": [{ "type": "text", "text": "Hello, how are you?" }]
+			}
+		]
+	}`
+
+	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
+}
+
 func TestChatCompletionsToClaudeMessages_convertRequestBody_MultipleText(t *testing.T) {
 	claudeReqJSON := `{
 		"model": "claude-3-5-haiku",
