@@ -3,6 +3,9 @@ package openai
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMessage_UnmarshalJSON_String(t *testing.T) {
@@ -127,6 +130,7 @@ func TestApiChatCompletionsRequest_UnmarshalJSON(t *testing.T) {
 			{"role": "user", "content": "Hello!"}
 		],
 		"max_tokens": 100,
+		"stop": "stop",
 		"temperature": 0.7
 	}`
 
@@ -152,6 +156,38 @@ func TestApiChatCompletionsRequest_UnmarshalJSON(t *testing.T) {
 	if string(content) != "You are a helpful assistant." {
 		t.Errorf("Expected content 'You are a helpful assistant.', got '%s'", content)
 	}
+
+	if req.Stop == nil || req.Stop.Str == nil || *req.Stop.Str != "stop" {
+		t.Errorf("Expected stop 'stop'")
+	}
+}
+
+func TestApiChatCompletionsRequest_MarshalJSON(t *testing.T) {
+	expectedJSON := `{
+		"model": "gpt-4",
+		"messages": [
+			{"role": "system", "content": "You are a helpful assistant."},
+			{"role": "user", "content": "Hello!"}
+		],
+		"max_tokens": 100,
+		"temperature": 0.7
+	}`
+
+	maxTokens := 100
+	temperature := 0.7
+	req := ChatCompletionRequest{
+		Model: "gpt-4",
+		Messages: []*Message{
+			{Role: "system", Content: MessageContentString("You are a helpful assistant.")},
+			{Role: "user", Content: MessageContentString("Hello!")},
+		},
+		MaxTokens:   &maxTokens,
+		Temperature: &temperature,
+	}
+
+	data, err := json.Marshal(req)
+	assert.NoError(t, err)
+	assert.JSONEq(t, expectedJSON, string(data))
 }
 
 // --- MessageContentItem image_url 支持 string/struct 的测试 ---
@@ -321,5 +357,75 @@ func TestMessageContentItemImageURL_GetImageUrl(t *testing.T) {
 	obj := &MessageContentItemImageURL{URL: "https://test.com/b.jpg", Detail: "high"}
 	if obj.GetImageUrl() != "https://test.com/b.jpg" {
 		t.Errorf("GetImageUrl() = %s, want https://test.com/b.jpg", obj.GetImageUrl())
+	}
+}
+
+func TestStopUnion_Marshal(t *testing.T) {
+	str := "stop"
+	tests := []struct {
+		name         string
+		stopUnion    StopUnion
+		expectedJson string
+	}{
+		{
+			name:         "string",
+			stopUnion:    StopUnion{Str: &str},
+			expectedJson: `"stop"`,
+		},
+		{
+			name:         "array",
+			stopUnion:    StopUnion{Array: []string{"stop", "end"}},
+			expectedJson: `["stop","end"]`,
+		},
+		{
+			name:         "nil falls back to null array",
+			stopUnion:    StopUnion{},
+			expectedJson: `null`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(tt.stopUnion)
+			assert.NoError(t, err)
+			assert.JSONEq(t, tt.expectedJson, string(data))
+		})
+	}
+}
+
+func TestStopUnion_Unmarshall(t *testing.T) {
+	str := "stop"
+	tests := []struct {
+		name              string
+		jsonStr           string
+		expectedStopUnion *StopUnion
+	}{
+		{
+			name:              "string",
+			jsonStr:           `"stop"`,
+			expectedStopUnion: &StopUnion{Str: &str},
+		},
+		{
+			name:              "array",
+			jsonStr:           `["stop","end"]`,
+			expectedStopUnion: &StopUnion{Array: []string{"stop", "end"}},
+		},
+		{
+			name:              "null",
+			jsonStr:           `null`,
+			expectedStopUnion: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stopUnion *StopUnion
+			err := json.Unmarshal([]byte(tt.jsonStr), &stopUnion)
+			require.NoError(t, err)
+			if tt.expectedStopUnion == nil {
+				assert.Nil(t, stopUnion)
+			}
+			assert.EqualValues(t, tt.expectedStopUnion, stopUnion)
+		})
 	}
 }

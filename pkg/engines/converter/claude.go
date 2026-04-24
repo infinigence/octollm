@@ -114,7 +114,7 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 
 	// Stop Sequences
 	if len(src.StopSequences) > 0 {
-		dst.Stop = src.StopSequences
+		dst.Stop = &openai.StopUnion{Array: src.StopSequences}
 	}
 
 	// Convert System Prompt to Messages

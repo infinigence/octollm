@@ -13,7 +13,7 @@ type ChatCompletionRequest struct {
 	Temperature *float64   `json:"temperature,omitempty"`
 	TopP        *float64   `json:"top_p,omitempty"`
 	TopK        *int       `json:"top_k,omitempty"`
-	Stop        []string   `json:"stop,omitempty"`
+	Stop        *StopUnion `json:"stop,omitempty"`
 	Stream      *bool      `json:"stream,omitempty"`
 	Tools       []*Tool    `json:"tools,omitempty"` // 可用函数工具列表
 
@@ -434,4 +434,26 @@ type ToolCall struct {
 type ToolCallFunction struct {
 	Name      string `json:"name" binding:"required"`
 	Arguments string `json:"arguments" binding:"required"`
+}
+
+// StopUnion holds a JSON value that may be either a single string or an array of strings.
+type StopUnion struct {
+	Str   *string
+	Array []string
+}
+
+func (s StopUnion) MarshalJSON() ([]byte, error) {
+	if s.Str != nil {
+		return json.Marshal(*s.Str)
+	}
+	return json.Marshal(s.Array)
+}
+
+func (s *StopUnion) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		s.Str = &str
+		return nil
+	}
+	return json.Unmarshal(data, &s.Array)
 }

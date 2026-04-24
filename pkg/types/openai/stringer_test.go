@@ -37,6 +37,7 @@ func TestChatCompletionRequest_String(t *testing.T) {
 					{"role": "user", "content": "Hello!"}
 				],
 				"max_tokens": 100,
+				"stop": "end",
 				"temperature": 0.7
 			}`,
 			// "You are a helpful assistant." = 28 bytes, "Hello!" = 6 bytes
@@ -47,6 +48,7 @@ func TestChatCompletionRequest_String(t *testing.T) {
     (Message) {Role: "user", Content: len(6), }
   MaxTokens: 100
   Temperature: 0.700000
+  Stop: end
 }`,
 		},
 		{
@@ -59,13 +61,15 @@ func TestChatCompletionRequest_String(t *testing.T) {
 						{"type": "text", "text": "Describe this image"},
 						{"type": "image_url", "image_url": "https://example.com/img.png"}
 					]
-				}]
+				}],
+				"stop": ["stop1", "stop2"]
 			}`,
 			// "Describe this image" = 19 bytes, "https://example.com/img.png" = 27 bytes
 			expected: `(ChatCompletionRequest) {
   Model: "gpt-4o"
   Messages: len(1)
     (Message) {Role: "user", Content: [text(len=19), image_url(len=27), ], }
+  Stop: [stop1 stop2]
 }`,
 		},
 		{

@@ -124,7 +124,7 @@ func (r CompletionRequest) String() string {
 	if r.PresencePenalty != nil {
 		fmt.Fprintf(w, "  PresencePenalty: %.6f\n", *r.PresencePenalty)
 	}
-	if len(r.Stop) > 0 {
+	if r.Stop != nil {
 		fmt.Fprintf(w, "  Stop: %v\n", r.Stop)
 	}
 	if r.Seed != nil {
@@ -172,7 +172,7 @@ func (r ChatCompletionRequest) String() string {
 	if r.TopK != nil {
 		fmt.Fprintf(w, "  TopK: %d\n", *r.TopK)
 	}
-	if len(r.Stop) > 0 {
+	if r.Stop != nil {
 		fmt.Fprintf(w, "  Stop: %v\n", r.Stop)
 	}
 	if r.Stream != nil {
@@ -198,4 +198,11 @@ func (r ChatCompletionRequest) String() string {
 		fmt.Fprintf(w, "  Thinking: type=%s\n", r.Thinking.Type)
 	}
 	return fmt.Sprintf("(ChatCompletionRequest) {\n%s}", w.String())
+}
+
+func (s StopUnion) String() string {
+	if s.Str != nil {
+		return *s.Str
+	}
+	return fmt.Sprintf("%v", s.Array)
 }
