@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/google/uuid"
@@ -357,6 +358,11 @@ return {1}
 // renewMember periodically renews the member's score for N keys
 func (e *ConcurrencyColorMarkerEngine) renewMember(ctx context.Context, keys []string, memberID string, done chan struct{}) {
 	defer close(done)
+	defer func() {
+		if err := recover(); err != nil {
+			slog.ErrorContext(ctx, "panic in renewal goroutine", "err", err, "stack", string(debug.Stack()))
+		}
+	}()
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 

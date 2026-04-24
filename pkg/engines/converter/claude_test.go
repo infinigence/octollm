@@ -1081,7 +1081,8 @@ func TestChatCompletionsToClaudeMessages_convertNonStreamResponseBody_MultipleTo
 }
 
 func testChatCompletionsToClaudeMessages_convertStreamResponse(t *testing.T, openaiRespJSON, expectedClaudeRespJSON []string) {
-	ctx := context.Background()
+	httpReq, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil)
+	req := octollm.NewRequest(httpReq, octollm.APIFormatChatCompletions)
 	converter := NewChatCompletionToClaudeMessages(nil)
 
 	inCh := make(chan *octollm.StreamChunk)
@@ -1097,7 +1098,7 @@ func testChatCompletionsToClaudeMessages_convertStreamResponse(t *testing.T, ope
 	}()
 	inStream := octollm.NewStreamChan(inCh, closeFunc)
 
-	dstStream, err := converter.convertStreamResponse(ctx, inStream)
+	dstStream, err := converter.convertStreamResponse(req, inStream)
 	require.NoError(t, err)
 
 	i := 0

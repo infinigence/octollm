@@ -225,9 +225,9 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 	streamParser, streamingType := e.streamParser(req)
 	switch streamingType {
 	case StreamingTypeSSE:
-		go e.processSSEStream(ctx, req, resp, ch, streamParser)
+		octollm.SafeGo(req, func() { e.processSSEStream(ctx, req, resp, ch, streamParser) })
 	case StreamingTypeJSON:
-		go e.processJSONStream(ctx, req, resp, ch, streamParser)
+		octollm.SafeGo(req, func() { e.processJSONStream(ctx, req, resp, ch, streamParser) })
 	default:
 		cancel() // just for the linter
 		return nil, fmt.Errorf("unsupported streaming type %s", streamingType)

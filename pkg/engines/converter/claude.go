@@ -40,7 +40,7 @@ func (e *ChatCompletionToClaudeMessages) Process(req *octollm.Request) (*octollm
 
 	// Convert Response
 	if resp.Stream != nil {
-		newStream, err := e.convertStreamResponse(req.Context(), resp.Stream)
+		newStream, err := e.convertStreamResponse(req, resp.Stream)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert stream response body: %w", err)
 		}
@@ -406,13 +406,14 @@ func (e *ChatCompletionToClaudeMessages) convertNonStreamResponseBody(ctx contex
 	return newBody, nil
 }
 
-func (e *ChatCompletionToClaudeMessages) convertStreamResponse(ctx context.Context, src *octollm.StreamChan) (*octollm.StreamChan, error) {
+func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Request, src *octollm.StreamChan) (*octollm.StreamChan, error) {
 	inCh := src.Chan()
 	outCh := make(chan *octollm.StreamChunk)
 
 	intPtr := func(i int) *int { return &i }
 
-	go func() {
+	octollm.SafeGo(req, func() {
+		ctx := req.Context()
 		defer close(outCh)
 		defer src.Close()
 
@@ -763,7 +764,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(ctx context.Conte
 				}
 			}
 		}
-	}()
+	})
 
 	newStream := octollm.NewStreamChan(outCh, nil)
 	return newStream, nil

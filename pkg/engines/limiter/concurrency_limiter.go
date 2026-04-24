@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/google/uuid"
@@ -161,6 +162,11 @@ func (e *ConcurrencyLimiterEngine) Process(req *octollm.Request) (*octollm.Respo
 // renewMember periodically renews the member's score
 func (e *ConcurrencyLimiterEngine) renewMember(ctx context.Context, memberID string, done chan struct{}) {
 	defer close(done)
+	defer func() {
+		if err := recover(); err != nil {
+			slog.ErrorContext(ctx, "panic in renewal goroutine", "err", err, "stack", string(debug.Stack()))
+		}
+	}()
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 

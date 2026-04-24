@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/google/uuid"
@@ -418,6 +419,11 @@ end
 // renewMemberSingle periodically renews the member's score for single key
 func (e *ConcurrencyColorLimiterEngine) renewMemberSingle(ctx context.Context, key, memberID string, done chan struct{}) {
 	defer close(done)
+	defer func() {
+		if p := recover(); p != nil {
+			slog.ErrorContext(ctx, "panic in renewal goroutine", "err", p, "stack", string(debug.Stack()))
+		}
+	}()
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
@@ -450,6 +456,11 @@ func (e *ConcurrencyColorLimiterEngine) renewMemberSingle(ctx context.Context, k
 // renewMemberDual periodically renews the member's score for dual keys
 func (e *ConcurrencyColorLimiterEngine) renewMemberDual(ctx context.Context, ownKey, tier0Key, memberID string, done chan struct{}) {
 	defer close(done)
+	defer func() {
+		if err := recover(); err != nil {
+			slog.ErrorContext(ctx, "panic in renewal goroutine", "err", err, "stack", string(debug.Stack()))
+		}
+	}()
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 

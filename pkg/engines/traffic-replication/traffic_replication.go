@@ -127,11 +127,11 @@ func (e *TrafficReplicationEngine) Process(req *octollm.Request) (*octollm.Respo
 				continue
 			}
 
-			go func(engine octollm.Engine, r *octollm.Request, cancel context.CancelFunc) {
+			octollm.SafeGo(reqC, func() {
 				defer cancel()
-				resp, err := engine.Process(r)
+				resp, err := item.TrafficReplicationEngine.Process(reqC)
 				if err != nil {
-					slog.ErrorContext(r.Context(), fmt.Sprintf("[TrafficReplication] replication error: %v", err))
+					slog.ErrorContext(reqC.Context(), fmt.Sprintf("[TrafficReplication] replication error: %v", err))
 					return
 				}
 				// Close response resources to avoid leaks. For streaming, drain until
@@ -148,7 +148,7 @@ func (e *TrafficReplicationEngine) Process(req *octollm.Request) (*octollm.Respo
 						_ = resp.Body.Close()
 					}
 				}
-			}(item.TrafficReplicationEngine, reqC, cancel)
+			})
 		}
 	}
 

@@ -88,3 +88,4 @@ Example configs in `/examples/` demonstrate minimal setup, rules, protocol conve
 - Thread-safe caching with RWMutex in ModelRepo and RuleComposer
 - Builder pattern for HTTPEndpoint configuration
 - Custom error types: `UpstreamHTTPError` vs handler errors
+- Use `octollm.SafeGo(req, fn)` instead of bare `go` for any goroutine spawned inside request or stream processing (e.g. fire-and-forget replication, async stream draining). gin.Recovery and similar middleware only recover panics on the handler goroutine; a panic on a separately spawned goroutine will crash the process.

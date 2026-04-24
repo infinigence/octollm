@@ -6,9 +6,10 @@ import (
 	"log/slog"
 
 	"github.com/expr-lang/expr"
+	"github.com/tidwall/sjson"
+
 	"github.com/infinigence/octollm/pkg/exprenv"
 	"github.com/infinigence/octollm/pkg/octollm"
-	"github.com/tidwall/sjson"
 )
 
 type RewritePolicy struct {
@@ -169,7 +170,7 @@ func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error)
 		rewritenChunk := make(chan *octollm.StreamChunk)
 		originalStream := resp.Stream
 		ctx, cancel := context.WithCancel(req.Context())
-		go func() {
+		octollm.SafeGo(req, func() {
 			defer close(rewritenChunk)
 			for chunk := range originalStream.Chan() {
 				b, err := chunk.Body.Bytes()
@@ -185,7 +186,7 @@ func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error)
 					return
 				}
 			}
-		}()
+		})
 		slog.DebugContext(req.Context(), "[RewriteEngine.Run] stream chunk rewritten")
 		resp.Stream = octollm.NewStreamChan(rewritenChunk, func() {
 			originalStream.Close()

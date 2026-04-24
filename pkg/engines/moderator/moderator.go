@@ -165,7 +165,7 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 	newChunks := make(chan *octollm.StreamChunk)
 	originalChunks := resp.Stream
 	ctx, cancel := context.WithCancel(req.Context())
-	go func() {
+	octollm.SafeGo(req, func() {
 		defer close(newChunks)
 
 		moderateEvery := e.ModerateStreamEvery
@@ -259,7 +259,7 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 				}
 			}
 		}
-	}()
+	})
 	resp.Stream = octollm.NewStreamChan(newChunks, func() {
 		originalChunks.Close()
 		cancel()

@@ -89,7 +89,7 @@ func (e *MockEndpoint) openAIStreamResponse(req *octollm.Request, v *openai.Chat
 	ch := make(chan *octollm.StreamChunk)
 	ctx, cancel := context.WithCancel(req.Context())
 
-	go func() {
+	octollm.SafeGo(req, func() {
 		defer close(ch)
 		time.Sleep(e.TTFT)
 		for _, c := range rOutput {
@@ -152,7 +152,7 @@ func (e *MockEndpoint) openAIStreamResponse(req *octollm.Request, v *openai.Chat
 			slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] context canceled during stream response: %v", ctx.Err()))
 			return
 		}
-	}()
+	})
 
 	streamChan := octollm.NewStreamChan(ch, cancel)
 	resp := octollm.NewStreamResponse(200, http.Header{"Content-Type": {"text/event-stream"}}, streamChan)

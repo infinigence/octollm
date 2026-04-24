@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,6 +83,11 @@ func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.Handler
 
 		if flusher, ok := w.(http.Flusher); ok && heartbeatIntervalSecs > 0 {
 			wg.Go(func() {
+				defer func() {
+					if err := recover(); err != nil {
+						slog.ErrorContext(r.Context(), "panic in keep-alive goroutine", "err", err, "stack", string(debug.Stack()))
+					}
+				}()
 				select {
 				case <-keepAliveCtx.Done():
 					return
