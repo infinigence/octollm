@@ -203,6 +203,23 @@ func (r ChatCompletionRequest) String() string {
 	return fmt.Sprintf("(ChatCompletionRequest) {\n%s}", w.String())
 }
 
+// String formats the struct safely for logging (no sensitive data).
+func (r EmbeddingRequest) String() string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "  Model: %q\n", r.Model)
+	if r.Input != nil {
+		if r.Input.IsArray() {
+			fmt.Fprintf(w, "  Input: array(len=%d)\n", r.Input.GetDataLength())
+		} else {
+			fmt.Fprintf(w, "  Input: string(len=%d)\n", r.Input.GetDataLength())
+		}
+	}
+	if r.NormalizeEmbeddings != nil {
+		fmt.Fprintf(w, "  NormalizeEmbeddings: %t\n", *r.NormalizeEmbeddings)
+	}
+	return fmt.Sprintf("(EmbeddingRequest) {\n%s}", w.String())
+}
+
 func (s StopUnion) String() string {
 	if s.Str != nil {
 		return *s.Str
