@@ -52,12 +52,6 @@ func (m *EmbeddingRequest) UnmarshalJSON(d []byte) error {
 	m.Model = bm.Model
 	m.NormalizeEmbeddings = bm.NormalizeEmbeddings
 
-	// 默认值：未提供时与 OpenAI 行为对齐，视为 false
-	if m.NormalizeEmbeddings == nil {
-		def := true
-		m.NormalizeEmbeddings = &def
-	}
-
 	if bm.Input == nil {
 		m.Input = RequestContentString("")
 		return nil
