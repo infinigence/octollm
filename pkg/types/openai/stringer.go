@@ -163,6 +163,9 @@ func (r ChatCompletionRequest) String() string {
 	if r.MaxTokens != nil {
 		fmt.Fprintf(w, "  MaxTokens: %d\n", *r.MaxTokens)
 	}
+	if r.MaxCompletionTokens != nil {
+		fmt.Fprintf(w, "  MaxCompletionTokens: %d\n", *r.MaxCompletionTokens)
+	}
 	if r.Temperature != nil {
 		fmt.Fprintf(w, "  Temperature: %.6f\n", *r.Temperature)
 	}
