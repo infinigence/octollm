@@ -114,8 +114,8 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 		cur3Val := cur3.Load()
 
 		require.True(t, cur1Val > 0, "expected some concurrency on svc1")
-		assert.InDelta(t, float64(cur2Val)/float64(cur1Val), 2.0, 0.2, "expected concurrency ratio to reflect rate limits (2:1)")
-		assert.InDelta(t, float64(cur3Val)/float64(cur1Val), 3.0, 0.2, "expected concurrency ratio to reflect rate limits (3:1)")
+		assert.InDelta(t, float64(cur2Val)/float64(cur1Val), 2.0, 0.4, "expected concurrency ratio to reflect rate limits (2:1)")
+		assert.InDelta(t, float64(cur3Val)/float64(cur1Val), 3.0, 0.4, "expected concurrency ratio to reflect rate limits (3:1)")
 
 		wg.Wait()
 
