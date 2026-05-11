@@ -18,7 +18,7 @@ import (
 type RequestColorLimiterEngine struct {
 	redisClient           *redis.Client
 	keyPrefix             string        // Redis key prefix for storing token bucket states
-	limits                []int         // Request limits for each supported priority tier (must be non-increasing)
+	limits                []int         // Built from total + per-priority rates (see NewRequestColorLimiterEngine)
 	rates                 []float64     // Token refill rates for each priority tier (calculated from limits and window)
 	ttls                  []int64       // Redis key TTL in seconds per tier; when expired, bucket is guaranteed full
 	window                time.Duration // Time window
@@ -32,52 +32,26 @@ var _ octollm.Engine = (*RequestColorLimiterEngine)(nil)
 
 var ErrRequestLimitReached = errors.New("request limit reached")
 
-// NewRequestColorLimiterEngine creates a multi-tier token bucket-based priority rate limiter
-// redisClient: Redis client
-// keyPrefix: Redis key prefix for storing token bucket states (each tier uses keyPrefix:tier_N)
-// limits: Request limit array for each supported priority tier (must be non-increasing), e.g., [200, 100, 50]
+// NewRequestColorLimiterEngine creates a multi-tier token bucket-based priority rate limiter.
 //
-//	means this limiter supports priority 2, 1, 0
-//	tier 0 (priority 2): 200 requests, tier 1 (priority 1): 100 requests, tier 2 (priority 0): 50 requests within the window
+// totalConcurrency is the global request budget in the window for the highest-priority tier (YAML `rpm` / total cap).
+// perPriorityRates are per-band budgets below that (YAML `rpm_rates` or equivalent); values greater than or equal to
+// totalConcurrency are effectively capped by the global tier. Negative entries are treated as 0 (empty band).
 //
-// window: Time window (supports seconds, minutes, etc.), must be greater than 0
-// nameSpace: Namespace for isolating priority across different namespaces, marker and limiter within the same nameSpace can communicate
-// next: Next engine
+// Same assembly rules as NewConcurrencyColorLimiterEngine: only total → [total]; only rates with total≤0 → tier 0 = sum(rates);
+// both → [total, ...rates]; empty → disabled.
 //
-// Working principle:
-// - The number of limits determines how many priority levels are supported
-// - Priority mapping: priority = len(limits) - 1 - tierIdx (same as marker)
-// - Token consumption logic:
-//   - Max priority requests (tier 0): only consume from tier 0
-//   - Lower priority requests: atomically consume from own tier and tier 0 with reservation
-//   - Reservation mechanism: when consuming tier 0 tokens, reserve N tokens where N = priority difference
-//     This ensures higher priority requests always have tokens available
-//   - Atomic operation: uses a single Lua script to check both buckets and consume from both or neither
-//     No rollback needed as the operation is atomic
-//
-// Example 1: limits=[200, 100], window=1*time.Minute (supports priority 1, 0)
-// - Tier 0: 200 req/min → Priority 1 (highest supported)
-// - Tier 1: 100 req/min → Priority 0 (lowest)
-// - Priority 1 request: only consume from tier 0
-// - Priority 0 request: atomically check tier 1 ≥1 AND tier 0 >1, then consume from both
-//   - If tier 0 has ≤1 tokens, priority 0 is rejected (reserved for priority 1)
-//
-// Example 2: limits=[200, 100, 50], window=1*time.Minute (supports priority 2, 1, 0)
-// - Tier 0: 200 req/min → Priority 2 (highest supported)
-// - Tier 1: 100 req/min → Priority 1 (medium)
-// - Tier 2: 50 req/min → Priority 0 (lowest)
-// - Priority 2 request: only consume from tier 0
-// - Priority 1 request: atomically check tier 1 ≥1 AND tier 0 >1, then consume from both
-//   - If tier 0 has ≤1 tokens, priority 1 is rejected
-//
-// - Priority 0 request: atomically check tier 2 ≥1 AND tier 0 >2, then consume from both
-//   - If tier 0 has ≤2 tokens, priority 0 is rejected
-func NewRequestColorLimiterEngine(redisClient *redis.Client, keyPrefix string, limits []int, window time.Duration, nameSpace string, next octollm.Engine) (*RequestColorLimiterEngine, error) {
+// window: Time window for token refill, must be greater than 0 when enabled.
+// Lua scripts are unchanged; internal limits slice is built at construction time.
+func NewRequestColorLimiterEngine(redisClient *redis.Client, keyPrefix string, totalConcurrency int, perPriorityRates []int, window time.Duration, nameSpace string, next octollm.Engine) (*RequestColorLimiterEngine, error) {
 	if next == nil {
 		return nil, fmt.Errorf("next engine must not be nil")
 	}
 
-	// If limits is empty, disable rate limiting (pass through)
+	limits, err := buildTotalPlusPerPriorityLimits(totalConcurrency, perPriorityRates)
+	if err != nil {
+		return nil, err
+	}
 	if len(limits) == 0 {
 		return &RequestColorLimiterEngine{
 			redisClient:           redisClient,
@@ -93,20 +67,18 @@ func NewRequestColorLimiterEngine(redisClient *redis.Client, keyPrefix string, l
 		}, nil
 	}
 
-	// Validate and filter limits to ensure non-increasing order
-	filteredLimits, filtered := filterDecreasingRates(limits)
-	if filtered {
-		slog.Warn(fmt.Sprintf("request_color_limiter_limits must be non-increasing, filtered from %v to %v (removed %d invalid suffix values)", limits, filteredLimits, len(limits)-len(filteredLimits)))
-	}
-
 	if window <= 0 {
 		return nil, fmt.Errorf("window must be positive")
 	}
 
-	// Calculate rate and TTL for each tier
-	rates := make([]float64, len(filteredLimits))
-	ttls := make([]int64, len(filteredLimits))
-	for i, limit := range filteredLimits {
+	rates := make([]float64, len(limits))
+	ttls := make([]int64, len(limits))
+	for i, limit := range limits {
+		if limit <= 0 {
+			rates[i] = 0
+			ttls[i] = 1
+			continue
+		}
 		rates[i] = float64(limit) / window.Seconds()
 		ttlSec := int64(math.Ceil(float64(limit)/rates[i])) + 1
 		if ttlSec < 1 {
@@ -118,7 +90,7 @@ func NewRequestColorLimiterEngine(redisClient *redis.Client, keyPrefix string, l
 	return &RequestColorLimiterEngine{
 		redisClient:           redisClient,
 		keyPrefix:             keyPrefix,
-		limits:                filteredLimits,
+		limits:                limits,
 		rates:                 rates,
 		ttls:                  ttls,
 		window:                window,

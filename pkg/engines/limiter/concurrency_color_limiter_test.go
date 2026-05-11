@@ -16,10 +16,10 @@ import (
 
 func TestFilterDecreasingRates(t *testing.T) {
 	tests := []struct {
-		name          string
-		in            []int
-		wantOut       []int
-		wantFiltered  bool
+		name         string
+		in           []int
+		wantOut      []int
+		wantFiltered bool
 	}{
 		{
 			name:         "empty",
@@ -86,29 +86,64 @@ func newConcurrencyColorLimiterTestRequest(t *testing.T, ns string, priority *in
 	return r.WithContext(ctx)
 }
 
+func TestBuildTotalPlusPerPriorityLimits(t *testing.T) {
+	got, err := buildTotalPlusPerPriorityLimits(80, []int{70, 50, 30})
+	assert.NoError(t, err)
+	assert.Equal(t, []int{80, 70, 50, 30}, got)
+
+	got, err = buildTotalPlusPerPriorityLimits(80, []int{0, 50, 30})
+	assert.NoError(t, err)
+	assert.Equal(t, []int{80, 0, 50, 30}, got)
+
+	got, err = buildTotalPlusPerPriorityLimits(0, []int{70, 50, 30})
+	assert.NoError(t, err)
+	assert.Equal(t, []int{150, 70, 50, 30}, got)
+
+	got, err = buildTotalPlusPerPriorityLimits(0, []int{-1, 50})
+	assert.NoError(t, err)
+	assert.Equal(t, []int{50, 0, 50}, got)
+
+	got, err = buildTotalPlusPerPriorityLimits(80, []int{80, 50})
+	assert.NoError(t, err)
+	assert.Equal(t, []int{80, 80, 50}, got)
+
+	got, err = buildTotalPlusPerPriorityLimits(10, []int{5, 6, 1})
+	assert.NoError(t, err)
+	assert.Equal(t, []int{10, 5, 6, 1}, got)
+
+	got, err = buildTotalPlusPerPriorityLimits(5, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, []int{5}, got)
+
+	got, err = buildTotalPlusPerPriorityLimits(0, nil)
+	assert.NoError(t, err)
+	assert.Nil(t, got)
+}
+
 func TestNewConcurrencyColorLimiterEngine_ValidationAndFiltering(t *testing.T) {
 	next := &nextStubEngine{}
 
-	// empty rates -> disabled (pass-through)
-	e, err := NewConcurrencyColorLimiterEngine(nil, "k", nil, time.Second, "ns", next)
+	e, err := NewConcurrencyColorLimiterEngine(nil, "k", 0, nil, time.Second, "ns", next)
 	assert.NoError(t, err)
 	assert.Nil(t, e.concurrencyRates)
 	assert.Nil(t, e.acquireSingleScript)
 	assert.Nil(t, e.acquireDualScript)
 
-	// timeout must be positive when enabled
-	_, err = NewConcurrencyColorLimiterEngine(nil, "k", []int{2, 1}, 0, "ns", next)
+	_, err = NewConcurrencyColorLimiterEngine(nil, "k", 2, []int{1}, 0, "ns", next)
 	assert.Error(t, err)
 
-	// rates that break non-increasing order get filtered (stop at first increase)
-	e, err = NewConcurrencyColorLimiterEngine(nil, "k", []int{10, 5, 6, 1}, time.Second, "ns", next)
+	e, err = NewConcurrencyColorLimiterEngine(nil, "k", 10, []int{10}, time.Second, "ns", next)
 	assert.NoError(t, err)
-	assert.Equal(t, []int{10, 5}, e.concurrencyRates)
+	assert.Equal(t, []int{10, 10}, e.concurrencyRates)
+
+	e, err = NewConcurrencyColorLimiterEngine(nil, "k", 10, []int{5, 6, 1}, time.Second, "ns", next)
+	assert.NoError(t, err)
+	assert.Equal(t, []int{10, 5, 6, 1}, e.concurrencyRates)
 }
 
 func TestConcurrencyColorLimiter_PassThroughWhenDisabled(t *testing.T) {
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200}}
-	e, err := NewConcurrencyColorLimiterEngine(nil, "k", nil, time.Second, "ns", next)
+	e, err := NewConcurrencyColorLimiterEngine(nil, "k", 0, nil, time.Second, "ns", next)
 	assert.NoError(t, err)
 
 	req := newConcurrencyColorLimiterTestRequest(t, "ns", nil)
@@ -128,7 +163,7 @@ func TestConcurrencyColorLimiter_PriorityMappingAndReservation(t *testing.T) {
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
 
 	// rates=[2,1] supports priority 1 (tier0, limit2) and priority 0 (tier1, limit1 with reservedSlots=1)
-	e, err := NewConcurrencyColorLimiterEngine(client, "limiter-key", []int{2, 1}, 10*time.Second, ns, next)
+	e, err := NewConcurrencyColorLimiterEngine(client, "limiter-key", 2, []int{1}, 10*time.Second, ns, next)
 	assert.NoError(t, err)
 
 	// Hold one max-priority slot (tier0Count becomes 1)
@@ -151,7 +186,7 @@ func TestConcurrencyColorLimiter_PriorityMappingAndReservation(t *testing.T) {
 	assert.NoError(t, resp2.Body.Close())
 }
 
-// [3,3,3]: same numeric limits per tier; asserts p2 allows 3, p1 allows 2, p0 allows 1 (tier0 reservation still differs by priority).
+// [4,3,3,3]: global cap 4 on tier 0; lower tiers 3 each — reservation still caps p2/p1/p0 differently.
 func TestConcurrencyColorLimiter_EqualTierLimits_ReservationCaps(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
@@ -160,11 +195,26 @@ func TestConcurrencyColorLimiter_EqualTierLimits_ReservationCaps(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	ns := "limiter-ns-eq333"
 	next := &nextNewBodyPerCallEngine{}
-	e, err := NewConcurrencyColorLimiterEngine(client, "limiter-key-eq333", []int{3, 3, 3}, 10*time.Second, ns, next)
+	e, err := NewConcurrencyColorLimiterEngine(client, "limiter-key-eq333", 4, []int{3, 3, 3}, 10*time.Second, ns, next)
 	assert.NoError(t, err)
 
-	p2 := 2
+	p3 := 3
 	var held []*octollm.Response
+	for i := 0; i < 4; i++ {
+		resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p3))
+		assert.NoError(t, err, "p3 request %d", i+1)
+		assert.NotNil(t, resp)
+		held = append(held, resp)
+	}
+	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p3))
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	for _, r := range held {
+		assert.NoError(t, r.Body.Close())
+	}
+	held = held[:0]
+
+	p2 := 2
 	for i := 0; i < 3; i++ {
 		resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p2))
 		assert.NoError(t, err, "p2 request %d", i+1)
@@ -214,7 +264,7 @@ func TestConcurrencyColorLimiter_NoPriorityDefaultsToLowest(t *testing.T) {
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
 
 	// rates=[10,1] => default priority 0 maps to tier1, limit 1
-	e, err := NewConcurrencyColorLimiterEngine(client, "noprio-key", []int{10, 1}, 10*time.Second, ns, next)
+	e, err := NewConcurrencyColorLimiterEngine(client, "noprio-key", 10, []int{1}, 10*time.Second, ns, next)
 	assert.NoError(t, err)
 
 	// first allowed
@@ -251,16 +301,12 @@ func TestConcurrencyColor_MarkerLimiterChain_MarkerBottleneck_Allows2ThenRejects
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	ns := "chain-ns"
 
-	// Marker: non-decreasing limits with a plateau ([1,1,2]) — three tiers, last tier cap 2.
-	// Expected: #1 -> highest priority (tiers 0+2), #2 -> middle tier + last (still within last cap),
-	// #3 -> rejected when all tiers / last tier are full.
-	markerRates := []int{1, 1, 2}
+	// Marker: independent caps [1,1,0] — two non-zero bands (p1 then p0); third has no slot.
+	markerRates := []int{1, 1, 0}
 
-	// Limiter: non-increasing with a plateau ([3,3,2]); generous enough not to bottleneck marker.
-	limiterRates := []int{3, 3, 2}
-
+	// Limiter: built as concurrency=4, rates=[3,2] -> [4,3,2]; matches three marker priorities.
 	next := &nextNewBodyPerCallEngine{}
-	limiter, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter", limiterRates, 10*time.Second, ns, next)
+	limiter, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter", 4, []int{3, 2}, 10*time.Second, ns, next)
 	assert.NoError(t, err)
 	marker, err := NewConcurrencyColorMarkerEngine(client, "chain-marker", markerRates, 10*time.Second, ns, limiter)
 	assert.NoError(t, err)
@@ -293,12 +339,10 @@ func TestConcurrencyColor_MarkerLimiterChain_LimiterBottleneck_Allows1ThenReject
 	// Same marker shape as previous test but with equal low tiers ([1,1,2]).
 	markerRates := []int{1, 1, 2}
 
-	// Limiter: plateau on high tiers ([2,2,1]); for the 2nd request (priority 1) reservedSlots=1
-	// requires tier0Count < tier0Limit-1, which fails once tier0 already holds the first request.
-	limiterRates := []int{2, 2, 1}
-
+	// Limiter: concurrency=2, rates=[1,1] -> [2,1,1]; priority 1 needs tier0Count < tier0Limit-reservedSlots = 1,
+	// so the second in-flight (tier0 already 1) is rejected at the limiter, not the marker.
 	next := &nextNewBodyPerCallEngine{}
-	limiter, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter-2", limiterRates, 10*time.Second, ns, next)
+	limiter, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter-2", 2, []int{1, 1}, 10*time.Second, ns, next)
 	assert.NoError(t, err)
 	marker, err := NewConcurrencyColorMarkerEngine(client, "chain-marker-2", markerRates, 10*time.Second, ns, limiter)
 	assert.NoError(t, err)
@@ -323,4 +367,3 @@ func TestConcurrencyColor_MarkerLimiterChain_LimiterBottleneck_Allows1ThenReject
 
 	assert.NoError(t, resp3.Body.Close())
 }
-

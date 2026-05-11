@@ -29,30 +29,34 @@ func TestNewRequestColorLimiterEngine_Validation(t *testing.T) {
 	next := &nextStubEngine{}
 
 	// next must not be nil
-	_, err := NewRequestColorLimiterEngine(nil, "k", []int{100}, time.Minute, "ns", nil)
+	_, err := NewRequestColorLimiterEngine(nil, "k", 100, nil, time.Minute, "ns", nil)
 	assert.Error(t, err)
 
-	// empty limits -> disabled (pass-through)
-	e, err := NewRequestColorLimiterEngine(nil, "k", nil, time.Minute, "ns", next)
+	// empty -> disabled (pass-through)
+	e, err := NewRequestColorLimiterEngine(nil, "k", 0, nil, time.Minute, "ns", next)
 	assert.NoError(t, err)
 	assert.Nil(t, e.limits)
 	assert.Nil(t, e.ttls)
 
 	// window must be positive
-	_, err = NewRequestColorLimiterEngine(nil, "k", []int{100}, 0, "ns", next)
+	_, err = NewRequestColorLimiterEngine(nil, "k", 100, nil, 0, "ns", next)
 	assert.Error(t, err)
 
-	// valid config
-	e, err = NewRequestColorLimiterEngine(nil, "k", []int{200, 100, 50}, time.Minute, "ns", next)
+	// valid: total + per-priority -> [200,100,50]
+	e, err = NewRequestColorLimiterEngine(nil, "k", 200, []int{100, 50}, time.Minute, "ns", next)
 	assert.NoError(t, err)
-	assert.Len(t, e.limits, 3)
+	assert.Equal(t, []int{200, 100, 50}, e.limits)
 	assert.Len(t, e.ttls, 3)
+
+	e, err = NewRequestColorLimiterEngine(nil, "k", 100, []int{100}, time.Minute, "ns", next)
+	assert.NoError(t, err)
+	assert.Equal(t, []int{100, 100}, e.limits)
 }
 
 func TestRequestColorLimiter_PassThroughWhenDisabled(t *testing.T) {
 	next := &nextStubEngine{}
 
-	e, err := NewRequestColorLimiterEngine(nil, "k", nil, time.Minute, "ns", next)
+	e, err := NewRequestColorLimiterEngine(nil, "k", 0, nil, time.Minute, "ns", next)
 	assert.NoError(t, err)
 
 	req := newRequestColorLimiterTestRequest(t, "ns", 0)
@@ -73,7 +77,7 @@ func TestRequestColorLimiter_PriorityInContext(t *testing.T) {
 
 	// limits=[5, 3, 2]: tier 0=5, tier 1=3, tier 2=2. All share tier 0.
 	// Use separate keyPrefix per test to isolate (tier 0 is shared within same keyPrefix)
-	e, err := NewRequestColorLimiterEngine(client, "limiter-p2", []int{5, 3, 2}, time.Minute, ns, next)
+	e, err := NewRequestColorLimiterEngine(client, "limiter-p2", 5, []int{3, 2}, time.Minute, ns, next)
 	assert.NoError(t, err)
 
 	// Priority 2 (tier 0 only): 5 requests allowed
@@ -93,7 +97,7 @@ func TestRequestColorLimiter_PriorityInContext(t *testing.T) {
 	assert.Equal(t, 5, next.callCount)
 
 	// Priority 1: use fresh engine/keyPrefix so tier 0 has tokens
-	e1, _ := NewRequestColorLimiterEngine(client, "limiter-p1", []int{5, 3, 2}, time.Minute, ns, next)
+	e1, _ := NewRequestColorLimiterEngine(client, "limiter-p1", 5, []int{3, 2}, time.Minute, ns, next)
 	for i := 0; i < 3; i++ {
 		req := newRequestColorLimiterTestRequest(t, ns, 1)
 		resp, err := e1.Process(req)
@@ -108,7 +112,7 @@ func TestRequestColorLimiter_PriorityInContext(t *testing.T) {
 	assert.Equal(t, 8, next.callCount)
 
 	// Priority 0: use fresh engine/keyPrefix
-	e0, _ := NewRequestColorLimiterEngine(client, "limiter-p0", []int{5, 3, 2}, time.Minute, ns, next)
+	e0, _ := NewRequestColorLimiterEngine(client, "limiter-p0", 5, []int{3, 2}, time.Minute, ns, next)
 	for i := 0; i < 2; i++ {
 		req := newRequestColorLimiterTestRequest(t, ns, 0)
 		resp, err := e0.Process(req)
@@ -132,15 +136,15 @@ func TestRequestColorLimiter_MarkerChain(t *testing.T) {
 	next := &nextStubEngine{}
 	ns := "chain-ns"
 
-	// Marker: limits=[2, 5, 10]. Limiter: limits=[10, 5, 2], shared tier 0.
-	// 8 pass: 2 p2 + 3 p1 + 2 p0 (limiter tier0 and tier2 constrain p0 to 2)
-	limiter, err := NewRequestColorLimiterEngine(client, "chain-limiter", []int{10, 5, 2}, time.Minute, ns, next)
+	// Marker: independent tiers [2, 5, 10]. Limiter: [10, 5, 2].
+	// 8 pass: 2 p2 + 5 p1 + 1 p0 (second p0 blocked by limiter tier0 reservation)
+	limiter, err := NewRequestColorLimiterEngine(client, "chain-limiter", 10, []int{5, 2}, time.Minute, ns, next)
 	assert.NoError(t, err)
 
 	marker, err := NewRequestColorMarkerEngine(client, "chain-marker", []int{2, 5, 10}, time.Minute, ns, limiter)
 	assert.NoError(t, err)
 
-	// Expect 8 through: 2 p2 + 3 p1 + 2 p0 (limiter tier0 and tier2 constrain p0 to 2)
+	// Expect 8 through: 2 p2 + 5 p1 + 1 p0
 	for i := 0; i < 8; i++ {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://example.com", strings.NewReader("body"))
 		r := octollm.NewRequest(req, octollm.APIFormatUnknown)
@@ -150,7 +154,7 @@ func TestRequestColorLimiter_MarkerChain(t *testing.T) {
 	}
 	assert.Equal(t, 8, next.callCount)
 
-	// 9th: marker may allow (tier 2 has 3 left) but limiter rejects; or marker rejects
+	// 9th: marker still has p0 tokens but limiter rejects
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://example.com", strings.NewReader("body"))
 	r := octollm.NewRequest(req, octollm.APIFormatUnknown)
 	_, err = marker.Process(r)
@@ -166,7 +170,7 @@ func TestRequestColorLimiter_NoPriorityDefaultsToLowest(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	next := &nextStubEngine{}
 
-	e, err := NewRequestColorLimiterEngine(client, "limiter-noprio", []int{10, 2}, time.Minute, "ns", next)
+	e, err := NewRequestColorLimiterEngine(client, "limiter-noprio", 10, []int{2}, time.Minute, "ns", next)
 	assert.NoError(t, err)
 
 	// Request without priority in context -> defaults to priority 0 (lowest tier, 2 requests)

@@ -30,35 +30,26 @@ var _ octollm.Engine = (*ConcurrencyColorMarkerEngine)(nil)
 // NewConcurrencyColorMarkerEngine creates a multi-tier concurrency-based marker with priority assignment
 // redisClient: Redis client
 // key: Redis key prefix for storing concurrency counts (each tier uses key:tier_N)
-// rates: Concurrency limit array for each priority tier (must be non-decreasing), e.g., [10, 50, 100]
+// rates: Per-priority concurrency slots, highest priority first. Each element is its own cap; the sum is total concurrency.
+// Negative values are treated as 0. Leading zeros are trimmed (no effect before the first positive slot).
+// Zeros after the first positive slot mean that priority band has no slots (skipped).
 //
-//	means tier 0 allows 10 concurrent, tier 1 allows 50 concurrent, tier 2 allows 100 concurrent
-//	Priority is calculated as: len(rates) - 1 - tierIdx
-//	So tier 0 → priority 2 (highest), tier 1 → priority 1, tier 2 → priority 0 (lowest)
+//	Priority is: len(rates) - 1 - tierIdx (tier 0 = highest priority).
 //
 // timeout: Timeout duration for member expiration, must be greater than 0
 // nameSpace: Namespace for isolating priority across different namespaces, marker and limiter within the same nameSpace can communicate
 // next: Next engine
 //
 // Working principle:
-// - Each tier has its own concurrency limit (non-decreasing)
 // - Priority number: larger = higher priority (priority 2 > priority 1 > priority 0)
-// - When a request comes in, it tries to acquire from tier 0 (smallest limit, highest priority) first
-// - Occupancy rule:
-//   - If acquired from tier 0 (highest priority): occupies tier 0 and last tier (lowest priority tier)
-//   - If acquired from tier 1: occupies tier 1 and last tier
-//   - If acquired from last tier (lowest priority): only occupies last tier
+// - A request tries tier 0, then tier 1, …; the first tier with limit>0 and available capacity wins
+// - Acquisition occupies only that tier’s key (one slot in that band)
 //
-// - If tier 0 fails, it tries tier 1, and so on
-// - If all tiers fail, the request is rejected
+// Example: rates=[3, 2, 1]
+// - Slots 1–3 → priority 2; 4–5 → priority 1; 6th → priority 0; 7th rejected
 //
-// Example: rates=[10, 50, 100]
-// - Tier 0: 10 concurrent → Priority 2 (highest)
-// - Tier 1: 50 concurrent → Priority 1 (medium)
-// - Tier 2: 100 concurrent → Priority 0 (lowest)
-// - Request tries tier 0 first: if available, occupies tier 0 and tier 2 → Priority 2
-// - If tier 0 full, tries tier 1: if available, occupies tier 1 and tier 2 → Priority 1
-// - If tier 1 full, tries tier 2: if available, occupies tier 2 only → Priority 0
+// Example: rates=[3, 0, 0]
+// - Three slots, all priority 2; lower bands are empty (limit 0)
 func NewConcurrencyColorMarkerEngine(redisClient *redis.Client, key string, rates []int, timeout time.Duration, nameSpace string, next octollm.Engine) (*ConcurrencyColorMarkerEngine, error) {
 	// If rates is empty, return an engine that directly passes through
 	if len(rates) == 0 {
@@ -79,15 +70,28 @@ func NewConcurrencyColorMarkerEngine(redisClient *redis.Client, key string, rate
 		return nil, fmt.Errorf("timeout must be positive")
 	}
 
-	filteredRates, filtered := filterIncreasingRates(rates)
-	if filtered {
-		slog.Warn(fmt.Sprintf("rates must be non-decreasing, filtered from %v to %v (removed %d invalid suffix values)", rates, filteredRates, len(rates)-len(filteredRates)))
+	normalizedRates, normalized := normalizeConcurrencyMarkerRates(rates)
+	if normalized {
+		slog.Warn(fmt.Sprintf("concurrency marker rates normalized from %v to %v", rates, normalizedRates))
+	}
+	if len(normalizedRates) == 0 {
+		return &ConcurrencyColorMarkerEngine{
+			redisClient:   redisClient,
+			key:           key,
+			rates:         nil,
+			timeout:       timeout,
+			nameSpace:     nameSpace,
+			acquireScript: nil,
+			releaseScript: nil,
+			renewScript:   nil,
+			next:          next,
+		}, nil
 	}
 
 	return &ConcurrencyColorMarkerEngine{
 		redisClient:   redisClient,
 		key:           key,
-		rates:         filteredRates,
+		rates:         normalizedRates,
 		timeout:       timeout,
 		nameSpace:     nameSpace,
 		acquireScript: redis.NewScript(concurrencyColorMarkerAquireLuaScript),
@@ -219,6 +223,33 @@ func (e *ConcurrencyColorMarkerEngine) setPriorityToContext(ctx context.Context,
 	return context.WithValue(ctx, contextKey, priorityStr)
 }
 
+// normalizeConcurrencyMarkerRates clamps negatives to 0, trims leading zeros, and returns nil if no positive band remains.
+func normalizeConcurrencyMarkerRates(rates []int) ([]int, bool) {
+	if len(rates) == 0 {
+		return nil, false
+	}
+	altered := false
+	out := make([]int, len(rates))
+	for i, v := range rates {
+		if v < 0 {
+			altered = true
+			v = 0
+		}
+		out[i] = v
+	}
+	start := 0
+	for start < len(out) && out[start] == 0 {
+		start++
+	}
+	if start > 0 {
+		altered = true
+	}
+	if start >= len(out) {
+		return nil, altered
+	}
+	return out[start:], altered
+}
+
 func filterIncreasingRates(rates []int) ([]int, bool) {
 	if len(rates) == 0 {
 		return rates, false
@@ -260,61 +291,34 @@ local nowUnix = tonumber(ARGV[numTiers + 2])
 local expireBefore = tonumber(ARGV[numTiers + 3])
 local memberID = ARGV[numTiers + 4]
 
-local lastTierIdx = numTiers
-
 -- Clean up expired members from all tiers
 for i = 1, numTiers do
     redis.call('ZREMRANGEBYSCORE', KEYS[i], '0', expireBefore)
 end
 
--- Phase 1: Find first available tier from tier 0 (highest priority) to last tier
+-- Phase 1: First tier (highest priority) with limit>0 and free capacity wins; acquire only that tier
 local foundTierIdx = nil
 for tierIdx = 1, numTiers do
-    local count = redis.call('ZCARD', KEYS[tierIdx])
-    if count < limits[tierIdx] then
-        foundTierIdx = tierIdx
-        break
+    local lim = limits[tierIdx]
+    if lim > 0 then
+        local count = redis.call('ZCARD', KEYS[tierIdx])
+        if count < lim then
+            foundTierIdx = tierIdx
+            break
+        end
     end
 end
 
--- If no tier is available, reject
 if foundTierIdx == nil then
     return {0, ""}
 end
 
--- Phase 2: Determine which keys to acquire
-local keysToAcquire = {}
 local priority = numTiers - foundTierIdx + 1
 
-if foundTierIdx == lastTierIdx then
-    -- Found tier is the last tier: only acquire last tier
-    keysToAcquire[1] = lastTierIdx
-else
-    -- Found tier is not the last tier: check if last tier is also available
-    local lastTierCount = redis.call('ZCARD', KEYS[lastTierIdx])
-    if lastTierCount < limits[lastTierIdx] then
-        -- Both available: acquire both found tier and last tier
-        keysToAcquire[1] = foundTierIdx
-        keysToAcquire[2] = lastTierIdx
-    else
-        -- Last tier not available: reject
-        return {0, ""}
-    end
-end
+redis.call('ZADD', KEYS[foundTierIdx], nowUnix, memberID)
+redis.call('EXPIRE', KEYS[foundTierIdx], 3600)
 
--- Phase 3: Acquire all required keys
-for i = 1, #keysToAcquire do
-    local keyIdx = keysToAcquire[i]
-    redis.call('ZADD', KEYS[keyIdx], nowUnix, memberID)
-    redis.call('EXPIRE', KEYS[keyIdx], 3600)
-end
-
--- Build acquired keys indices string
-local acquiredKeysStr = ""
-for i = 1, #keysToAcquire do
-    acquiredKeysStr = acquiredKeysStr .. tostring(keysToAcquire[i] - 1)
-end
-
+local acquiredKeysStr = tostring(foundTierIdx - 1)
 return {priority, acquiredKeysStr}
 `
 

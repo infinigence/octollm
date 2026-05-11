@@ -42,6 +42,16 @@ func TestNewRequestColorMarkerEngine_Validation(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, e.limits, 3)
 	assert.Len(t, e.ttls, 3)
+
+	// non-monotonic kept (independent per-tier bursts)
+	e, err = NewRequestColorMarkerEngine(nil, "k", []int{10, 5, 20}, time.Minute, "ns", next)
+	assert.NoError(t, err)
+	assert.Equal(t, []int{10, 5, 20}, e.limits)
+
+	// only zeros / negatives -> disabled
+	e, err = NewRequestColorMarkerEngine(nil, "k", []int{0, 0, -1}, time.Minute, "ns", next)
+	assert.NoError(t, err)
+	assert.Nil(t, e.limits)
 }
 
 func TestRequestColorMarker_PassThroughWhenDisabled(t *testing.T) {
@@ -65,12 +75,10 @@ func TestRequestColorMarker_MultiTier_AcquirePriority(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	next := &nextStubEngine{}
 
-	// limits=[2, 5, 10]: tier 0 allows 2, tier 1 allows 5, tier 2 allows 10
-	// tier 0 + tier 2 consumed together when from tier 0; tier 1 + tier 2 when from tier 1; tier 2 only when from tier 2
+	// limits=[2, 5, 10]: independent bursts per tier; 2+5+10 = 17 requests before exhaustion at t=0
 	e, err := NewRequestColorMarkerEngine(client, "marker-test", []int{2, 5, 10}, time.Minute, "ns", next)
 	assert.NoError(t, err)
 
-	// First 2 requests: acquire from tier 0 -> priority 2
 	for i := 0; i < 2; i++ {
 		req := newRequestColorMarkerTestRequest(t)
 		resp, err := e.Process(req)
@@ -79,31 +87,28 @@ func TestRequestColorMarker_MultiTier_AcquirePriority(t *testing.T) {
 	}
 	assert.Equal(t, 2, next.callCount)
 
-	// Next 3 requests: tier 0 exhausted, acquire from tier 1 -> priority 1
-	for i := 0; i < 3; i++ {
-		req := newRequestColorMarkerTestRequest(t)
-		resp, err := e.Process(req)
-		assert.NoError(t, err)
-		assert.NotNil(t, resp)
-	}
-	assert.Equal(t, 5, next.callCount)
-
-	// Next 5 requests: tier 1 exhausted, acquire from tier 2 only -> priority 0
 	for i := 0; i < 5; i++ {
 		req := newRequestColorMarkerTestRequest(t)
 		resp, err := e.Process(req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
 	}
-	assert.Equal(t, 10, next.callCount)
+	assert.Equal(t, 7, next.callCount)
 
-	// 11th request: all tiers exhausted -> rejected
+	for i := 0; i < 10; i++ {
+		req := newRequestColorMarkerTestRequest(t)
+		resp, err := e.Process(req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+	}
+	assert.Equal(t, 17, next.callCount)
+
 	req := newRequestColorMarkerTestRequest(t)
 	resp, err := e.Process(req)
 	assert.Error(t, err)
 	assert.Nil(t, resp)
 	assert.ErrorIs(t, err, ErrRateLimitReached)
-	assert.Equal(t, 10, next.callCount)
+	assert.Equal(t, 17, next.callCount)
 }
 
 func TestRequestColorMarker_RefillOverTime(t *testing.T) {
@@ -114,23 +119,21 @@ func TestRequestColorMarker_RefillOverTime(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	next := &nextStubEngine{}
 
-	// limits=[2, 4], window=30s: tier 0 rate=2/30, refill 1 token in 15s
+	// limits=[2, 4], window=30s: 6 independent tokens; tier 0 rate=2/30
 	e, err := NewRequestColorMarkerEngine(client, "marker-refill", []int{2, 4}, 30*time.Second, "ns", next)
 	assert.NoError(t, err)
 
-	// Exhaust all 4 (2 from tier 0+tier1, 2 from tier 1+tier1)
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 6; i++ {
 		req := newRequestColorMarkerTestRequest(t)
 		_, err := e.Process(req)
 		assert.NoError(t, err)
 	}
-	assert.Equal(t, 4, next.callCount)
+	assert.Equal(t, 6, next.callCount)
 
-	// 5th rejected
 	req := newRequestColorMarkerTestRequest(t)
 	_, err = e.Process(req)
 	assert.Error(t, err)
-	assert.Equal(t, 4, next.callCount)
+	assert.Equal(t, 6, next.callCount)
 
 	// Wait for refill (~16s for 1 token in tier 0)
 	time.Sleep(18 * time.Second)
@@ -139,5 +142,5 @@ func TestRequestColorMarker_RefillOverTime(t *testing.T) {
 	resp, err := e.Process(req)
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
-	assert.Equal(t, 5, next.callCount)
+	assert.Equal(t, 7, next.callCount)
 }

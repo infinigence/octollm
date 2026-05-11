@@ -30,33 +30,27 @@ type ConcurrencyColorLimiterEngine struct {
 
 var _ octollm.Engine = (*ConcurrencyColorLimiterEngine)(nil)
 
-// NewConcurrencyColorLimiterEngine creates a concurrency color limiter engine with priority-based limits
-// redisClient: Redis client
-// key: Redis key prefix for storing concurrency counts (each tier uses key:tier_N)
-// rates: Concurrency limit array for each priority tier (must be non-increasing), e.g., [200, 100, 50]
+// NewConcurrencyColorLimiterEngine creates a concurrency color limiter engine with priority-based limits.
 //
-//	means tier 0 (priority 2): 200 concurrent, tier 1 (priority 1): 100 concurrent, tier 2 (priority 0): 50 concurrent
+// totalConcurrency is the global concurrent cap (YAML `concurrency`): tier 0, highest-priority band only.
+// perPriorityRates are per-priority caps (YAML `concurrency_rates`) in order from the next band down; values greater
+// than or equal to totalConcurrency are effectively capped by the global tier. Negative entries are treated as 0 (empty band).
 //
-// timeout: Timeout duration for member expiration, must be greater than 0
-// nameSpace: Namespace for isolating priority across different namespaces, marker and limiter within the same nameSpace can communicate
-// next: Next engine
+// Configuration rules:
+//   - Only totalConcurrency (>0) and empty perPriorityRates → single tier [total] (legacy flat limit).
+//   - Only perPriorityRates (non-empty) and totalConcurrency <= 0 → tier 0 is the sum of perPriorityRates (after clamping negatives to 0); remaining tiers use perPriorityRates.
+//   - Both set → internal rates are append([totalConcurrency], perPriorityRates...).
+//   - totalConcurrency <= 0 and empty perPriorityRates → disabled (pass-through).
 //
-// Working principle:
-//   - Priority mapping: priority = len(rates) - 1 - tierIdx (same as marker)
-//   - Max priority requests (tier 0): only check tier 0 concurrency
-//   - Lower priority requests: atomically check own tier and tier 0 with reservation
-//   - Reservation mechanism: reserve N slots in tier 0 where N = priority difference (tierIdx)
-//     This ensures higher priority requests always have slots available
+// timeout: Timeout duration for member expiration, must be greater than 0 when the limiter is enabled.
+// nameSpace: Namespace for isolating priority across marker/limiter.
 //
-// Example: rates=[200, 100, 50] (supports priority 2, 1, 0)
-// - Tier 0: 200 concurrent → Priority 2 (highest)
-// - Tier 1: 100 concurrent → Priority 1 (medium)
-// - Tier 2: 50 concurrent → Priority 0 (lowest)
-// - Priority 2: only check tier 0 < 200
-// - Priority 1: check tier 1 < 100 AND tier 0 < (200-1)=199
-// - Priority 0: check tier 2 < 50 AND tier 0 < (200-2)=198
-func NewConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, rates []int, timeout time.Duration, nameSpace string, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
-	// If rates is empty, return an engine that directly passes through
+// Working principle (unchanged Lua): priority = len(rates)-1-tierIdx; lower priorities reserve slots in tier 0.
+func NewConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, totalConcurrency int, perPriorityRates []int, timeout time.Duration, nameSpace string, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
+	rates, err := buildTotalPlusPerPriorityLimits(totalConcurrency, perPriorityRates)
+	if err != nil {
+		return nil, err
+	}
 	if len(rates) == 0 {
 		return &ConcurrencyColorLimiterEngine{
 			redisClient:         redisClient,
@@ -77,15 +71,11 @@ func NewConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, rat
 	if timeout <= 0 {
 		return nil, fmt.Errorf("timeout must be positive")
 	}
-	filteredRates, filtered := filterDecreasingRates(rates)
-	if filtered {
-		slog.Warn(fmt.Sprintf("concurrency_rates must be non-increasing, filtered from %v to %v (removed %d invalid suffix values)", rates, filteredRates, len(rates)-len(filteredRates)))
-	}
 
 	return &ConcurrencyColorLimiterEngine{
 		redisClient:         redisClient,
 		key:                 key,
-		concurrencyRates:    filteredRates,
+		concurrencyRates:    rates,
 		timeout:             timeout,
 		nameSpace:           nameSpace,
 		acquireSingleScript: redis.NewScript(acquireSingleLuaScript),
@@ -272,6 +262,39 @@ func (e *ConcurrencyColorLimiterEngine) getPriorityFromContext(ctx context.Conte
 	}
 
 	return priority, true
+}
+
+// buildTotalPlusPerPriorityLimits builds tier limits for color limiters: [total] or [total, ...per] or [sum(per), ...per].
+// When only per-priority rates are set, tier 0 is the sum of those caps so total in-flight work has a finite headroom.
+// Shared by concurrency and request color limiters.
+func buildTotalPlusPerPriorityLimits(totalConcurrency int, perPriorityRates []int) ([]int, error) {
+	clamped := make([]int, len(perPriorityRates))
+	for i, v := range perPriorityRates {
+		if v < 0 {
+			v = 0
+		}
+		clamped[i] = v
+	}
+	if len(clamped) == 0 {
+		if totalConcurrency <= 0 {
+			return nil, nil
+		}
+		return []int{totalConcurrency}, nil
+	}
+	if totalConcurrency > 0 {
+		out := make([]int, 0, 1+len(clamped))
+		out = append(out, totalConcurrency)
+		out = append(out, clamped...)
+		return out, nil
+	}
+	sum := 0
+	for _, v := range clamped {
+		sum += v
+	}
+	out := make([]int, 0, 1+len(clamped))
+	out = append(out, sum)
+	out = append(out, clamped...)
+	return out, nil
 }
 
 func filterDecreasingRates(rates []int) ([]int, bool) {

@@ -17,7 +17,7 @@ import (
 type RequestColorMarkerEngine struct {
 	redisClient       *redis.Client
 	keyPrefix         string        // Redis key prefix for storing token bucket states
-	limits            []int         // Request limits for each priority tier (must be non-decreasing)
+	limits            []int         // Per-priority request budget per window (independent tiers; see NewRequestColorMarkerEngine)
 	rates             []float64     // Token refill rates for each priority tier (calculated from limits and window)
 	ttls              []int64       // Redis key TTL in seconds per tier; when expired, bucket is guaranteed full
 	window            time.Duration // Time window
@@ -31,36 +31,24 @@ var _ octollm.Engine = (*RequestColorMarkerEngine)(nil)
 // NewRequestColorMarkerEngine creates a multi-tier token bucket-based request rate limiter with priority marking
 // redisClient: Redis client
 // keyPrefix: Redis key prefix for storing token bucket states (each tier uses keyPrefix:tier_N)
-// limits: Request limit array for each priority tier (must be non-decreasing), e.g., [10, 50, 100]
+// limits: Per-priority request budget within the window, highest priority first. Each positive entry is an
+// independent token-bucket burst; total steady burst capacity is the sum of positive limits.
+// Negative values are treated as 0. Leading zeros are trimmed. Zeros after the first positive entry mean
+// that band has no quota (skipped).
 //
-//	means tier 0 allows 10 requests, tier 1 allows 50 requests, tier 2 allows 100 requests within the window
-//	Priority is calculated as: len(limits) - 1 - tierIdx
-//	So tier 0 → priority 2 (highest), tier 1 → priority 1, tier 2 → priority 0 (lowest)
+//	Priority is: len(limits) - 1 - tierIdx (tier 0 = highest priority).
 //
 // window: Time window (supports seconds, minutes, etc.), must be greater than 0
 // nameSpace: Namespace for isolating priority across different namespaces, marker and limiter within the same nameSpace can communicate
 // next: Next engine
 //
 // Working principle:
-// - Each tier has its own token bucket with a specific limit and refill rate
-// - Priority number: larger = higher priority (priority 2 > priority 1 > priority 0)
-// - When a request comes in, it tries to consume a token from tier 0 (smallest limit, highest priority) first
-// - Occupancy rule:
-//   - If acquired from tier 0 (highest priority): occupies tier 0 and last tier (lowest priority tier)
-//   - If acquired from tier 1: occupies tier 1 and last tier
-//   - If acquired from last tier (lowest priority): only occupies last tier
+// - Each tier has its own token bucket: rate = limit / window.Seconds(), burst = limit
+// - A request tries tier 0, then tier 1, …; the first tier with burst>0 and at least one token wins
+// - Only that tier’s bucket is decremented
 //
-// - If tier 0 fails, it tries tier 1, and so on
-// - If all tiers fail, the request is rejected
-// - The rate for each tier is calculated as: rate = limit / window.Seconds()
-//
-// Example: limits=[10, 50, 100], window=1*time.Minute
-// - Tier 0: 10 requests/min, rate=10/60≈0.167 tokens/sec → Priority 2 (highest)
-// - Tier 1: 50 requests/min, rate=50/60≈0.833 tokens/sec → Priority 1 (medium)
-// - Tier 2: 100 requests/min, rate=100/60≈1.667 tokens/sec → Priority 0 (lowest)
-// - Request tries tier 0 first: if available, occupies tier 0 and tier 2 → Priority 2
-// - If tier 0 full, tries tier 1: if available, occupies tier 1 and tier 2 → Priority 1
-// - If tier 1 full, tries tier 2: if available, occupies tier 2 only → Priority 0
+// Example: limits=[3, 2, 1], window=1m → up to 3+2+1 marked requests per minute at priorities 2, 1, 0 respectively
+// Example: limits=[3, 0, 0] → three highest-priority tokens per window; lower bands empty
 func NewRequestColorMarkerEngine(redisClient *redis.Client, keyPrefix string, limits []int, window time.Duration, nameSpace string, next octollm.Engine) (*RequestColorMarkerEngine, error) {
 	if next == nil {
 		return nil, fmt.Errorf("next engine must not be nil")
@@ -81,10 +69,22 @@ func NewRequestColorMarkerEngine(redisClient *redis.Client, keyPrefix string, li
 		}, nil
 	}
 
-	// Validate and filter limits to ensure non-decreasing order
-	filteredLimits, filtered := filterIncreasingRates(limits)
-	if filtered {
-		slog.Warn(fmt.Sprintf("request_color_marker_limits must be non-decreasing, filtered from %v to %v (removed %d invalid suffix values)", limits, filteredLimits, len(limits)-len(filteredLimits)))
+	normalizedLimits, normalized := normalizeConcurrencyMarkerRates(limits)
+	if normalized {
+		slog.Warn(fmt.Sprintf("request_color_marker_limits normalized from %v to %v", limits, normalizedLimits))
+	}
+	if len(normalizedLimits) == 0 {
+		return &RequestColorMarkerEngine{
+			redisClient:       redisClient,
+			keyPrefix:         keyPrefix,
+			limits:            nil,
+			rates:             nil,
+			ttls:              nil,
+			window:            0,
+			nameSpace:         nameSpace,
+			tokenBucketScript: nil,
+			next:              next,
+		}, nil
 	}
 
 	if window <= 0 {
@@ -92,9 +92,14 @@ func NewRequestColorMarkerEngine(redisClient *redis.Client, keyPrefix string, li
 	}
 
 	// Calculate rate and TTL for each tier
-	rates := make([]float64, len(filteredLimits))
-	ttls := make([]int64, len(filteredLimits))
-	for i, limit := range filteredLimits {
+	rates := make([]float64, len(normalizedLimits))
+	ttls := make([]int64, len(normalizedLimits))
+	for i, limit := range normalizedLimits {
+		if limit <= 0 {
+			rates[i] = 0
+			ttls[i] = 1
+			continue
+		}
 		rates[i] = float64(limit) / window.Seconds()
 		ttlSec := int64(math.Ceil(float64(limit)/rates[i])) + 1
 		if ttlSec < 1 {
@@ -106,7 +111,7 @@ func NewRequestColorMarkerEngine(redisClient *redis.Client, keyPrefix string, li
 	return &RequestColorMarkerEngine{
 		redisClient:       redisClient,
 		keyPrefix:         keyPrefix,
-		limits:            filteredLimits,
+		limits:            normalizedLimits,
 		rates:             rates,
 		ttls:              ttls,
 		window:            window,
@@ -229,8 +234,6 @@ for i = 1, numTiers do
     ttls[i] = tonumber(ARGV[2*numTiers + 2 + i])
 end
 
-local lastTierIdx = numTiers
-
 -- Helper function to get bucket tokens
 local function getBucketTokens(keyIdx)
     local bucket = redis.call('HMGET', KEYS[keyIdx], 'tokens', 'lastRefill')
@@ -250,62 +253,28 @@ local function updateBucket(keyIdx, tokens)
     redis.call('EXPIRE', KEYS[keyIdx], ttls[keyIdx])
 end
 
--- Phase 1: Find first available tier from tier 0 (highest priority) to last tier
+-- Phase 1: First tier with burst>=1 and at least one token wins; consume only that bucket
 local foundTierIdx = nil
-local tiersTokens = {}
+local foundTokens = nil
 
 for tierIdx = 1, numTiers do
-    local tokens = getBucketTokens(tierIdx)
-    tiersTokens[tierIdx] = tokens
-    
-    if tokens >= 1 then
-        foundTierIdx = tierIdx
-        break
+    if bursts[tierIdx] >= 1 then
+        local tokens = getBucketTokens(tierIdx)
+        if tokens >= 1 then
+            foundTierIdx = tierIdx
+            foundTokens = tokens
+            break
+        end
     end
 end
 
--- If no tier is available, reject without updating (don't update lastRefill when not consuming)
 if foundTierIdx == nil then
     return {0, ""}
 end
 
--- Phase 2: Determine which keys to consume
-local keysToConsume = {}
 local priority = numTiers - foundTierIdx + 1
+updateBucket(foundTierIdx, foundTokens - 1)
 
-if foundTierIdx == lastTierIdx then
-    -- Found tier is the last tier: only consume last tier
-    keysToConsume[1] = {keyIdx = lastTierIdx, tokens = tiersTokens[lastTierIdx]}
-else
-    -- Found tier is not the last tier: check if last tier also has tokens
-    local lastTierTokens = tiersTokens[lastTierIdx]
-    if lastTierTokens == nil then
-        lastTierTokens = getBucketTokens(lastTierIdx)
-        tiersTokens[lastTierIdx] = lastTierTokens
-    end
-    
-    if lastTierTokens >= 1 then
-        -- Both available: consume both found tier and last tier
-        keysToConsume[1] = {keyIdx = foundTierIdx, tokens = tiersTokens[foundTierIdx]}
-        keysToConsume[2] = {keyIdx = lastTierIdx, tokens = lastTierTokens}
-    else
-        -- Last tier not available: reject without updating (don't update lastRefill when not consuming)
-        return {0, ""}
-    end
-end
-
--- Phase 3: Consume tokens from required buckets (only update lastRefill when consuming)
-for i = 1, #keysToConsume do
-    local keyIdx = keysToConsume[i].keyIdx
-    local tokens = keysToConsume[i].tokens - 1
-    updateBucket(keyIdx, tokens)
-end
-
--- Build acquired keys indices string
-local acquiredKeysStr = ""
-for i = 1, #keysToConsume do
-    acquiredKeysStr = acquiredKeysStr .. tostring(keysToConsume[i].keyIdx - 1)
-end
-
+local acquiredKeysStr = tostring(foundTierIdx - 1)
 return {priority, acquiredKeysStr}
 `

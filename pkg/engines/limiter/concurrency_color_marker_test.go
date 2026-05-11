@@ -103,6 +103,30 @@ func (p *priorityCaptureEngine) Process(req *octollm.Request) (*octollm.Response
 	return p.resp, nil
 }
 
+func TestNormalizeConcurrencyMarkerRates(t *testing.T) {
+	tests := []struct {
+		name       string
+		in         []int
+		wantOut    []int
+		wantAltered bool
+	}{
+		{name: "empty", in: nil, wantOut: nil, wantAltered: false},
+		{name: "all_zero_disabled", in: []int{0, 0}, wantOut: nil, wantAltered: true},
+		{name: "trim_leading_zeros", in: []int{0, 0, 3, 2, 1}, wantOut: []int{3, 2, 1}, wantAltered: true},
+		// -1→0 then leading zeros trimmed (same as [0,3] → [3])
+		{name: "negative_as_zero", in: []int{-1, 3}, wantOut: []int{3}, wantAltered: true},
+		{name: "middle_zeros_kept", in: []int{3, 0, 0}, wantOut: []int{3, 0, 0}, wantAltered: false},
+		{name: "arbitrary_order_ok", in: []int{1, 3, 2, 10}, wantOut: []int{1, 3, 2, 10}, wantAltered: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, altered := normalizeConcurrencyMarkerRates(tt.in)
+			assert.Equal(t, tt.wantOut, got)
+			assert.Equal(t, tt.wantAltered, altered)
+		})
+	}
+}
+
 func TestNewConcurrencyColorMarkerEngine_ValidationAndFiltering(t *testing.T) {
 	next := &nextStubEngine{}
 
@@ -118,10 +142,15 @@ func TestNewConcurrencyColorMarkerEngine_ValidationAndFiltering(t *testing.T) {
 	_, err = NewConcurrencyColorMarkerEngine(nil, "k", []int{1}, 0, "ns", next)
 	assert.Error(t, err)
 
-	// rates that break non-decreasing order get filtered (stop at first decrease)
+	// non-monotonic values are kept (independent per-tier caps)
 	e, err = NewConcurrencyColorMarkerEngine(nil, "k", []int{1, 3, 2, 10}, time.Second, "ns", next)
 	assert.NoError(t, err)
-	assert.Equal(t, []int{1, 3}, e.rates)
+	assert.Equal(t, []int{1, 3, 2, 10}, e.rates)
+
+	// only zeros / negatives -> disabled
+	e, err = NewConcurrencyColorMarkerEngine(nil, "k", []int{0, 0, -3}, time.Second, "ns", next)
+	assert.NoError(t, err)
+	assert.Nil(t, e.rates)
 }
 
 func TestConcurrencyColorMarker_PassThroughWhenDisabled(t *testing.T) {
@@ -145,8 +174,8 @@ func TestConcurrencyColorMarker_PriorityAssignmentAndExhaustion(t *testing.T) {
 	ns := "marker-ns"
 	next := &priorityCaptureEngine{ns: ns}
 
-	// rates=[1,2] => first acquires tier0+tier1 => priority=1; second acquires tier1 only => priority=0; third denied
-	e, err := NewConcurrencyColorMarkerEngine(client, "marker-key", []int{1, 2}, 10*time.Second, ns, next)
+	// rates=[1,1] => two independent slots (p1 then p0); third denied
+	e, err := NewConcurrencyColorMarkerEngine(client, "marker-key", []int{1, 1}, 10*time.Second, ns, next)
 	assert.NoError(t, err)
 
 	resp1, err := e.Process(newConcurrencyColorMarkerTestRequest(t))
@@ -169,7 +198,7 @@ func TestConcurrencyColorMarker_PriorityAssignmentAndExhaustion(t *testing.T) {
 	assert.NoError(t, resp2.Body.Close())
 }
 
-// [3,3]: asserts every allowed request is colored priority 1, then the next is rejected when both tiers are full.
+// [3,0]: three slots at highest priority only; fourth rejected.
 func TestConcurrencyColorMarker_EqualTierLimits_AllPriority1(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
@@ -179,7 +208,7 @@ func TestConcurrencyColorMarker_EqualTierLimits_AllPriority1(t *testing.T) {
 	ns := "marker-ns-eq33"
 	next := &priorityCaptureEngine{ns: ns}
 
-	e, err := NewConcurrencyColorMarkerEngine(client, "marker-key-eq33", []int{3, 3}, 10*time.Second, ns, next)
+	e, err := NewConcurrencyColorMarkerEngine(client, "marker-key-eq33", []int{3, 0}, 10*time.Second, ns, next)
 	assert.NoError(t, err)
 
 	var resps []*octollm.Response
@@ -197,6 +226,49 @@ func TestConcurrencyColorMarker_EqualTierLimits_AllPriority1(t *testing.T) {
 	assert.Equal(t, 3, next.callCount, "denied request must not reach next")
 
 	for _, r := range resps {
+		assert.NoError(t, r.Body.Close())
+	}
+}
+
+func TestConcurrencyColorMarker_Bands321And300(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "marker-ns-bands"
+	next := &priorityCaptureEngine{ns: ns}
+
+	e, err := NewConcurrencyColorMarkerEngine(client, "marker-key-bands", []int{3, 2, 1}, 10*time.Second, ns, next)
+	assert.NoError(t, err)
+
+	want := []int{2, 2, 2, 1, 1, 0}
+	var resps []*octollm.Response
+	for i, pr := range want {
+		resp, err := e.Process(newConcurrencyColorMarkerTestRequest(t))
+		assert.NoError(t, err, "slot %d", i+1)
+		assert.Equal(t, pr, next.lastPriority)
+		resps = append(resps, resp)
+	}
+	_, err = e.Process(newConcurrencyColorMarkerTestRequest(t))
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	for _, r := range resps {
+		assert.NoError(t, r.Body.Close())
+	}
+
+	next2 := &priorityCaptureEngine{ns: ns}
+	e2, err := NewConcurrencyColorMarkerEngine(client, "marker-key-300", []int{3, 0, 0}, 10*time.Second, ns, next2)
+	assert.NoError(t, err)
+	var resps2 []*octollm.Response
+	for i := 0; i < 3; i++ {
+		resp, err := e2.Process(newConcurrencyColorMarkerTestRequest(t))
+		assert.NoError(t, err)
+		assert.Equal(t, 2, next2.lastPriority, "req %d", i+1)
+		resps2 = append(resps2, resp)
+	}
+	_, err = e2.Process(newConcurrencyColorMarkerTestRequest(t))
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	for _, r := range resps2 {
 		assert.NoError(t, r.Body.Close())
 	}
 }
