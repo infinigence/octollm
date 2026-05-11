@@ -107,7 +107,7 @@ func TestModerator_Process_NonStream(t *testing.T) {
 				TextModeratorAdapter: adapter,
 				ModerateInput:        true,
 				ModerateOutput:       true,
-				Next:                 mock.NewWithFixedOutput(tt.outputText, 0, 0),
+				Next:                 mock.NewOpenAIWithFixedOutput(tt.outputText, 0, 0),
 			}
 
 			req := testhelper.CreateTestRequest(
@@ -189,7 +189,7 @@ func TestModerator_Process_Stream(t *testing.T) {
 				TextModeratorAdapter: adapter,
 				ModerateInput:        true,
 				ModerateOutput:       true,
-				Next:                 mock.NewWithFixedOutput(tt.outputText, 0, 0),
+				Next:                 mock.NewOpenAIWithFixedOutput(tt.outputText, 0, 0),
 			}
 
 			req := testhelper.CreateTestRequest(

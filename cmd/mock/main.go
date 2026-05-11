@@ -21,7 +21,7 @@ func main() {
 	exprenv.RegisterDefaultExtractor("message5Hash", &ruleengine.Message5HashExtractor{})
 	exprenv.RegisterDefaultExtractor("message5HashArray", &ruleengine.Message5HashArrayExtractor{})
 
-	engine := mock.NewWithFixedOutput(`
+	defaultOutput := `
 归档
 
 林夏的手指悬停在确认键上方已经三分钟了。全息屏幕上，那段记忆文件泛着淡蓝色的光，标签上写着：2019-2024，陈默。
@@ -50,12 +50,16 @@ func main() {
 他没有删除那段记忆。相反，他决定再活久一点，久到足以创造更多值得记住的故事。
 
 [完]
-`, 100*time.Millisecond, 10*time.Millisecond)
+`
+	defaultTTFT := 100 * time.Millisecond
+	defaultTPOT := 10 * time.Millisecond
+
+	openaiEngine := mock.NewOpenAIWithFixedOutput(defaultOutput, defaultTTFT, defaultTPOT)
+	claudeEngine := mock.NewClaudeWithFixedOutput(defaultOutput, defaultTTFT, defaultTPOT)
 
 	mux := http.NewServeMux()
-	mux.Handle("/v1/chat/completions", octollm.ChatCompletionsHandler(engine))
-	mux.Handle("/v1/completions", octollm.CompletionsHandler(engine))
-	mux.Handle("/v1/messages", octollm.MessagesHandler(engine))
+	mux.Handle("/v1/chat/completions", octollm.ChatCompletionsHandler(openaiEngine))
+	mux.Handle("/v1/messages", octollm.MessagesHandler(claudeEngine))
 
 	slog.Info("listening :8090")
 	err := http.ListenAndServe(":8090", mux)

@@ -23,7 +23,7 @@ type MockEndpoint struct {
 
 var _ octollm.Engine = (*MockEndpoint)(nil)
 
-func NewWithFixedOutput(outputString string, ttft, tpot time.Duration) *MockEndpoint {
+func NewOpenAIWithFixedOutput(outputString string, ttft, tpot time.Duration) *MockEndpoint {
 	return &MockEndpoint{
 		OutputString: outputString,
 		TTFT:         ttft,
