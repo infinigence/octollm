@@ -211,9 +211,15 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			return nil, fmt.Errorf("no backend engine available")
 		}
 		if prioritizedBackend != "" && n == prioritizedBackend {
-			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] prioritized backend hit: %s (index %d/%d), shardKeys: %v", n, prioritizedIndex, len(prioritizedBackends), shardKeyList))
+			slog.InfoContext(req.Context(),
+				fmt.Sprintf("[ShardKey WRR load balancer] prioritized backend hit: %s (index %d/%d), shardKeys: %v", n, prioritizedIndex, len(prioritizedBackends), shardKeyList),
+				slog.String("backend_name", n),
+			)
 		} else {
-			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] no prioritized backend available (exhausted %d), fallback to WRR: %s, shardKeys: %v", len(prioritizedBackends), n, shardKeyList))
+			slog.InfoContext(req.Context(),
+				fmt.Sprintf("[ShardKey WRR load balancer] no prioritized backend available (exhausted %d), fallback to WRR: %s, shardKeys: %v", len(prioritizedBackends), n, shardKeyList),
+				slog.String("backend_name", n),
+			)
 		}
 		req.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(req)
@@ -298,7 +304,10 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioriti
 			return "", nil, true
 		}
 		selected := candidates[rand.Intn(len(candidates))]
-		slog.InfoContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] all-zero weights, random pick: %s, candidates: %v", selected.name, candidates))
+		slog.InfoContext(ctx,
+			fmt.Sprintf("[ShardKey WRR load balancer] all-zero weights, random pick: %s, candidates: %v", selected.name, candidates),
+			slog.String("backend_name", selected.name),
+		)
 		return selected.name, selected.engine, true
 	}
 
@@ -329,7 +338,10 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioriti
 		return "", nil, false
 	}
 
-	slog.InfoContext(ctx, fmt.Sprintf("[ShardKey WRR load balancer] selected: %s (currentWeight=%d), candidates: %v", selected.name, selected.currentWeight, candidates))
+	slog.InfoContext(ctx,
+		fmt.Sprintf("[ShardKey WRR load balancer] selected: %s (currentWeight=%d), candidates: %v", selected.name, selected.currentWeight, candidates),
+		slog.String("backend_name", selected.name),
+	)
 
 	// Step 3: penalize selected backend by totalWeight.
 	selected.currentWeight -= totalWeight

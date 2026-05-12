@@ -245,7 +245,10 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			b := prioritized[prioritizedIndex]
 			prioritizedIndex++
 			n, eng = b.name, b.engine
-			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] prioritized backend hit: %s (index %d/%d), shardKeys: %v", n, prioritizedIndex, len(prioritized), shardKeyList))
+			slog.InfoContext(req.Context(),
+				fmt.Sprintf("[ShardKey Concurrency load balancer] prioritized backend hit: %s (index %d/%d), shardKeys: %v", n, prioritizedIndex, len(prioritized), shardKeyList),
+				slog.String("backend_name", n),
+			)
 		} else {
 			candidates := make([]string, 0, len(l.backends))
 			for _, b := range l.backends {
@@ -254,7 +257,10 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 				}
 			}
 			n, eng = l.selectByConcurrency(req, excludeNames)
-			slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no prioritized backend available (exhausted %d), fallback to concurrency-based selection: %s, shardKeys: %v, candidates: %v", len(prioritized), n, shardKeyList, candidates))
+			slog.InfoContext(req.Context(),
+				fmt.Sprintf("[ShardKey Concurrency load balancer] no prioritized backend available (exhausted %d), fallback to concurrency-based selection: %s, shardKeys: %v, candidates: %v", len(prioritized), n, shardKeyList, candidates),
+				slog.String("backend_name", n),
+			)
 		}
 
 		if eng == nil {
