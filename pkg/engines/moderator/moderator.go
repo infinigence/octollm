@@ -148,13 +148,18 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 		}
 		if moderationSampleHit(e.OutputModerationSampleRate) {
 			if err := e.ModeratorService.Allow(req.Context(), text); err != nil {
+				// GetReplacementBody mutates resp.Body in place and returns the same
+				// *UnifiedBody. On the replacement path the body is still live (handed
+				// back to the caller), so we must not Close it here — that would
+				// double-fire closeFunc. On the no-replacement path the caller never
+				// sees resp, so we Close to release closeFunc ourselves.
 				replacement := e.TextModeratorAdapter.GetReplacementBody(req.Context(), resp.Body)
-				resp.Body.Close()
 				req.SetMetadataValue(isSpamKey, true)
 				if replacement != nil {
 					resp.Body = replacement
 					return resp, nil
 				}
+				resp.Body.Close()
 				return nil, fmt.Errorf("%w: %w", ErrOutputNotAllowed, err)
 			}
 		}
@@ -247,7 +252,6 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 			// get replacement chunk
 			req.SetMetadataValue(isSpamKey, true)
 
-			originalChunks.Close()
 			if len(chunkBuffer) > 0 {
 				replacement := e.TextModeratorAdapter.GetReplacementBody(req.Context(), chunkBuffer[0].Body)
 				if replacement != nil {

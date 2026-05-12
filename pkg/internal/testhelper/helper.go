@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/infinigence/octollm/pkg/exprenv"
@@ -124,6 +126,49 @@ func WithFeature(name string, extractor exprenv.FeatureExtractor) reqOptFunc {
 		}
 		opts.features[name] = extractor
 	}
+}
+
+// CloseCountingEngine wraps an Engine and, via OnClose on the returned
+// stream or body, counts how many times the upstream's closeFunc fires.
+// t.Cleanup asserts the count is exactly one — any test using this
+// constructor automatically gets a once-and-only-once invariant.
+type CloseCountingEngine struct {
+	t          *testing.T
+	inner      octollm.Engine
+	closeCount *int32
+}
+
+func NewCloseCountingEngine(t *testing.T, inner octollm.Engine) *CloseCountingEngine {
+	e := &CloseCountingEngine{
+		t:          t,
+		inner:      inner,
+		closeCount: new(int32),
+	}
+	t.Cleanup(func() {
+		count := atomic.LoadInt32(e.closeCount)
+		if count > 1 {
+			t.Errorf("upstream closed %d times, expected exactly once", count)
+		} else if count == 0 {
+			t.Errorf("upstream was not closed, expected exactly once")
+		}
+	})
+	return e
+}
+
+func (e *CloseCountingEngine) Process(req *octollm.Request) (*octollm.Response, error) {
+	resp, err := e.inner.Process(req)
+	if err != nil {
+		return nil, err
+	}
+	closeFunc := func() {
+		atomic.AddInt32(e.closeCount, 1)
+	}
+	if resp.Stream != nil {
+		resp.Stream.OnClose(closeFunc)
+	} else if resp.Body != nil {
+		resp.Body.OnClose(closeFunc)
+	}
+	return resp, nil
 }
 
 // CollectSSEStream drains a stream response and returns its SSE wire bytes,

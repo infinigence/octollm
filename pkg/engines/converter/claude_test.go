@@ -2,6 +2,8 @@ package converter
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"testing"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
+	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
@@ -1598,4 +1601,115 @@ func TestChatCompletionsToClaudeMessages_convertStreamResponse_WithReasoning(t *
 		`{"type": "message_stop"}`,
 	}
 	testChatCompletionsToClaudeMessages_convertStreamResponse(t, openaiResp, exceptClaudeResp)
+}
+
+func TestChatCompletionsToClaudeMessages_Close_Once_NonStream(t *testing.T) {
+	httpReq, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil)
+	req := octollm.NewRequest(httpReq, octollm.APIFormatClaudeMessages)
+	req.Body = octollm.NewBodyFromBytes(
+		[]byte(`{"model":"claude-3-5-haiku","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`),
+		&octollm.JSONParser[anthropic.ClaudeMessagesRequest]{},
+	)
+
+	openaiRespJSON := `{"id":"x","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
+
+	mockEng := newMockEngine(t)
+	mockEng.responseToReturn = &octollm.Response{
+		StatusCode: 200,
+		Header:     http.Header{},
+		Body: octollm.NewBodyFromBytes(
+			[]byte(openaiRespJSON),
+			&octollm.JSONParser[openai.ChatCompletionResponse]{},
+		),
+	}
+
+	next := testhelper.NewCloseCountingEngine(t, mockEng)
+	converter := NewChatCompletionToClaudeMessages(next)
+
+	resp, err := converter.Process(req)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Body)
+
+	_, err = resp.Body.Bytes()
+	require.NoError(t, err)
+	resp.Body.Close()
+}
+
+// errReader is an io.ReadCloser that fails on the first Read call.
+type errReader struct {
+	closed bool
+}
+
+func (r *errReader) Read(p []byte) (int, error) { return 0, fmt.Errorf("mock read error") }
+func (r *errReader) Close() error               { r.closed = true; return nil }
+
+var _ io.ReadCloser = (*errReader)(nil)
+
+func TestChatCompletionsToClaudeMessages_Close_Once_NonStream_ReadError(t *testing.T) {
+	httpReq, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil)
+	req := octollm.NewRequest(httpReq, octollm.APIFormatClaudeMessages)
+	req.Body = octollm.NewBodyFromBytes(
+		[]byte(`{"model":"claude-3-5-haiku","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`),
+		&octollm.JSONParser[anthropic.ClaudeMessagesRequest]{},
+	)
+
+	mockEng := newMockEngine(t)
+	mockEng.responseToReturn = &octollm.Response{
+		StatusCode: 200,
+		Header:     http.Header{},
+		Body: octollm.NewBodyFromReader(
+			&errReader{},
+			&octollm.JSONParser[openai.ChatCompletionResponse]{},
+		),
+	}
+
+	next := testhelper.NewCloseCountingEngine(t, mockEng)
+	converter := NewChatCompletionToClaudeMessages(next)
+
+	resp, err := converter.Process(req)
+	require.Error(t, err)
+	require.Nil(t, resp)
+}
+
+func TestChatCompletionsToClaudeMessages_Close_Once_Stream(t *testing.T) {
+	httpReq, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "/", nil)
+	req := octollm.NewRequest(httpReq, octollm.APIFormatClaudeMessages)
+	req.Body = octollm.NewBodyFromBytes(
+		[]byte(`{"model":"claude-3-5-haiku","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}`),
+		&octollm.JSONParser[anthropic.ClaudeMessagesRequest]{},
+	)
+
+	openaiChunks := []string{
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}]}`,
+		`[DONE]`,
+	}
+
+	inCh := make(chan *octollm.StreamChunk)
+	go func() {
+		defer close(inCh)
+		for _, c := range openaiChunks {
+			body := octollm.NewBodyFromBytes([]byte(c), &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})
+			inCh <- &octollm.StreamChunk{Body: body}
+		}
+	}()
+	inStream := octollm.NewStreamChan(inCh, func() {})
+
+	mockEng := newMockEngine(t)
+	mockEng.responseToReturn = &octollm.Response{
+		StatusCode: 200,
+		Header:     http.Header{},
+		Stream:     inStream,
+	}
+
+	next := testhelper.NewCloseCountingEngine(t, mockEng)
+	converter := NewChatCompletionToClaudeMessages(next)
+
+	resp, err := converter.Process(req)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Stream)
+
+	for range resp.Stream.Chan() {
+	}
+	resp.Stream.Close()
 }

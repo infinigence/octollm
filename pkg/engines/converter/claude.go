@@ -42,12 +42,14 @@ func (e *ChatCompletionToClaudeMessages) Process(req *octollm.Request) (*octollm
 	if resp.Stream != nil {
 		newStream, err := e.convertStreamResponse(req, resp.Stream)
 		if err != nil {
+			resp.Stream.Close()
 			return nil, fmt.Errorf("failed to convert stream response body: %w", err)
 		}
 		resp.Stream = newStream
 	} else {
 		nonStreamResp, err := e.convertNonStreamResponseBody(req.Context(), resp.Body)
 		if err != nil {
+			resp.Body.Close()
 			return nil, fmt.Errorf("failed to convert non-stream response body: %w", err)
 		}
 		resp.Body = nonStreamResp
@@ -321,6 +323,7 @@ func (e *ChatCompletionToClaudeMessages) convertNonStreamResponseBody(ctx contex
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse response body: %w", err)
 	}
+	srcBody.Close()
 
 	openaiResp, ok := parsed.(*openai.ChatCompletionResponse)
 	if !ok {
@@ -409,13 +412,14 @@ func (e *ChatCompletionToClaudeMessages) convertNonStreamResponseBody(ctx contex
 func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Request, src *octollm.StreamChan) (*octollm.StreamChan, error) {
 	inCh := src.Chan()
 	outCh := make(chan *octollm.StreamChunk)
+	ctx, cancel := context.WithCancel(req.Context())
 
 	intPtr := func(i int) *int { return &i }
 
 	octollm.SafeGo(req, func() {
-		ctx := req.Context()
 		defer close(outCh)
 		defer src.Close()
+		defer cancel()
 
 		started := false
 		msgID := ""
@@ -457,7 +461,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 						Type:  "content_block_stop",
 						Index: intPtr(currentBlockIndex),
 					}
-					if err := e.sendEvent(outCh, blockStop); err != nil {
+					if err := e.sendEvent(ctx, outCh, blockStop); err != nil {
 						slog.ErrorContext(ctx, fmt.Sprintf("failed to send content_block_stop event: %v", err))
 						break
 					}
@@ -489,7 +493,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 							msgDelta.Usage.CacheReadInputTokens = &cached
 						}
 					}
-					if err := e.sendEvent(outCh, msgDelta); err != nil {
+					if err := e.sendEvent(ctx, outCh, msgDelta); err != nil {
 						slog.ErrorContext(ctx, fmt.Sprintf("failed to send message_delta event: %v", err))
 						break
 					}
@@ -500,7 +504,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 				msgStop := &anthropic.ClaudeMessagesStreamEvent{
 					Type: "message_stop",
 				}
-				if err := e.sendEvent(outCh, msgStop); err != nil {
+				if err := e.sendEvent(ctx, outCh, msgStop); err != nil {
 					slog.ErrorContext(ctx, fmt.Sprintf("failed to send message_stop event: %v", err))
 				}
 				break
@@ -527,7 +531,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 						Usage:   &anthropic.Usage{InputTokens: 0, OutputTokens: 0}, // Placeholder
 					},
 				}
-				if err := e.sendEvent(outCh, msgStart); err != nil {
+				if err := e.sendEvent(ctx, outCh, msgStart); err != nil {
 					slog.ErrorContext(ctx, fmt.Sprintf("failed to send message_start event: %v", err))
 					continue
 				}
@@ -580,7 +584,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 							Type:  "content_block_stop",
 							Index: intPtr(currentBlockIndex),
 						}
-						if err := e.sendEvent(outCh, blockStop); err != nil {
+						if err := e.sendEvent(ctx, outCh, blockStop); err != nil {
 							slog.ErrorContext(ctx, fmt.Sprintf("failed to send content_block_stop event: %v", err))
 							continue
 						}
@@ -601,7 +605,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 							},
 						},
 					}
-					if err := e.sendEvent(outCh, blockStart); err != nil {
+					if err := e.sendEvent(ctx, outCh, blockStart); err != nil {
 						slog.ErrorContext(ctx, fmt.Sprintf("failed to send content_block_start event: %v", err))
 						continue
 					}
@@ -620,7 +624,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 				deltaBytes, _ := json.Marshal(deltaData)
 				deltaEvent.DeltaRaw = deltaBytes
 
-				if err := e.sendEvent(outCh, deltaEvent); err != nil {
+				if err := e.sendEvent(ctx, outCh, deltaEvent); err != nil {
 					slog.ErrorContext(ctx, fmt.Sprintf("failed to send content_block_delta event: %v", err))
 					continue
 				}
@@ -646,7 +650,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 							Type:  "content_block_stop",
 							Index: intPtr(currentBlockIndex),
 						}
-						if err := e.sendEvent(outCh, blockStop); err != nil {
+						if err := e.sendEvent(ctx, outCh, blockStop); err != nil {
 							slog.ErrorContext(ctx, fmt.Sprintf("failed to send content_block_stop event: %v", err))
 							continue
 						}
@@ -665,7 +669,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 							Text: &emptyText,
 						},
 					}
-					if err := e.sendEvent(outCh, blockStart); err != nil {
+					if err := e.sendEvent(ctx, outCh, blockStart); err != nil {
 						slog.ErrorContext(ctx, fmt.Sprintf("failed to send content_block_start for text event: %v", err))
 						continue
 					}
@@ -684,7 +688,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 				deltaBytes, _ := json.Marshal(deltaData)
 				deltaEvent.DeltaRaw = deltaBytes
 
-				if err := e.sendEvent(outCh, deltaEvent); err != nil {
+				if err := e.sendEvent(ctx, outCh, deltaEvent); err != nil {
 					slog.ErrorContext(ctx, fmt.Sprintf("failed to send content_block_delta event: %v", err))
 					continue
 				}
@@ -713,7 +717,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 								Type:  "content_block_stop",
 								Index: intPtr(currentBlockIndex),
 							}
-							if err := e.sendEvent(outCh, blockStop); err != nil {
+							if err := e.sendEvent(ctx, outCh, blockStop); err != nil {
 								slog.ErrorContext(ctx, fmt.Sprintf("failed to send content_block_stop event: %v", err))
 								continue
 							}
@@ -735,7 +739,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 								},
 							},
 						}
-						if err := e.sendEvent(outCh, blockStart); err != nil {
+						if err := e.sendEvent(ctx, outCh, blockStart); err != nil {
 							slog.ErrorContext(ctx, fmt.Sprintf("failed to send content_block_start for tool_use event: %v", err))
 							continue
 						}
@@ -756,7 +760,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 						deltaBytes, _ := json.Marshal(deltaData)
 						deltaEvent.DeltaRaw = deltaBytes
 
-						if err := e.sendEvent(outCh, deltaEvent); err != nil {
+						if err := e.sendEvent(ctx, outCh, deltaEvent); err != nil {
 							slog.ErrorContext(ctx, fmt.Sprintf("failed to send input_json_delta event: %v", err))
 							continue
 						}
@@ -766,18 +770,22 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 		}
 	})
 
-	newStream := octollm.NewStreamChan(outCh, nil)
+	newStream := octollm.NewStreamChan(outCh, cancel)
 	return newStream, nil
 }
 
-func (e *ChatCompletionToClaudeMessages) sendEvent(ch chan<- *octollm.StreamChunk, event *anthropic.ClaudeMessagesStreamEvent) error {
+func (e *ChatCompletionToClaudeMessages) sendEvent(ctx context.Context, ch chan<- *octollm.StreamChunk, event *anthropic.ClaudeMessagesStreamEvent) error {
 	bytes, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal claude stream event: %w", err)
 	}
 	body := octollm.NewBodyFromBytes(bytes, &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{})
-	ch <- &octollm.StreamChunk{Body: body, Metadata: map[string]string{"event": event.Type}}
-	return nil
+	select {
+	case ch <- &octollm.StreamChunk{Body: body, Metadata: map[string]string{"event": event.Type}}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (e *ChatCompletionToClaudeMessages) mapFinishReason(fr string) string {

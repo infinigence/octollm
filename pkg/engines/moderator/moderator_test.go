@@ -229,3 +229,89 @@ func TestModerator_Process_Stream(t *testing.T) {
 		})
 	}
 }
+
+func TestModerator_Close_Once(t *testing.T) {
+	tests := []struct {
+		name           string
+		outputText     string
+		isSpamFunc     func([]rune) bool
+		wantSpam       bool
+		requestBody    string
+		noReplacement  bool
+		wantOutputSpam bool
+	}{
+		{
+			name:        "clean stream closes upstream exactly once",
+			outputText:  "hello world",
+			isSpamFunc:  strContainsFactory("{bad}"),
+			requestBody: `{"model":"glm-4.7","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		},
+		{
+			name:        "spam stream with replacement closes upstream exactly once",
+			outputText:  "{bad}",
+			isSpamFunc:  strContainsFactory("{bad}"),
+			wantSpam:    true,
+			requestBody: `{"model":"glm-4.7","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		},
+		{
+			name:        "clean non-stream closes upstream exactly once",
+			outputText:  "hello world",
+			isSpamFunc:  strContainsFactory("{bad}"),
+			requestBody: `{"model":"glm-4.7","messages":[{"role":"user","content":"hi"}],"stream":false}`,
+		},
+		{
+			name:        "spam non-stream with replacement closes upstream exactly once",
+			outputText:  "{bad}",
+			isSpamFunc:  strContainsFactory("{bad}"),
+			wantSpam:    true,
+			requestBody: `{"model":"glm-4.7","messages":[{"role":"user","content":"hi"}],"stream":false}`,
+		},
+		{
+			name:           "spam non-stream without replacement closes upstream exactly once",
+			outputText:     "{bad}",
+			isSpamFunc:     strContainsFactory("{bad}"),
+			requestBody:    `{"model":"glm-4.7","messages":[{"role":"user","content":"hi"}],"stream":false}`,
+			noReplacement:  true,
+			wantOutputSpam: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			next := testhelper.NewCloseCountingEngine(t, mock.NewOpenAIWithFixedOutput(tt.outputText, 0, 0))
+			adapter := adapterWithConfig
+			if tt.noReplacement {
+				adapter = adapterWithoutConfig
+			}
+			eng := &TextModeratorEngine{
+				ModeratorService:     &mockTextModeratorService{isSpamFunc: tt.isSpamFunc, maxRuneLen: 100},
+				TextModeratorAdapter: adapter,
+				ModerateInput:        true,
+				ModerateOutput:       true,
+				Next:                 next,
+			}
+
+			req := testhelper.CreateTestRequest(testhelper.WithBody(tt.requestBody))
+			resp, err := eng.Process(req)
+			if tt.wantOutputSpam {
+				assert.ErrorIs(t, err, ErrOutputNotAllowed)
+				assert.Nil(t, resp)
+				return
+			}
+			assert.NoError(t, err)
+
+			if resp.Body != nil {
+				_, err := resp.Body.Bytes()
+				assert.NoError(t, err)
+				resp.Body.Close()
+			} else {
+				for range resp.Stream.Chan() {
+				}
+				resp.Stream.Close()
+			}
+
+			isSpam, _ := GetIsSpam(req)
+			assert.Equal(t, tt.wantSpam, isSpam)
+		})
+	}
+}

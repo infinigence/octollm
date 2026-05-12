@@ -203,6 +203,7 @@ func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error)
 		}
 		b, err := resp.Body.Bytes()
 		if err != nil {
+			resp.Body.Close()
 			return nil, fmt.Errorf("read response body error: %w", err)
 		}
 		resp.Body.SetBytes(respRewriter.RewriteJSON(b))
