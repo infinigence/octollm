@@ -33,8 +33,8 @@ var _ octollm.Engine = (*RequestColorMarkerEngine)(nil)
 // keyPrefix: Redis key prefix for storing token bucket states (each tier uses keyPrefix:tier_N)
 // limits: Per-priority request budget within the window, highest priority first. Each positive entry is an
 // independent token-bucket burst; total steady burst capacity is the sum of positive limits.
-// Negative values are treated as 0. Leading zeros are trimmed. Zeros after the first positive entry mean
-// that band has no quota (skipped).
+// Negative values are treated as 0. Only an empty limits slice disables the marker (pass-through).
+// A zero entry at any index means that band has no quota (skipped); e.g. limits=[0] rejects all traffic.
 //
 //	Priority is: len(limits) - 1 - tierIdx (tier 0 = highest priority).
 //

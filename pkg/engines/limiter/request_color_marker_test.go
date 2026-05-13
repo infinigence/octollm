@@ -48,10 +48,11 @@ func TestNewRequestColorMarkerEngine_Validation(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, []int{10, 5, 20}, e.limits)
 
-	// only zeros / negatives -> disabled
+	// only zeros / negatives -> enabled; every tier has limit 0 so nothing is admitted
 	e, err = NewRequestColorMarkerEngine(nil, "k", []int{0, 0, -1}, time.Minute, "ns", next)
 	assert.NoError(t, err)
-	assert.Nil(t, e.limits)
+	assert.Equal(t, []int{0, 0, 0}, e.limits)
+	assert.NotNil(t, e.tokenBucketScript)
 }
 
 func TestRequestColorMarker_PassThroughWhenDisabled(t *testing.T) {

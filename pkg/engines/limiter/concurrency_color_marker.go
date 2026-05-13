@@ -28,7 +28,12 @@ type ConcurrencyColorMarkerEngine struct {
 
 var _ octollm.Engine = (*ConcurrencyColorMarkerEngine)(nil)
 
-// NewConcurrencyColorMarkerEngine creates a multi-tier concurrency-based marker with priority assignment.
+// NewConcurrencyColorMarkerEngine creates a multi-tier concurrency-based marker with priority assignment
+// redisClient: Redis client
+// key: Redis key prefix for storing concurrency counts (each tier uses key:tier_N)
+// rates: Per-priority concurrency slots, highest priority first. Each element is its own cap; the sum is total concurrency.
+// Negative values are treated as 0. Only an empty rates slice disables the marker (pass-through).
+// A zero entry at any index means that priority band has no slots (skipped); e.g. rates=[0] rejects all traffic.
 //
 // Parameters:
 //   - redisClient: Redis client.
@@ -234,6 +239,7 @@ func formatTierUsage(counts []int64, limits []int) string {
 }
 
 // normalizeConcurrencyMarkerRates clamps negatives to 0, trims leading zeros, and returns nil if no positive band remains.
+// normalizeConcurrencyMarkerRates clamps negatives to 0 and returns a copy of the same length as rates.
 func normalizeConcurrencyMarkerRates(rates []int) ([]int, bool) {
 	if len(rates) == 0 {
 		return nil, false
@@ -247,17 +253,7 @@ func normalizeConcurrencyMarkerRates(rates []int) ([]int, bool) {
 		}
 		out[i] = v
 	}
-	start := 0
-	for start < len(out) && out[start] == 0 {
-		start++
-	}
-	if start > 0 {
-		altered = true
-	}
-	if start >= len(out) {
-		return nil, altered
-	}
-	return out[start:], altered
+	return out, altered
 }
 
 func filterIncreasingRates(rates []int) ([]int, bool) {

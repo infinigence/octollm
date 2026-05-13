@@ -111,10 +111,9 @@ func TestNormalizeConcurrencyMarkerRates(t *testing.T) {
 		wantAltered bool
 	}{
 		{name: "empty", in: nil, wantOut: nil, wantAltered: false},
-		{name: "all_zero_disabled", in: []int{0, 0}, wantOut: nil, wantAltered: true},
-		{name: "trim_leading_zeros", in: []int{0, 0, 3, 2, 1}, wantOut: []int{3, 2, 1}, wantAltered: true},
-		// -1→0 then leading zeros trimmed (same as [0,3] → [3])
-		{name: "negative_as_zero", in: []int{-1, 3}, wantOut: []int{3}, wantAltered: true},
+		{name: "all_zero_kept", in: []int{0, 0}, wantOut: []int{0, 0}, wantAltered: false},
+		{name: "leading_zeros_kept", in: []int{0, 0, 3, 2, 1}, wantOut: []int{0, 0, 3, 2, 1}, wantAltered: false},
+		{name: "negative_as_zero", in: []int{-1, 3}, wantOut: []int{0, 3}, wantAltered: true},
 		{name: "middle_zeros_kept", in: []int{3, 0, 0}, wantOut: []int{3, 0, 0}, wantAltered: false},
 		{name: "arbitrary_order_ok", in: []int{1, 3, 2, 10}, wantOut: []int{1, 3, 2, 10}, wantAltered: false},
 	}
@@ -147,10 +146,11 @@ func TestNewConcurrencyColorMarkerEngine_ValidationAndFiltering(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, []int{1, 3, 2, 10}, e.rates)
 
-	// only zeros / negatives -> disabled
+	// only zeros / negatives -> enabled; every tier has limit 0 so nothing is admitted
 	e, err = NewConcurrencyColorMarkerEngine(nil, "k", []int{0, 0, -3}, time.Second, "ns", next)
 	assert.NoError(t, err)
-	assert.Nil(t, e.rates)
+	assert.Equal(t, []int{0, 0, 0}, e.rates)
+	assert.NotNil(t, e.acquireScript)
 }
 
 func TestConcurrencyColorMarker_PassThroughWhenDisabled(t *testing.T) {
