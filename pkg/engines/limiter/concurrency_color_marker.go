@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,29 +28,31 @@ type ConcurrencyColorMarkerEngine struct {
 
 var _ octollm.Engine = (*ConcurrencyColorMarkerEngine)(nil)
 
-// NewConcurrencyColorMarkerEngine creates a multi-tier concurrency-based marker with priority assignment
-// redisClient: Redis client
-// key: Redis key prefix for storing concurrency counts (each tier uses key:tier_N)
-// rates: Per-priority concurrency slots, highest priority first. Each element is its own cap; the sum is total concurrency.
-// Negative values are treated as 0. Leading zeros are trimmed (no effect before the first positive slot).
-// Zeros after the first positive slot mean that priority band has no slots (skipped).
+// NewConcurrencyColorMarkerEngine creates a multi-tier concurrency-based marker with priority assignment.
 //
-//	Priority is: len(rates) - 1 - tierIdx (tier 0 = highest priority).
-//
-// timeout: Timeout duration for member expiration, must be greater than 0
-// nameSpace: Namespace for isolating priority across different namespaces, marker and limiter within the same nameSpace can communicate
-// next: Next engine
+// Parameters:
+//   - redisClient: Redis client.
+//   - key: Redis key prefix for storing concurrency counts (each tier uses key:tier_N).
+//   - rates: Per-tier concurrency caps, highest priority first. Each element caps that tier independently;
+//     total concurrency is the sum. Negative values are clamped to 0. Leading zeros are trimmed (which
+//     shrinks the priority range, since priority numbers are derived from the post-trim length). Zeros
+//     after the first positive entry keep the tier in place but with no slots (always skipped).
+//     Priority assigned to a request: len(rates) - 1 - tierIdx, so tier 0 is the highest priority.
+//   - timeout: Member expiration duration; must be positive.
+//   - nameSpace: Namespace for isolating priority between marker/limiter pairs. Marker and limiter sharing
+//     a namespace can communicate via context.
+//   - next: Next engine in the chain.
 //
 // Working principle:
-// - Priority number: larger = higher priority (priority 2 > priority 1 > priority 0)
-// - A request tries tier 0, then tier 1, …; the first tier with limit>0 and available capacity wins
-// - Acquisition occupies only that tier’s key (one slot in that band)
+//   - Larger priority number = higher priority (priority 2 > priority 1 > priority 0).
+//   - A request scans tier 0, tier 1, ...; the first tier with limit>0 and available capacity wins.
+//   - Acquisition occupies exactly one slot in the winning tier; lower tiers are not consulted further.
 //
 // Example: rates=[3, 2, 1]
-// - Slots 1–3 → priority 2; 4–5 → priority 1; 6th → priority 0; 7th rejected
+//   - Slots 1-3 -> priority 2; 4-5 -> priority 1; 6th -> priority 0; 7th rejected.
 //
 // Example: rates=[3, 0, 0]
-// - Three slots, all priority 2; lower bands are empty (limit 0)
+//   - Three slots, all priority 2; lower bands are empty (limit 0).
 func NewConcurrencyColorMarkerEngine(redisClient *redis.Client, key string, rates []int, timeout time.Duration, nameSpace string, next octollm.Engine) (*ConcurrencyColorMarkerEngine, error) {
 	// If rates is empty, return an engine that directly passes through
 	if len(rates) == 0 {
@@ -120,7 +123,7 @@ func (e *ConcurrencyColorMarkerEngine) allow(ctx context.Context) (newCtx contex
 	}
 
 	// Build ARGV: numTiers, limit1, limit2, ..., nowUnix, expireBefore, memberID
-	args := make([]interface{}, 0, 1+numTiers+3)
+	args := make([]any, 0, 1+numTiers+3)
 	args = append(args, numTiers)
 	for _, limit := range e.rates {
 		args = append(args, limit)
@@ -134,34 +137,30 @@ func (e *ConcurrencyColorMarkerEngine) allow(ctx context.Context) (newCtx contex
 		return ctx, func() {}, fmt.Errorf("acquire script error: %w", err)
 	}
 
-	results, ok := result.([]interface{})
+	results, ok := result.([]any)
 	if !ok || len(results) < 2 {
 		slog.ErrorContext(ctx, fmt.Sprintf("unexpected script result format, key: %s", e.key))
 		return ctx, func() {}, fmt.Errorf("unexpected script result format")
 	}
 
 	acquired, _ := results[0].(int64)
+	countsRaw, _ := results[1].([]any)
+	counts := make([]int64, len(countsRaw))
+	for i, v := range countsRaw {
+		c, _ := v.(int64)
+		counts[i] = c
+	}
+
 	if acquired == 0 {
 		// All tiers exhausted
-		slog.WarnContext(ctx, fmt.Sprintf("all tiers exhausted, key: %s", e.key))
+		slog.WarnContext(ctx, fmt.Sprintf("all tiers exhausted, key: %s, usage: %s", e.key, formatTierUsage(counts, e.rates)))
 		return ctx, func() {}, ErrRateLimitReached
 	}
 
 	// acquired > 0: priority (1-based in Lua, convert to 0-based)
 	priority := int(acquired) - 1
 	acquiredTierIdx := numTiers - 1 - priority
-
-	// Parse acquired keys indices from results[1]
-	acquiredKeysStr, _ := results[1].(string)
-	var acquiredKeys []string
-	if acquiredKeysStr != "" {
-		for _, idxStr := range []byte(acquiredKeysStr) {
-			idx := int(idxStr - '0')
-			if idx >= 0 && idx < numTiers {
-				acquiredKeys = append(acquiredKeys, keys[idx])
-			}
-		}
-	}
+	acquiredKeys := []string{keys[acquiredTierIdx]}
 
 	// Set priority to context
 	newCtx = e.setPriorityToContext(ctx, priority)
@@ -181,7 +180,7 @@ func (e *ConcurrencyColorMarkerEngine) allow(ctx context.Context) (newCtx contex
 		}
 	}
 
-	slog.InfoContext(ctx, fmt.Sprintf("acquired priority %d from tier %d, acquiredKeys: %v", priority, acquiredTierIdx, acquiredKeys))
+	slog.InfoContext(ctx, fmt.Sprintf("acquired priority %d from tier %d, acquiredKeys: %v, usage: %s", priority, acquiredTierIdx, acquiredKeys, formatTierUsage(counts, e.rates)))
 	return newCtx, done, nil
 }
 
@@ -221,6 +220,17 @@ func (e *ConcurrencyColorMarkerEngine) setPriorityToContext(ctx context.Context,
 	priorityStr := fmt.Sprintf("%s%d", ContextValuePrefixPriority, priority)
 	contextKey := contextKey(fmt.Sprintf("%s:%s", e.nameSpace, ContextKeyPriority))
 	return context.WithValue(ctx, contextKey, priorityStr)
+}
+
+// formatTierUsage formats per-tier "count/limit" usage as "(2/2 1/3 0/5)".
+// Assumes counts and limits have the same length; truncates to the shorter if not.
+func formatTierUsage(counts []int64, limits []int) string {
+	n := min(len(counts), len(limits))
+	parts := make([]string, n)
+	for i := range n {
+		parts[i] = fmt.Sprintf("%d/%d", counts[i], limits[i])
+	}
+	return "(" + strings.Join(parts, " ") + ")"
 }
 
 // normalizeConcurrencyMarkerRates clamps negatives to 0, trims leading zeros, and returns nil if no positive band remains.
@@ -278,9 +288,9 @@ func filterIncreasingRates(rates []int) ([]int, bool) {
 // ARGV[numTiers+3]: expireBefore
 // ARGV[numTiers+4]: memberID
 //
-// Returns: {priority, acquiredKeysIndices}
+// Returns: {priority, counts}
 // - priority: 0 means rejected, >0 means acquired with priority (1-based, convert to 0-based in Go)
-// - acquiredKeysIndices: string of key indices that were acquired (e.g., "02" means keys[0] and keys[2])
+// - counts: per-tier ZCARD after acquisition (length = numTiers)
 const concurrencyColorMarkerAquireLuaScript = `
 local numTiers = tonumber(ARGV[1])
 local limits = {}
@@ -291,35 +301,32 @@ local nowUnix = tonumber(ARGV[numTiers + 2])
 local expireBefore = tonumber(ARGV[numTiers + 3])
 local memberID = ARGV[numTiers + 4]
 
--- Clean up expired members from all tiers
+-- Clean up expired members and snapshot counts for all tiers in one pass
+local counts = {}
 for i = 1, numTiers do
     redis.call('ZREMRANGEBYSCORE', KEYS[i], '0', expireBefore)
+    counts[i] = redis.call('ZCARD', KEYS[i])
 end
 
--- Phase 1: First tier (highest priority) with limit>0 and free capacity wins; acquire only that tier
+-- Find first tier (highest priority) with limit>0 and free capacity
 local foundTierIdx = nil
 for tierIdx = 1, numTiers do
-    local lim = limits[tierIdx]
-    if lim > 0 then
-        local count = redis.call('ZCARD', KEYS[tierIdx])
-        if count < lim then
-            foundTierIdx = tierIdx
-            break
-        end
+    if limits[tierIdx] > 0 and counts[tierIdx] < limits[tierIdx] then
+        foundTierIdx = tierIdx
+        break
     end
 end
 
 if foundTierIdx == nil then
-    return {0, ""}
+    return {0, counts}
 end
-
-local priority = numTiers - foundTierIdx + 1
 
 redis.call('ZADD', KEYS[foundTierIdx], nowUnix, memberID)
 redis.call('EXPIRE', KEYS[foundTierIdx], 3600)
+counts[foundTierIdx] = counts[foundTierIdx] + 1
 
-local acquiredKeysStr = tostring(foundTierIdx - 1)
-return {priority, acquiredKeysStr}
+local priority = numTiers - foundTierIdx + 1
+return {priority, counts}
 `
 
 // Unified release script supporting N keys
@@ -381,7 +388,7 @@ func (e *ConcurrencyColorMarkerEngine) renewMember(ctx context.Context, keys []s
 				slog.ErrorContext(ctx, fmt.Sprintf("failed to renew member: %v, keys: %v, memberID: %s", err, keys, memberID))
 				continue
 			}
-			results, ok := result.([]interface{})
+			results, ok := result.([]any)
 			if !ok || len(results) != 1 {
 				slog.ErrorContext(ctx, fmt.Sprintf("unexpected renew script result format, keys: %v, memberID: %s", keys, memberID))
 				continue
