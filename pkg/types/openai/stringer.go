@@ -226,3 +226,157 @@ func (s StopUnion) String() string {
 	}
 	return fmt.Sprintf("%v", s.Array)
 }
+
+// usageString formats a Usage safely for logging.
+func usageString(u *Usage) string {
+	if u == nil {
+		return ""
+	}
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "prompt=%d, completion=%d, total=%d", u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+	if d := u.CompletionTokensDetails; d != nil {
+		if d.ReasoningTokens > 0 {
+			fmt.Fprintf(w, ", reasoning=%d", d.ReasoningTokens)
+		}
+		if d.AudioTokens > 0 {
+			fmt.Fprintf(w, ", completion_audio=%d", d.AudioTokens)
+		}
+	}
+	if d := u.PromptTokensDetails; d != nil {
+		if d.CachedTokens > 0 {
+			fmt.Fprintf(w, ", cached=%d", d.CachedTokens)
+		}
+		if d.AudioTokens > 0 {
+			fmt.Fprintf(w, ", prompt_audio=%d", d.AudioTokens)
+		}
+	}
+	return w.String()
+}
+
+// String formats ChatCompletionResponse safely for logging (no sensitive data).
+func (r ChatCompletionResponse) String() string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "  ID: %q\n", r.ID)
+	fmt.Fprintf(w, "  Model: %q\n", r.Model)
+	if r.Object != "" {
+		fmt.Fprintf(w, "  Object: %q\n", r.Object)
+	}
+	fmt.Fprintf(w, "  Created: %d\n", r.Created)
+	fmt.Fprintf(w, "  Choices: len(%d)\n", len(r.Choices))
+	for _, c := range r.Choices {
+		if c == nil {
+			continue
+		}
+		fmt.Fprintf(w, "    Choice{index=%d, finish_reason=%s", c.Index, c.FinishReason)
+		if c.Message != nil {
+			fmt.Fprintf(w, ", message=%s", c.Message.String())
+		}
+		w.WriteString("}\n")
+	}
+	if u := usageString(r.Usage); u != "" {
+		fmt.Fprintf(w, "  Usage: %s\n", u)
+	}
+	if r.Blocked != nil {
+		fmt.Fprintf(w, "  Blocked: %t\n", *r.Blocked)
+	}
+	if r.SystemFingerprint != nil {
+		fmt.Fprintf(w, "  SystemFingerprint: %q\n", *r.SystemFingerprint)
+	}
+	if r.ServiceTier != nil {
+		fmt.Fprintf(w, "  ServiceTier: %q\n", *r.ServiceTier)
+	}
+	return fmt.Sprintf("(ChatCompletionResponse) {\n%s}", w.String())
+}
+
+// String formats CompletionResponse safely for logging (no sensitive data).
+func (r CompletionResponse) String() string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "  ID: %q\n", r.ID)
+	fmt.Fprintf(w, "  Model: %q\n", r.Model)
+	if r.Object != "" {
+		fmt.Fprintf(w, "  Object: %q\n", r.Object)
+	}
+	fmt.Fprintf(w, "  Created: %d\n", r.Created)
+	fmt.Fprintf(w, "  Choices: len(%d)\n", len(r.Choices))
+	for _, c := range r.Choices {
+		finish := ""
+		if c.FinishReason != nil {
+			finish = *c.FinishReason
+		}
+		fmt.Fprintf(w, "    Choice{index=%d, text_len=%d, finish_reason=%s}\n", c.Index, len(c.Text), finish)
+	}
+	if u := usageString(r.Usage); u != "" {
+		fmt.Fprintf(w, "  Usage: %s\n", u)
+	}
+	if r.SystemFingerprint != nil {
+		fmt.Fprintf(w, "  SystemFingerprint: %q\n", *r.SystemFingerprint)
+	}
+	return fmt.Sprintf("(CompletionResponse) {\n%s}", w.String())
+}
+
+// String formats EmbeddingResponse safely for logging (no sensitive data).
+func (r EmbeddingResponse) String() string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "  Model: %q\n", r.Model)
+	if r.Object != "" {
+		fmt.Fprintf(w, "  Object: %q\n", r.Object)
+	}
+	fmt.Fprintf(w, "  Data: len(%d)\n", len(r.Data))
+	for _, d := range r.Data {
+		fmt.Fprintf(w, "    Embedding{index=%d, dims=%d}\n", d.Index, len(d.Embedding))
+	}
+	fmt.Fprintf(w, "  Usage: prompt=%d, total=%d\n", r.Usage.PromptTokens, r.Usage.TotalTokens)
+	return fmt.Sprintf("(EmbeddingResponse) {\n%s}", w.String())
+}
+
+// responsesOutputItemString formats a ResponsesOutputItem safely for logging.
+func responsesOutputItemString(i *ResponsesOutputItem) string {
+	if i == nil {
+		return "nil"
+	}
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "{id=%s, type=%s", i.ID, i.Type)
+	if i.Role != "" {
+		fmt.Fprintf(w, ", role=%s", i.Role)
+	}
+	if len(i.Content) > 0 {
+		fmt.Fprintf(w, ", content=[")
+		for _, p := range i.Content {
+			if p == nil {
+				continue
+			}
+			switch p.Type {
+			case "output_text":
+				fmt.Fprintf(w, "output_text(len=%d), ", len(p.Text))
+			case "refusal":
+				fmt.Fprintf(w, "refusal(len=%d), ", len(p.Refusal))
+			default:
+				fmt.Fprintf(w, "%s, ", p.Type)
+			}
+		}
+		w.WriteString("]")
+	}
+	w.WriteString("}")
+	return w.String()
+}
+
+// String formats ResponsesResponse safely for logging (no sensitive data).
+func (r ResponsesResponse) String() string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "  ID: %q\n", r.Id)
+	fmt.Fprintf(w, "  Output: len(%d)\n", len(r.Output))
+	for _, item := range r.Output {
+		fmt.Fprintf(w, "    %s\n", responsesOutputItemString(item))
+	}
+	if u := r.Usage; u != nil {
+		fmt.Fprintf(w, "  Usage: input=%d, output=%d, total=%d", u.InputTokens, u.OutputTokens, u.TotalTokens)
+		if d := u.InputTokensDetails; d != nil && d.CachedTokens > 0 {
+			fmt.Fprintf(w, ", cached=%d", d.CachedTokens)
+		}
+		if d := u.OutputTokensDetails; d != nil && d.ReasoningTokens > 0 {
+			fmt.Fprintf(w, ", reasoning=%d", d.ReasoningTokens)
+		}
+		w.WriteString("\n")
+	}
+	return fmt.Sprintf("(ResponsesResponse) {\n%s}", w.String())
+}

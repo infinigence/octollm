@@ -175,3 +175,257 @@ func TestCompletionRequest_String(t *testing.T) {
 		})
 	}
 }
+
+func mustUnmarshalChatResp(t *testing.T, jsonStr string) ChatCompletionResponse {
+	t.Helper()
+	var resp ChatCompletionResponse
+	require.NoError(t, json.Unmarshal([]byte(jsonStr), &resp))
+	return resp
+}
+
+func TestChatCompletionResponse_String(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		expected string
+	}{
+		{
+			name: "basic response with usage",
+			json: `{
+				"id": "chatcmpl-123",
+				"object": "chat.completion",
+				"created": 1700000000,
+				"model": "gpt-4",
+				"choices": [{
+					"index": 0,
+					"message": {"role": "assistant", "content": "Hello there!"},
+					"finish_reason": "stop"
+				}],
+				"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+			}`,
+			// "Hello there!" = 12 bytes
+			expected: `(ChatCompletionResponse) {
+  ID: "chatcmpl-123"
+  Model: "gpt-4"
+  Object: "chat.completion"
+  Created: 1700000000
+  Choices: len(1)
+    Choice{index=0, finish_reason=stop, message=(Message) {Role: "assistant", Content: len(12), }}
+  Usage: prompt=10, completion=5, total=15
+}`,
+		},
+		{
+			name: "with token details and fingerprint",
+			json: `{
+				"id": "chatcmpl-456",
+				"object": "chat.completion",
+				"created": 1700000001,
+				"model": "o1",
+				"choices": [{
+					"index": 0,
+					"message": {"role": "assistant", "content": "ok"},
+					"finish_reason": "stop"
+				}],
+				"usage": {
+					"prompt_tokens": 8,
+					"completion_tokens": 4,
+					"total_tokens": 12,
+					"completion_tokens_details": {"reasoning_tokens": 3},
+					"prompt_tokens_details": {"cached_tokens": 2}
+				},
+				"system_fingerprint": "fp_abc",
+				"service_tier": "default"
+			}`,
+			expected: `(ChatCompletionResponse) {
+  ID: "chatcmpl-456"
+  Model: "o1"
+  Object: "chat.completion"
+  Created: 1700000001
+  Choices: len(1)
+    Choice{index=0, finish_reason=stop, message=(Message) {Role: "assistant", Content: len(2), }}
+  Usage: prompt=8, completion=4, total=12, reasoning=3, cached=2
+  SystemFingerprint: "fp_abc"
+  ServiceTier: "default"
+}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := mustUnmarshalChatResp(t, tt.json)
+			assert.Equal(t, tt.expected, resp.String())
+		})
+	}
+}
+
+func mustUnmarshalCompletionResp(t *testing.T, jsonStr string) CompletionResponse {
+	t.Helper()
+	var resp CompletionResponse
+	require.NoError(t, json.Unmarshal([]byte(jsonStr), &resp))
+	return resp
+}
+
+func TestCompletionResponse_String(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		expected string
+	}{
+		{
+			name: "single choice",
+			json: `{
+				"id": "cmpl-1",
+				"object": "text_completion",
+				"created": 1700000000,
+				"model": "gpt-3.5-turbo-instruct",
+				"choices": [{"text": "Hello", "index": 0, "finish_reason": "stop"}],
+				"usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}
+			}`,
+			// "Hello" = 5 bytes
+			expected: `(CompletionResponse) {
+  ID: "cmpl-1"
+  Model: "gpt-3.5-turbo-instruct"
+  Object: "text_completion"
+  Created: 1700000000
+  Choices: len(1)
+    Choice{index=0, text_len=5, finish_reason=stop}
+  Usage: prompt=5, completion=1, total=6
+}`,
+		},
+		{
+			name: "no usage, with fingerprint",
+			json: `{
+				"id": "cmpl-2",
+				"object": "text_completion",
+				"created": 1700000001,
+				"model": "gpt-3.5-turbo-instruct",
+				"choices": [{"text": "abcd", "index": 0}],
+				"system_fingerprint": "fp_xyz"
+			}`,
+			expected: `(CompletionResponse) {
+  ID: "cmpl-2"
+  Model: "gpt-3.5-turbo-instruct"
+  Object: "text_completion"
+  Created: 1700000001
+  Choices: len(1)
+    Choice{index=0, text_len=4, finish_reason=}
+  SystemFingerprint: "fp_xyz"
+}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := mustUnmarshalCompletionResp(t, tt.json)
+			assert.Equal(t, tt.expected, resp.String())
+		})
+	}
+}
+
+func mustUnmarshalEmbeddingResp(t *testing.T, jsonStr string) EmbeddingResponse {
+	t.Helper()
+	var resp EmbeddingResponse
+	require.NoError(t, json.Unmarshal([]byte(jsonStr), &resp))
+	return resp
+}
+
+func TestEmbeddingResponse_String(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		expected string
+	}{
+		{
+			name: "two embeddings",
+			json: `{
+				"object": "list",
+				"data": [
+					{"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]},
+					{"object": "embedding", "index": 1, "embedding": [0.4, 0.5, 0.6, 0.7]}
+				],
+				"model": "text-embedding-3-small",
+				"usage": {"prompt_tokens": 8, "total_tokens": 8}
+			}`,
+			expected: `(EmbeddingResponse) {
+  Model: "text-embedding-3-small"
+  Object: "list"
+  Data: len(2)
+    Embedding{index=0, dims=3}
+    Embedding{index=1, dims=4}
+  Usage: prompt=8, total=8
+}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := mustUnmarshalEmbeddingResp(t, tt.json)
+			assert.Equal(t, tt.expected, resp.String())
+		})
+	}
+}
+
+func mustUnmarshalResponsesResp(t *testing.T, jsonStr string) ResponsesResponse {
+	t.Helper()
+	var resp ResponsesResponse
+	require.NoError(t, json.Unmarshal([]byte(jsonStr), &resp))
+	return resp
+}
+
+func TestResponsesResponse_String(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		expected string
+	}{
+		{
+			name: "output_text and refusal with detailed usage",
+			json: `{
+				"id": "resp_1",
+				"output": [{
+					"id": "msg_1",
+					"type": "message",
+					"role": "assistant",
+					"content": [
+						{"type": "output_text", "text": "Hello"},
+						{"type": "refusal", "refusal": "Cannot"}
+					]
+				}],
+				"usage": {
+					"input_tokens": 10,
+					"output_tokens": 5,
+					"total_tokens": 15,
+					"input_tokens_details": {"cached_tokens": 2},
+					"output_tokens_details": {"reasoning_tokens": 3}
+				}
+			}`,
+			// "Hello" = 5, "Cannot" = 6
+			expected: `(ResponsesResponse) {
+  ID: "resp_1"
+  Output: len(1)
+    {id=msg_1, type=message, role=assistant, content=[output_text(len=5), refusal(len=6), ]}
+  Usage: input=10, output=5, total=15, cached=2, reasoning=3
+}`,
+		},
+		{
+			name: "minimal usage",
+			json: `{
+				"id": "resp_2",
+				"output": [],
+				"usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+			}`,
+			expected: `(ResponsesResponse) {
+  ID: "resp_2"
+  Output: len(0)
+  Usage: input=1, output=2, total=3
+}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := mustUnmarshalResponsesResp(t, tt.json)
+			assert.Equal(t, tt.expected, resp.String())
+		})
+	}
+}

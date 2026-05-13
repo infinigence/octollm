@@ -117,3 +117,74 @@ func (r ClaudeMessagesRequest) String() string {
 	}
 	return fmt.Sprintf("(ClaudeMessagesRequest) {\n%s}", w.String())
 }
+
+// contentBlockString formats a MessageContentBlock safely for logging.
+func contentBlockString(b *MessageContentBlock) string {
+	if b == nil {
+		return "nil"
+	}
+	switch b.Type {
+	case "text":
+		if b.Text != nil {
+			return fmt.Sprintf("text(len=%d)", len(*b.Text))
+		}
+		return "text"
+	case "image":
+		return "image"
+	case "tool_use":
+		if b.MessageContentToolUse != nil {
+			return fmt.Sprintf("tool_use(name=%s,input_len=%d)", b.MessageContentToolUse.Name, len(b.MessageContentToolUse.Input))
+		}
+		return "tool_use"
+	case "tool_result":
+		if b.MessageContentToolResult != nil {
+			id := ""
+			if b.MessageContentToolResult.ToolUseID != nil {
+				id = *b.MessageContentToolResult.ToolUseID
+			}
+			return fmt.Sprintf("tool_result(id=%s,len=%d)", id, len(b.MessageContentToolResult.Content))
+		}
+		return "tool_result"
+	case "thinking":
+		if b.MessageContentThinking != nil {
+			return fmt.Sprintf("thinking(len=%d)", len(b.MessageContentThinking.Thinking))
+		}
+		return "thinking"
+	default:
+		return b.Type
+	}
+}
+
+// String formats ClaudeMessagesResponse safely for logging (no sensitive data).
+func (r ClaudeMessagesResponse) String() string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "  ID: %q\n", r.ID)
+	if r.Type != "" {
+		fmt.Fprintf(w, "  Type: %q\n", r.Type)
+	}
+	if r.Role != "" {
+		fmt.Fprintf(w, "  Role: %q\n", r.Role)
+	}
+	fmt.Fprintf(w, "  Model: %q\n", r.Model)
+	fmt.Fprintf(w, "  Content: len(%d)\n", len(r.Content))
+	for _, b := range r.Content {
+		fmt.Fprintf(w, "    %s\n", contentBlockString(b))
+	}
+	if r.StopReason != "" {
+		fmt.Fprintf(w, "  StopReason: %s\n", r.StopReason)
+	}
+	if r.StopSequence != nil {
+		fmt.Fprintf(w, "  StopSequence: %q\n", *r.StopSequence)
+	}
+	if u := r.Usage; u != nil {
+		fmt.Fprintf(w, "  Usage: input=%d, output=%d", u.InputTokens, u.OutputTokens)
+		if u.CacheCreationInputTokens != nil {
+			fmt.Fprintf(w, ", cache_creation=%d", *u.CacheCreationInputTokens)
+		}
+		if u.CacheReadInputTokens != nil {
+			fmt.Fprintf(w, ", cache_read=%d", *u.CacheReadInputTokens)
+		}
+		w.WriteString("\n")
+	}
+	return fmt.Sprintf("(ClaudeMessagesResponse) {\n%s}", w.String())
+}
