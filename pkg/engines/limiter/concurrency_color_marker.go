@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -109,11 +110,11 @@ func NewConcurrencyColorMarkerEngine(redisClient *redis.Client, key string, rate
 	}, nil
 }
 
-// allow attempts to allow the request to pass through, performing coloring and counting
-func (e *ConcurrencyColorMarkerEngine) allow(ctx context.Context) (newCtx context.Context, done func(), err error) {
+// Pass-through (no rates / no script) returns ctx unchanged, nil err, priority 0 (Process stores p0).
+func (e *ConcurrencyColorMarkerEngine) allow(ctx context.Context) (newCtx context.Context, done func(), err error, priority int) {
 	// If rates is empty, directly pass through
 	if len(e.rates) == 0 || e.acquireScript == nil {
-		return ctx, func() {}, nil
+		return ctx, func() {}, nil, 0
 	}
 
 	nowUnix := time.Now().Unix()
@@ -139,13 +140,13 @@ func (e *ConcurrencyColorMarkerEngine) allow(ctx context.Context) (newCtx contex
 	result, err := e.acquireScript.Run(ctx, e.redisClient, keys, args...).Result()
 	if err != nil {
 		slog.ErrorContext(ctx, fmt.Sprintf("acquire script error: %v, key: %s", err, e.key))
-		return ctx, func() {}, fmt.Errorf("acquire script error: %w", err)
+		return ctx, func() {}, fmt.Errorf("acquire script error: %w", err), 0
 	}
 
 	results, ok := result.([]any)
 	if !ok || len(results) < 2 {
 		slog.ErrorContext(ctx, fmt.Sprintf("unexpected script result format, key: %s", e.key))
-		return ctx, func() {}, fmt.Errorf("unexpected script result format")
+		return ctx, func() {}, fmt.Errorf("unexpected script result format"), 0
 	}
 
 	acquired, _ := results[0].(int64)
@@ -159,11 +160,11 @@ func (e *ConcurrencyColorMarkerEngine) allow(ctx context.Context) (newCtx contex
 	if acquired == 0 {
 		// All tiers exhausted
 		slog.WarnContext(ctx, fmt.Sprintf("all tiers exhausted, key: %s, usage: %s", e.key, formatTierUsage(counts, e.rates)))
-		return ctx, func() {}, ErrRateLimitReached
+		return ctx, func() {}, ErrRateLimitReached, 0
 	}
 
 	// acquired > 0: priority (1-based in Lua, convert to 0-based)
-	priority := int(acquired) - 1
+	priority = int(acquired) - 1
 	acquiredTierIdx := numTiers - 1 - priority
 	acquiredKeys := []string{keys[acquiredTierIdx]}
 
@@ -186,21 +187,22 @@ func (e *ConcurrencyColorMarkerEngine) allow(ctx context.Context) (newCtx contex
 	}
 
 	slog.InfoContext(ctx, fmt.Sprintf("acquired priority %d from tier %d, acquiredKeys: %v, usage: %s", priority, acquiredTierIdx, acquiredKeys, formatTierUsage(counts, e.rates)))
-	return newCtx, done, nil
+	return newCtx, done, nil, priority
 }
 
 func (e *ConcurrencyColorMarkerEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	ctx := req.Context()
 
-	// Use allow method to perform coloring
-	newCtx, done, err := e.allow(ctx)
+	newCtx, done, err, priority := e.allow(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, fmt.Sprintf("concurrency marker error: %v, key: %s", err, e.key))
+		if errors.Is(err, ErrRateLimitReached) {
+			recordMarkerDeny(req, priority)
+		}
 		return nil, err
 	}
-
-	// Use WithContext method to set new context
 	req = req.WithContext(newCtx)
+	recordMarkerAllow(req, priority)
 
 	// Process request
 	resp, err := e.next.Process(req)

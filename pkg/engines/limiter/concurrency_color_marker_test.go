@@ -163,6 +163,7 @@ func TestConcurrencyColorMarker_PassThroughWhenDisabled(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.Equal(t, 1, next.callCount)
+	assertMarkerAllow(t, req, 0)
 }
 
 func TestConcurrencyColorMarker_PriorityAssignmentAndExhaustion(t *testing.T) {
@@ -178,20 +179,26 @@ func TestConcurrencyColorMarker_PriorityAssignmentAndExhaustion(t *testing.T) {
 	e, err := NewConcurrencyColorMarkerEngine(client, "marker-key", []int{1, 1}, 10*time.Second, ns, next)
 	assert.NoError(t, err)
 
-	resp1, err := e.Process(newConcurrencyColorMarkerTestRequest(t))
+	req1 := newConcurrencyColorMarkerTestRequest(t)
+	resp1, err := e.Process(req1)
 	assert.NoError(t, err)
 	assert.NotNil(t, resp1)
 	assert.Equal(t, 1, next.lastPriority)
+	assertMarkerAllow(t, req1, 1)
 
 	// Keep slot held (do not close resp1 yet)
-	resp2, err := e.Process(newConcurrencyColorMarkerTestRequest(t))
+	req2 := newConcurrencyColorMarkerTestRequest(t)
+	resp2, err := e.Process(req2)
 	assert.NoError(t, err)
 	assert.NotNil(t, resp2)
 	assert.Equal(t, 0, next.lastPriority)
+	assertMarkerAllow(t, req2, 0)
 
-	_, err = e.Process(newConcurrencyColorMarkerTestRequest(t))
+	req3 := newConcurrencyColorMarkerTestRequest(t)
+	_, err = e.Process(req3)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assertMarkerDeny(t, req3, 0)
 
 	// cleanup: close bodies to trigger release and stop renew goroutines
 	assert.NoError(t, resp1.Body.Close())
@@ -213,16 +220,20 @@ func TestConcurrencyColorMarker_EqualTierLimits_AllPriority1(t *testing.T) {
 
 	var resps []*octollm.Response
 	for i := 0; i < 3; i++ {
-		resp, err := e.Process(newConcurrencyColorMarkerTestRequest(t))
+		req := newConcurrencyColorMarkerTestRequest(t)
+		resp, err := e.Process(req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
 		assert.Equal(t, 1, next.lastPriority, "request %d should be colored priority 1", i+1)
+		assertMarkerAllow(t, req, 1)
 		resps = append(resps, resp)
 	}
 
-	_, err = e.Process(newConcurrencyColorMarkerTestRequest(t))
+	reqDenied := newConcurrencyColorMarkerTestRequest(t)
+	_, err = e.Process(reqDenied)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assertMarkerDeny(t, reqDenied, 0)
 	assert.Equal(t, 3, next.callCount, "denied request must not reach next")
 
 	for _, r := range resps {

@@ -64,6 +64,7 @@ func TestRequestColorLimiter_PassThroughWhenDisabled(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.Equal(t, 1, next.callCount)
+	assertLimiterAllow(t, req, 0)
 }
 
 func TestRequestColorLimiter_PriorityInContext(t *testing.T) {
@@ -86,6 +87,7 @@ func TestRequestColorLimiter_PriorityInContext(t *testing.T) {
 		resp, err := e.Process(req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
+		assertLimiterAllow(t, req, 2)
 	}
 	assert.Equal(t, 5, next.callCount)
 
@@ -94,6 +96,7 @@ func TestRequestColorLimiter_PriorityInContext(t *testing.T) {
 	_, err = e.Process(req)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assertLimiterDeny(t, req, 2)
 	assert.Equal(t, 5, next.callCount)
 
 	// Priority 1: use fresh engine/keyPrefix so tier 0 has tokens
@@ -103,12 +106,14 @@ func TestRequestColorLimiter_PriorityInContext(t *testing.T) {
 		resp, err := e1.Process(req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
+		assertLimiterAllow(t, req, 1)
 	}
 	assert.Equal(t, 8, next.callCount)
 
 	req = newRequestColorLimiterTestRequest(t, ns, 1)
 	_, err = e1.Process(req)
 	assert.Error(t, err)
+	assertLimiterDeny(t, req, 1)
 	assert.Equal(t, 8, next.callCount)
 
 	// Priority 0: use fresh engine/keyPrefix
@@ -118,13 +123,51 @@ func TestRequestColorLimiter_PriorityInContext(t *testing.T) {
 		resp, err := e0.Process(req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
+		assertLimiterAllow(t, req, 0)
 	}
 	assert.Equal(t, 10, next.callCount)
 
 	req = newRequestColorLimiterTestRequest(t, ns, 0)
 	_, err = e0.Process(req)
 	assert.Error(t, err)
+	assertLimiterDeny(t, req, 0)
 	assert.Equal(t, 10, next.callCount)
+}
+
+func TestRequestColorLimiter_DeniedColorMetadata(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	next := &nextStubEngine{}
+	ns := "denied-color-ns"
+
+	e, err := NewRequestColorLimiterEngine(client, "denied-p1", 1, []int{1}, time.Minute, ns, next)
+	assert.NoError(t, err)
+
+	reqP1 := newRequestColorLimiterTestRequest(t, ns, 1)
+	_, err = e.Process(reqP1)
+	assert.NoError(t, err)
+	assertLimiterAllow(t, reqP1, 1)
+
+	reqP1Denied := newRequestColorLimiterTestRequest(t, ns, 1)
+	_, err = e.Process(reqP1Denied)
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assertLimiterDeny(t, reqP1Denied, 1)
+
+	e0, err := NewRequestColorLimiterEngine(client, "denied-p0", 10, []int{1}, time.Minute, ns, next)
+	assert.NoError(t, err)
+
+	reqP0 := newRequestColorLimiterTestRequest(t, ns, 0)
+	_, err = e0.Process(reqP0)
+	assert.NoError(t, err)
+	assertLimiterAllow(t, reqP0, 0)
+
+	reqP0Denied := newRequestColorLimiterTestRequest(t, ns, 0)
+	_, err = e0.Process(reqP0Denied)
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assertLimiterDeny(t, reqP0Denied, 0)
 }
 
 func TestRequestColorLimiter_MarkerChain(t *testing.T) {
@@ -144,6 +187,8 @@ func TestRequestColorLimiter_MarkerChain(t *testing.T) {
 	marker, err := NewRequestColorMarkerEngine(client, "chain-marker", []int{2, 5, 10}, time.Minute, ns, limiter)
 	assert.NoError(t, err)
 
+	wantPriority := []int{2, 2, 1, 1, 1, 1, 1, 0}
+
 	// Expect 8 through: 2 p2 + 5 p1 + 1 p0
 	for i := 0; i < 8; i++ {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://example.com", strings.NewReader("body"))
@@ -151,6 +196,8 @@ func TestRequestColorLimiter_MarkerChain(t *testing.T) {
 		resp, err := marker.Process(r)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
+		assertMarkerAllow(t, r, wantPriority[i])
+		assertLimiterAllow(t, r, wantPriority[i])
 	}
 	assert.Equal(t, 8, next.callCount)
 
@@ -159,6 +206,8 @@ func TestRequestColorLimiter_MarkerChain(t *testing.T) {
 	r := octollm.NewRequest(req, octollm.APIFormatUnknown)
 	_, err = marker.Process(r)
 	assert.Error(t, err)
+	assertMarkerAllow(t, r, 0)
+	assertLimiterDeny(t, r, 0)
 	assert.Equal(t, 8, next.callCount)
 }
 
@@ -181,11 +230,15 @@ func TestRequestColorLimiter_NoPriorityDefaultsToLowest(t *testing.T) {
 		resp, err := e.Process(r)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
+		assertLimiterAllow(t, r, 0)
 	}
 	assert.Equal(t, 2, next.callCount)
 
 	// 3rd rejected
-	_, err = e.Process(r)
+	req3, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://example.com", strings.NewReader("body"))
+	r3 := octollm.NewRequest(req3, octollm.APIFormatUnknown)
+	_, err = e.Process(r3)
 	assert.Error(t, err)
+	assertLimiterDeny(t, r3, 0)
 	assert.Equal(t, 2, next.callCount)
 }

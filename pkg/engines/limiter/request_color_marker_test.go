@@ -66,6 +66,7 @@ func TestRequestColorMarker_PassThroughWhenDisabled(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.Equal(t, 1, next.callCount)
+	assertMarkerAllow(t, req, 0)
 }
 
 func TestRequestColorMarker_MultiTier_AcquirePriority(t *testing.T) {
@@ -85,6 +86,7 @@ func TestRequestColorMarker_MultiTier_AcquirePriority(t *testing.T) {
 		resp, err := e.Process(req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
+		assertMarkerAllow(t, req, 2)
 	}
 	assert.Equal(t, 2, next.callCount)
 
@@ -93,6 +95,7 @@ func TestRequestColorMarker_MultiTier_AcquirePriority(t *testing.T) {
 		resp, err := e.Process(req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
+		assertMarkerAllow(t, req, 1)
 	}
 	assert.Equal(t, 7, next.callCount)
 
@@ -101,6 +104,7 @@ func TestRequestColorMarker_MultiTier_AcquirePriority(t *testing.T) {
 		resp, err := e.Process(req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
+		assertMarkerAllow(t, req, 0)
 	}
 	assert.Equal(t, 17, next.callCount)
 
@@ -109,6 +113,7 @@ func TestRequestColorMarker_MultiTier_AcquirePriority(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, resp)
 	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assertMarkerDeny(t, req, 0)
 	assert.Equal(t, 17, next.callCount)
 }
 

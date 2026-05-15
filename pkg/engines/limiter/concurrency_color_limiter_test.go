@@ -151,6 +151,7 @@ func TestConcurrencyColorLimiter_PassThroughWhenDisabled(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.Equal(t, 1, next.callCount)
+	assertLimiterAllow(t, req, 0)
 }
 
 func TestConcurrencyColorLimiter_PriorityMappingAndReservation(t *testing.T) {
@@ -168,21 +169,27 @@ func TestConcurrencyColorLimiter_PriorityMappingAndReservation(t *testing.T) {
 
 	// Hold one max-priority slot (tier0Count becomes 1)
 	p1 := 1
-	resp1, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p1))
+	req1 := newConcurrencyColorLimiterTestRequest(t, ns, &p1)
+	resp1, err := e.Process(req1)
 	assert.NoError(t, err)
 	assert.NotNil(t, resp1)
+	assertLimiterAllow(t, req1, 1)
 
 	// Now priority 0 should be denied because it requires tier0Count < (2-1)=1, but tier0Count is 1
 	p0 := 0
-	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
+	reqDenied := newConcurrencyColorLimiterTestRequest(t, ns, &p0)
+	_, err = e.Process(reqDenied)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assertLimiterDeny(t, reqDenied, 0)
 
 	// Release and try again: should allow
 	assert.NoError(t, resp1.Body.Close())
-	resp2, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
+	req2 := newConcurrencyColorLimiterTestRequest(t, ns, &p0)
+	resp2, err := e.Process(req2)
 	assert.NoError(t, err)
 	assert.NotNil(t, resp2)
+	assertLimiterAllow(t, req2, 0)
 	assert.NoError(t, resp2.Body.Close())
 }
 

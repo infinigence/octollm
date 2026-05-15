@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -88,14 +89,15 @@ func NewConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, tot
 	}, nil
 }
 
-// allow attempts to allow the request to pass through, performing rate limiting check
-func (e *ConcurrencyColorLimiterEngine) allow(ctx context.Context) (done func(), err error) {
+// allow attempts to allow the request to pass through, performing rate limiting check.
+// When the limiter is disabled (pass-through), returns priority 0 (recorded as allow at priority 0).
+func (e *ConcurrencyColorLimiterEngine) allow(ctx context.Context) (done func(), priority int, err error) {
 	// If concurrencyRates is empty, directly pass through
 	if len(e.concurrencyRates) == 0 || e.acquireSingleScript == nil {
-		return func() {}, nil
+		return func() {}, 0, nil
 	}
 
-	priority := 0
+	priority = 0
 	if p, ok := e.getPriorityFromContext(ctx); ok {
 		priority = p
 	}
@@ -131,13 +133,13 @@ func (e *ConcurrencyColorLimiterEngine) allow(ctx context.Context) (done func(),
 			tier0Limit, nowUnix, expireBefore, memberID).Result()
 		if err != nil {
 			slog.ErrorContext(ctx, fmt.Sprintf("acquire script error for tier 0: %v, key: %s", err, tier0Key))
-			return func() {}, fmt.Errorf("acquire script error: %w", err)
+			return func() {}, 0, fmt.Errorf("acquire script error: %w", err)
 		}
 
 		results, ok := result.([]interface{})
 		if !ok || len(results) != 2 {
 			slog.ErrorContext(ctx, fmt.Sprintf("unexpected script result format for tier 0, key: %s", tier0Key))
-			return func() {}, fmt.Errorf("unexpected script result format")
+			return func() {}, 0, fmt.Errorf("unexpected script result format")
 		}
 
 		acquiredInt, _ := results[0].(int64)
@@ -145,7 +147,7 @@ func (e *ConcurrencyColorLimiterEngine) allow(ctx context.Context) (done func(),
 
 		if acquiredInt == 0 {
 			slog.WarnContext(ctx, fmt.Sprintf("tier 0 concurrency limit %d reached, current: %d, key: %s", tier0Limit, tier0Count, tier0Key))
-			return func() {}, ErrRateLimitReached
+			return func() {}, priority, ErrRateLimitReached
 		}
 
 		// Start renewal goroutine
@@ -164,7 +166,7 @@ func (e *ConcurrencyColorLimiterEngine) allow(ctx context.Context) (done func(),
 		}
 
 		slog.InfoContext(ctx, fmt.Sprintf("max priority concurrency allowed, tier 0 count: %d/%d, key: %s", tier0Count, tier0Limit, tier0Key))
-		return done, nil
+		return done, priority, nil
 	} else {
 		// Non-max priority: atomically check own tier and tier 0 with reservation
 		ownKey := fmt.Sprintf("%s:tier_%d", e.key, tierIdx)
@@ -180,13 +182,13 @@ func (e *ConcurrencyColorLimiterEngine) allow(ctx context.Context) (done func(),
 			ownLimit, tier0Limit, nowUnix, expireBefore, memberID, reservedSlots).Result()
 		if err != nil {
 			slog.ErrorContext(ctx, fmt.Sprintf("dual acquire script error: %v, ownKey: %s, tier0Key: %s", err, ownKey, tier0Key))
-			return func() {}, fmt.Errorf("acquire script error: %w", err)
+			return func() {}, 0, fmt.Errorf("acquire script error: %w", err)
 		}
 
 		results, ok := result.([]interface{})
 		if !ok || len(results) != 3 {
 			slog.ErrorContext(ctx, fmt.Sprintf("unexpected script result format, ownKey: %s, tier0Key: %s", ownKey, tier0Key))
-			return func() {}, fmt.Errorf("unexpected script result format")
+			return func() {}, 0, fmt.Errorf("unexpected script result format")
 		}
 
 		acquiredInt, _ := results[0].(int64)
@@ -196,7 +198,7 @@ func (e *ConcurrencyColorLimiterEngine) allow(ctx context.Context) (done func(),
 		if acquiredInt == 0 {
 			slog.WarnContext(ctx, fmt.Sprintf("concurrency limit reached for priority %d (tier %d), ownCount: %d/%d, tier0Count: %d/%d (reserved: %d)",
 				priority, tierIdx, ownCount, ownLimit, tier0Count, tier0Limit, reservedSlots))
-			return func() {}, ErrRateLimitReached
+			return func() {}, priority, ErrRateLimitReached
 		}
 
 		// Start renewal goroutine
@@ -216,19 +218,22 @@ func (e *ConcurrencyColorLimiterEngine) allow(ctx context.Context) (done func(),
 
 		slog.InfoContext(ctx, fmt.Sprintf("concurrency allowed for priority %d (tier %d), ownCount: %d/%d, tier0Count: %d/%d (reserved: %d)",
 			priority, tierIdx, ownCount, ownLimit, tier0Count, tier0Limit, reservedSlots))
-		return done, nil
+		return done, priority, nil
 	}
 }
 
 func (e *ConcurrencyColorLimiterEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	ctx := req.Context()
 
-	// Use allow method to perform rate limiting
-	done, err := e.allow(ctx)
+	done, priority, err := e.allow(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, fmt.Sprintf("concurrency rate limiter error: %v, key: %s", err, e.key))
+		if errors.Is(err, ErrRateLimitReached) {
+			recordLimiterDeny(req, priority)
+		}
 		return nil, err
 	}
+	recordLimiterAllow(req, priority)
 
 	// Process request
 	resp, err := e.next.Process(req)

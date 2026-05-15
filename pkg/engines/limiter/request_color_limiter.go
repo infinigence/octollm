@@ -101,15 +101,16 @@ func NewRequestColorLimiterEngine(redisClient *redis.Client, keyPrefix string, t
 	}, nil
 }
 
-// allow attempts to consume tokens from token buckets based on request priority
-func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), err error) {
+// allow attempts to consume tokens from token buckets based on request priority.
+// When the limiter is disabled, returns priority 0 (recorded as allow at priority 0).
+func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), priority int, err error) {
 	// If configuration is invalid, directly pass through
 	if len(e.limits) == 0 || e.redisClient == nil || e.tokenBucketScript == nil {
-		return func() {}, nil
+		return func() {}, 0, nil
 	}
 
-	// Get priority from context (set by RequestColorMarkerEngine)
-	priority := 0
+	// Priority from context (set by RequestColorMarkerEngine); default 0 when absent.
+	priority = 0
 	if p, ok := e.getPriorityFromContext(ctx); ok {
 		priority = p
 	}
@@ -145,13 +146,13 @@ func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), err
 			burst, rate, nowUnix, e.ttls[0]).Result()
 		if err != nil {
 			slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] token bucket script error for tier 0: %v, key: %s", err, key))
-			return func() {}, fmt.Errorf("token bucket script error: %w", err)
+			return func() {}, 0, fmt.Errorf("token bucket script error: %w", err)
 		}
 
 		results, ok := result.([]interface{})
 		if !ok || len(results) != 2 {
 			slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] unexpected script result format for tier 0, key: %s", key))
-			return func() {}, fmt.Errorf("unexpected script result format")
+			return func() {}, 0, fmt.Errorf("unexpected script result format")
 		}
 
 		allowed, _ := results[0].(int64)
@@ -161,7 +162,7 @@ func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), err
 			slog.InfoContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] max priority request allowed, consumed from tier 0, tokens: %d/%d", tokens, burst))
 		} else {
 			slog.WarnContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] tier 0 rejected, tokens: %d/%d, key: %s", tokens, burst, key))
-			return func() {}, ErrRateLimitReached
+			return func() {}, priority, ErrRateLimitReached
 		}
 	} else {
 		// Non-max priority: atomically consume from both own tier and tier 0 with reservation
@@ -181,13 +182,13 @@ func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), err
 			ownBurst, ownRate, tier0Burst, tier0Rate, nowUnix, e.ttls[tierIdx], e.ttls[0], reservedTokens).Result()
 		if err != nil {
 			slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] dual token bucket script error: %v, ownKey: %s, tier0Key: %s", err, ownKey, tier0Key))
-			return func() {}, fmt.Errorf("token bucket script error: %w", err)
+			return func() {}, 0, fmt.Errorf("token bucket script error: %w", err)
 		}
 
 		results, ok := result.([]interface{})
 		if !ok || len(results) != 3 {
 			slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] unexpected script result format, ownKey: %s, tier0Key: %s", ownKey, tier0Key))
-			return func() {}, fmt.Errorf("unexpected script result format")
+			return func() {}, 0, fmt.Errorf("unexpected script result format")
 		}
 
 		allowed, _ := results[0].(int64)
@@ -200,24 +201,27 @@ func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), err
 		} else {
 			slog.WarnContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] request rejected with priority %d (tier %d), ownTokens: %d/%d, tier0Tokens: %d/%d (reserved: %d)",
 				priority, tierIdx, ownTokens, ownBurst, tier0Tokens, tier0Burst, reservedTokens))
-			return func() {}, ErrRateLimitReached
+			return func() {}, priority, ErrRateLimitReached
 		}
 	}
 
 	// done function doesn't need to do anything, as tokens are already consumed
 	done = func() {}
-	return done, nil
+	return done, priority, nil
 }
 
 func (e *RequestColorLimiterEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	ctx := req.Context()
 
-	// Use allow method to perform rate limiting
-	done, err := e.allow(ctx)
+	done, priority, err := e.allow(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorLimiterEngine] request rate limiter error: %v, keyPrefix: %s", err, e.keyPrefix))
+		if errors.Is(err, ErrRateLimitReached) {
+			recordLimiterDeny(req, priority)
+		}
 		return nil, err
 	}
+	recordLimiterAllow(req, priority)
 
 	// Process request
 	resp, err := e.next.Process(req)

@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -121,12 +122,11 @@ func NewRequestColorMarkerEngine(redisClient *redis.Client, keyPrefix string, li
 	}, nil
 }
 
-// allow attempts to consume tokens from token buckets, trying from highest to lowest priority tier
-// Returns the achieved priority level and a done function
-func (e *RequestColorMarkerEngine) allow(ctx context.Context) (newCtx context.Context, done func(), err error) {
+// Pass-through returns ctx unchanged, nil err, priority 0 (Process stores p0).
+func (e *RequestColorMarkerEngine) allow(ctx context.Context) (newCtx context.Context, done func(), err error, priority int) {
 	// If configuration is invalid, directly pass through
 	if len(e.limits) == 0 || e.redisClient == nil || e.tokenBucketScript == nil {
-		return ctx, func() {}, nil
+		return ctx, func() {}, nil, 0
 	}
 
 	now := time.Now()
@@ -154,24 +154,24 @@ func (e *RequestColorMarkerEngine) allow(ctx context.Context) (newCtx context.Co
 	result, err := e.tokenBucketScript.Run(ctx, e.redisClient, keys, args...).Result()
 	if err != nil {
 		slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorMarkerEngine] token bucket script error: %v, keyPrefix: %s", err, e.keyPrefix))
-		return ctx, func() {}, fmt.Errorf("token bucket script error: %w", err)
+		return ctx, func() {}, fmt.Errorf("token bucket script error: %w", err), 0
 	}
 
 	results, ok := result.([]interface{})
 	if !ok || len(results) < 2 {
 		slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorMarkerEngine] unexpected script result format, keyPrefix: %s", e.keyPrefix))
-		return ctx, func() {}, fmt.Errorf("unexpected script result format")
+		return ctx, func() {}, fmt.Errorf("unexpected script result format"), 0
 	}
 
 	acquired, _ := results[0].(int64)
 	if acquired == 0 {
 		// All tiers exhausted
 		slog.WarnContext(ctx, fmt.Sprintf("[RequestColorMarkerEngine] all tiers exhausted, keyPrefix: %s", e.keyPrefix))
-		return ctx, func() {}, ErrRateLimitReached
+		return ctx, func() {}, ErrRateLimitReached, 0
 	}
 
 	// acquired > 0: priority (1-based in Lua, convert to 0-based)
-	priority := int(acquired) - 1
+	priority = int(acquired) - 1
 	acquiredTierIdx := numTiers - 1 - priority
 
 	// Set priority to context
@@ -179,21 +179,22 @@ func (e *RequestColorMarkerEngine) allow(ctx context.Context) (newCtx context.Co
 
 	slog.InfoContext(ctx, fmt.Sprintf("[RequestColorMarkerEngine] request allowed with priority %d (tier %d)", priority, acquiredTierIdx))
 	done = func() {}
-	return newCtx, done, nil
+	return newCtx, done, nil, priority
 }
 
 func (e *RequestColorMarkerEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	ctx := req.Context()
 
-	// Use allow method to perform rate limiting and priority marking
-	newCtx, done, err := e.allow(ctx)
+	newCtx, done, err, priority := e.allow(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, fmt.Sprintf("[RequestColorMarkerEngine] marker error: %v, keyPrefix: %s", err, e.keyPrefix))
+		if errors.Is(err, ErrRateLimitReached) {
+			recordMarkerDeny(req, priority)
+		}
 		return nil, err
 	}
-
-	// Use WithContext method to set new context with priority
 	req = req.WithContext(newCtx)
+	recordMarkerAllow(req, priority)
 
 	// Process request
 	resp, err := e.next.Process(req)
