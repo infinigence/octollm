@@ -512,18 +512,18 @@ func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineCanBeLoadBalanced(t
 	require.NoError(t, err)
 
 	t.Run("shard-key prioritizes weighted backends, zero-weight backend succeeds as last resort", func(t *testing.T) {
-		for range 100 {
+		for range 1000 {
 			req := testhelper.CreateTestRequest()
 			resp, err := lb.Process(req)
 			require.NoError(t, err)
 			require.NotNil(t, resp)
 		}
-		assert.Equal(t, 100, stubA.callCount, "stubA should be called once per request")
-		assert.Equal(t, 100, stubB.callCount, "stubB should be called once per request")
+		assert.Equal(t, 1000, stubA.callCount, "stubA should be called once per request")
+		assert.Equal(t, 1000, stubB.callCount, "stubB should be called once per request")
 
-		assert.Equal(t, 100, stubC.callCount+stubD.callCount, "zero-weight backends C and D should handle all 100 requests as fallback")
+		assert.Equal(t, 1000, stubC.callCount+stubD.callCount, "zero-weight backends C and D should handle all requests as fallback")
 
-		assert.InDelta(t, 1.0, float64(stubC.callCount)/float64(stubD.callCount), 0.4, "C and D should be load balanced roughly equally")
+		assert.InDelta(t, 1.0, float64(stubC.callCount)/float64(stubD.callCount), 0.3, "C and D should be load balanced roughly equally")
 	})
 }
 
