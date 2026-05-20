@@ -68,6 +68,7 @@ func buildBackendWithLimiter(t *testing.T, rd *redis.Client, cfg backendConfig) 
 		nil,
 		time.Minute,
 		"",
+		nil,
 		next,
 	)
 	require.NoError(t, err)
@@ -99,6 +100,7 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -137,6 +139,7 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -146,6 +149,7 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -207,6 +211,7 @@ func TestShardKeyConcurrency_Failover(t *testing.T) {
 		func(req *octollm.Request, backendName string) string {
 			return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 		},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -278,6 +283,7 @@ func TestShardKeyConcurrency_ShardKey(t *testing.T) {
 		func(req *octollm.Request, backendName string) string {
 			return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 		},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -350,4 +356,214 @@ func TestShardKeyConcurrency_ShardKey(t *testing.T) {
 	// across all three backends matches the expected {20, 10, 0} multiset.
 	assert.ElementsMatch(t, []int32{20, 10, 0}, []int32{cur1Val, cur2Val, cur3Val},
 		"expected 20 in-flight for shard key 1, 10 for shard key 2, 0 for svc3")
+}
+
+func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	next := octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+		return &octollm.Response{StatusCode: 200}, nil
+	})
+
+	t.Run("positive override via maxConcurrencyFn", func(t *testing.T) {
+		var seenBackend atomic.Value
+		items := []BackendItem{{
+			Name:   "only",
+			Weight: 10,
+			Engine: next,
+		}}
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute, nil, rd, "pfx",
+			func(_ *octollm.Request, backendName string) string {
+				return "concurrency:" + backendName + ":tier_0"
+			},
+			func(_ *octollm.Request, backendName string) int {
+				seenBackend.Store(backendName)
+				return 10
+			},
+		)
+		require.NoError(t, err)
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, "only", seenBackend.Load().(string))
+	})
+
+	t.Run("nil fn ignores dynamic denominator", func(t *testing.T) {
+		items := []BackendItem{{
+			Name:   "only",
+			Weight: 10,
+			Engine: next,
+		}}
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute, nil, rd, "pfx2",
+			func(_ *octollm.Request, backendName string) string {
+				return "concurrency:" + backendName + ":tier_0"
+			},
+			nil,
+		)
+		require.NoError(t, err)
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+	})
+
+	t.Run("fn return zero excludes single backend", func(t *testing.T) {
+		var calls atomic.Int32
+		items := []BackendItem{{
+			Name:   "only",
+			Weight: 10,
+			Engine: next,
+		}}
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute, nil, rd, "pfx3-zero",
+			func(_ *octollm.Request, backendName string) string {
+				return "concurrency:" + backendName + ":tier_0"
+			},
+			func(_ *octollm.Request, _ string) int {
+				calls.Add(1)
+				return 0
+			},
+		)
+		require.NoError(t, err)
+		_, err = lb.Process(testhelper.CreateTestRequest())
+		require.Error(t, err)
+		assert.Positive(t, calls.Load())
+	})
+
+	t.Run("fn return zero skips backend two candidates", func(t *testing.T) {
+		items := []BackendItem{
+			{Name: "blocked", Weight: 100, Engine: next},
+			{Name: "open", Weight: 50, Engine: next},
+		}
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute, nil, rd, "pfx3-two",
+			func(_ *octollm.Request, backendName string) string {
+				return "concurrency:" + backendName + ":tier_0"
+			},
+			func(_ *octollm.Request, backendName string) int {
+				if backendName == "blocked" {
+					return 0
+				}
+				return 50
+			},
+		)
+		require.NoError(t, err)
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		mv, mdOK := req.GetMetadataValue(backendName)
+		require.True(t, mdOK)
+		nameVal, strOK := mv.(string)
+		require.True(t, strOK)
+		assert.Equal(t, "open", nameVal)
+	})
+
+	t.Run("fn return zero skips prioritized shard-key backend", func(t *testing.T) {
+		items := []BackendItem{
+			{Name: "blocked", Weight: 100, Engine: next},
+			{Name: "open", Weight: 50, Engine: next},
+		}
+		const keyPrefix = "pfx-prioritized-zero"
+		const shardKey = "sk"
+		err := rd.ZAdd(t.Context(), keyPrefix+":"+shardKey, redis.Z{
+			Score:  1,
+			Member: "blocked",
+		}).Err()
+		require.NoError(t, err)
+
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute,
+			func(_ *octollm.Request) []string { return []string{shardKey} },
+			rd, keyPrefix,
+			func(_ *octollm.Request, backendName string) string {
+				return "concurrency:" + backendName + ":tier_0"
+			},
+			func(_ *octollm.Request, backendName string) int {
+				if backendName == "blocked" {
+					return 0
+				}
+				return 50
+			},
+		)
+		require.NoError(t, err)
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		mv, mdOK := req.GetMetadataValue(backendName)
+		require.True(t, mdOK)
+		nameVal, strOK := mv.(string)
+		require.True(t, strOK)
+		assert.Equal(t, "open", nameVal)
+	})
+
+	t.Run("weight zero allowed when maxConcurrencyFn set", func(t *testing.T) {
+		items := []BackendItem{{
+			Name:   "dyn",
+			Weight: 0,
+			Engine: next,
+		}}
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute, nil, rd, "pfx-w0",
+			func(_ *octollm.Request, backendName string) string {
+				return "concurrency:" + backendName + ":tier_0"
+			},
+			func(_ *octollm.Request, _ string) int {
+				return 10
+			},
+		)
+		require.NoError(t, err)
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+	})
+
+	t.Run("weight zero fn returns zero cannot select", func(t *testing.T) {
+		items := []BackendItem{{
+			Name:   "bad",
+			Weight: 0,
+			Engine: next,
+		}}
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute, nil, rd, "pfx-w0bad",
+			func(_ *octollm.Request, backendName string) string {
+				return "concurrency:" + backendName + ":tier_0"
+			},
+			func(_ *octollm.Request, _ string) int { return 0 },
+		)
+		require.NoError(t, err)
+		_, err = lb.Process(testhelper.CreateTestRequest())
+		require.Error(t, err)
+	})
+
+	t.Run("weight zero without fn skipped empty", func(t *testing.T) {
+		items := []BackendItem{{
+			Name:   "skip",
+			Weight: 0,
+			Engine: next,
+		}}
+		_, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute, nil, rd, "pfx-skip",
+			func(_ *octollm.Request, backendName string) string {
+				return "concurrency:" + backendName + ":tier_0"
+			},
+			nil,
+		)
+		require.Error(t, err)
+	})
 }

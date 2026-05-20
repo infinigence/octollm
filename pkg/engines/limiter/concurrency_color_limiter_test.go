@@ -123,27 +123,27 @@ func TestBuildTotalPlusPerPriorityLimits(t *testing.T) {
 func TestNewConcurrencyColorLimiterEngine_ValidationAndFiltering(t *testing.T) {
 	next := &nextStubEngine{}
 
-	e, err := NewConcurrencyColorLimiterEngine(nil, "k", 0, nil, time.Second, "ns", next)
+	e, err := NewConcurrencyColorLimiterEngine(nil, "k", 0, nil, time.Second, "ns", nil, next)
 	assert.NoError(t, err)
 	assert.Nil(t, e.concurrencyRates)
 	assert.Nil(t, e.acquireSingleScript)
 	assert.Nil(t, e.acquireDualScript)
 
-	_, err = NewConcurrencyColorLimiterEngine(nil, "k", 2, []int{1}, 0, "ns", next)
+	_, err = NewConcurrencyColorLimiterEngine(nil, "k", 2, []int{1}, 0, "ns", nil, next)
 	assert.Error(t, err)
 
-	e, err = NewConcurrencyColorLimiterEngine(nil, "k", 10, []int{10}, time.Second, "ns", next)
+	e, err = NewConcurrencyColorLimiterEngine(nil, "k", 10, []int{10}, time.Second, "ns", nil, next)
 	assert.NoError(t, err)
 	assert.Equal(t, []int{10, 10}, e.concurrencyRates)
 
-	e, err = NewConcurrencyColorLimiterEngine(nil, "k", 10, []int{5, 6, 1}, time.Second, "ns", next)
+	e, err = NewConcurrencyColorLimiterEngine(nil, "k", 10, []int{5, 6, 1}, time.Second, "ns", nil, next)
 	assert.NoError(t, err)
 	assert.Equal(t, []int{10, 5, 6, 1}, e.concurrencyRates)
 }
 
 func TestConcurrencyColorLimiter_PassThroughWhenDisabled(t *testing.T) {
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200}}
-	e, err := NewConcurrencyColorLimiterEngine(nil, "k", 0, nil, time.Second, "ns", next)
+	e, err := NewConcurrencyColorLimiterEngine(nil, "k", 0, nil, time.Second, "ns", nil, next)
 	assert.NoError(t, err)
 
 	req := newConcurrencyColorLimiterTestRequest(t, "ns", nil)
@@ -164,7 +164,7 @@ func TestConcurrencyColorLimiter_PriorityMappingAndReservation(t *testing.T) {
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
 
 	// rates=[2,1] supports priority 1 (tier0, limit2) and priority 0 (tier1, limit1 with reservedSlots=1)
-	e, err := NewConcurrencyColorLimiterEngine(client, "limiter-key", 2, []int{1}, 10*time.Second, ns, next)
+	e, err := NewConcurrencyColorLimiterEngine(client, "limiter-key", 2, []int{1}, 10*time.Second, ns, nil, next)
 	assert.NoError(t, err)
 
 	// Hold one max-priority slot (tier0Count becomes 1)
@@ -202,7 +202,7 @@ func TestConcurrencyColorLimiter_EqualTierLimits_ReservationCaps(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	ns := "limiter-ns-eq333"
 	next := &nextNewBodyPerCallEngine{}
-	e, err := NewConcurrencyColorLimiterEngine(client, "limiter-key-eq333", 4, []int{3, 3, 3}, 10*time.Second, ns, next)
+	e, err := NewConcurrencyColorLimiterEngine(client, "limiter-key-eq333", 4, []int{3, 3, 3}, 10*time.Second, ns, nil, next)
 	assert.NoError(t, err)
 
 	p3 := 3
@@ -271,7 +271,7 @@ func TestConcurrencyColorLimiter_NoPriorityDefaultsToLowest(t *testing.T) {
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
 
 	// rates=[10,1] => default priority 0 maps to tier1, limit 1
-	e, err := NewConcurrencyColorLimiterEngine(client, "noprio-key", 10, []int{1}, 10*time.Second, ns, next)
+	e, err := NewConcurrencyColorLimiterEngine(client, "noprio-key", 10, []int{1}, 10*time.Second, ns, nil, next)
 	assert.NoError(t, err)
 
 	// first allowed
@@ -313,7 +313,7 @@ func TestConcurrencyColor_MarkerLimiterChain_MarkerBottleneck_Allows2ThenRejects
 
 	// Limiter: built as concurrency=4, rates=[3,2] -> [4,3,2]; matches three marker priorities.
 	next := &nextNewBodyPerCallEngine{}
-	limiter, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter", 4, []int{3, 2}, 10*time.Second, ns, next)
+	limiter, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter", 4, []int{3, 2}, 10*time.Second, ns, nil, next)
 	assert.NoError(t, err)
 	marker, err := NewConcurrencyColorMarkerEngine(client, "chain-marker", markerRates, 10*time.Second, ns, limiter)
 	assert.NoError(t, err)
@@ -349,7 +349,7 @@ func TestConcurrencyColor_MarkerLimiterChain_LimiterBottleneck_Allows1ThenReject
 	// Limiter: concurrency=2, rates=[1,1] -> [2,1,1]; priority 1 needs tier0Count < tier0Limit-reservedSlots = 1,
 	// so the second in-flight (tier0 already 1) is rejected at the limiter, not the marker.
 	next := &nextNewBodyPerCallEngine{}
-	limiter, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter-2", 2, []int{1, 1}, 10*time.Second, ns, next)
+	limiter, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter-2", 2, []int{1, 1}, 10*time.Second, ns, nil, next)
 	assert.NoError(t, err)
 	marker, err := NewConcurrencyColorMarkerEngine(client, "chain-marker-2", markerRates, 10*time.Second, ns, limiter)
 	assert.NoError(t, err)
@@ -373,4 +373,172 @@ func TestConcurrencyColor_MarkerLimiterChain_LimiterBottleneck_Allows1ThenReject
 	assert.Equal(t, 2, next.callCount)
 
 	assert.NoError(t, resp3.Body.Close())
+}
+
+// RatesFunc tests: non-empty return is used as-is; empty/nil return pass-through that request.
+
+func TestConcurrencyColorLimiter_RatesFuncOnly(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ratesfunc-ns"
+	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
+
+	// Only dynamic tiers; static total/per are zero.
+	fn := func(ctx context.Context, perPriorityRates []int) ([]int, error) {
+		assert.Nil(t, perPriorityRates)
+		return []int{1}, nil
+	}
+	e, err := NewConcurrencyColorLimiterEngine(client, "dyn-key", 0, nil, 10*time.Second, ns, fn, next)
+	assert.NoError(t, err)
+	assert.NotNil(t, e.acquireSingleScript)
+
+	p0 := 0
+	resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+
+	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assert.NoError(t, resp.Body.Close())
+}
+
+func TestConcurrencyColorLimiter_RatesFuncError(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ratesfunc-err-ns"
+	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200}}
+
+	fn := func(ctx context.Context, perPriorityRates []int) ([]int, error) {
+		return nil, fmt.Errorf("rates resolver failed")
+	}
+	e, err := NewConcurrencyColorLimiterEngine(client, "err-key", 5, nil, 10*time.Second, ns, fn, next)
+	assert.NoError(t, err)
+
+	p0 := 0
+	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "rates resolver failed")
+	assert.Equal(t, 0, next.callCount)
+}
+
+func TestConcurrencyColorLimiter_RatesFuncOverridesStatic(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ratesfunc-over-ns"
+	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
+
+	// Static [100]; dynamic [1,1] replaces tiers for this request (priority 1 → tier 0, cap 1).
+	fn := func(ctx context.Context, perPriorityRates []int) ([]int, error) {
+		return []int{1, 1}, nil
+	}
+	e, err := NewConcurrencyColorLimiterEngine(client, "over-key", 100, nil, 10*time.Second, ns, fn, next)
+	assert.NoError(t, err)
+
+	p1 := 1
+	resp1, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p1))
+	assert.NoError(t, err)
+	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p1))
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assert.NoError(t, resp1.Body.Close())
+}
+
+func TestConcurrencyColorLimiter_RatesFuncEmptyPassThrough(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ratesfunc-empty-ns"
+	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
+
+	// Static total=1 would limit to one in-flight, but empty dynamic return bypasses acquire.
+	fn := func(ctx context.Context, perPriorityRates []int) ([]int, error) {
+		return nil, nil
+	}
+	e, err := NewConcurrencyColorLimiterEngine(client, "empty-key", 1, nil, 10*time.Second, ns, fn, next)
+	assert.NoError(t, err)
+
+	p0 := 0
+	resp1, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
+	assert.NoError(t, err)
+	resp2, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
+	assert.NoError(t, err)
+	assert.Equal(t, 2, next.callCount)
+	assert.NoError(t, resp1.Body.Close())
+	assert.NoError(t, resp2.Body.Close())
+}
+
+func TestConcurrencyColorLimiter_RatesFuncUsesReturnedTiersAsIs(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ratesfunc-as-is-ns"
+	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
+
+	// Returned tiers are used directly (no trimming). Priority 1 maps to tier 0; cap 1 rejects the second call.
+	fn := func(ctx context.Context, perPriorityRates []int) ([]int, error) {
+		return []int{1, 99}, nil
+	}
+	e, err := NewConcurrencyColorLimiterEngine(client, "as-is-key", 100, nil, 10*time.Second, ns, fn, next)
+	assert.NoError(t, err)
+
+	p1 := 1
+	resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p1))
+	assert.NoError(t, err)
+	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p1))
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assert.NoError(t, resp.Body.Close())
+}
+
+func TestConcurrencyColorLimiter_RatesFuncReceivesStoredPerPriorityRates(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ratesfunc-per-ns"
+	per := []int{3, 7}
+	var gotPer []int
+	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
+	fn := func(ctx context.Context, perPriorityRates []int) ([]int, error) {
+		gotPer = append([]int(nil), perPriorityRates...)
+		return []int{2}, nil
+	}
+	e, err := NewConcurrencyColorLimiterEngine(client, "k", 10, per, time.Second, ns, fn, next)
+	assert.NoError(t, err)
+	assert.Equal(t, []int{10, 3, 7}, e.concurrencyRates)
+
+	p0 := 0
+	resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
+	assert.NoError(t, err)
+	assert.Equal(t, []int{3, 7}, gotPer)
+
+	per[0] = 999
+	assert.Equal(t, 3, e.perPriorityRates[0])
+	assert.Equal(t, 3, gotPer[0])
+	assert.NoError(t, resp.Body.Close())
+}
+
+func TestConcurrencyColorLimiter_perPriorityRatesStoredCopy(t *testing.T) {
+	t.Parallel()
+	per := []int{5, 6}
+	e, err := NewConcurrencyColorLimiterEngine(nil, "k", 10, per, time.Second, "ns", nil, &nextStubEngine{})
+	assert.NoError(t, err)
+	assert.Equal(t, []int{10, 5, 6}, e.concurrencyRates)
+	per[0] = 999
+	assert.Equal(t, 5, e.perPriorityRates[0])
 }

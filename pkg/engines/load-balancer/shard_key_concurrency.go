@@ -13,6 +13,11 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
+// ShardMaxConcurrencyFn returns the capacity denominator for concurrency ratio (count/denom).
+// When non-nil, each value—including 0—is used directly (no fallback to BackendItem.Weight).
+// Denominators <= 0 exclude that backend from ratio-based selection. When fn is nil, Weight is used.
+type ShardMaxConcurrencyFn func(req *octollm.Request, backendName string) int
+
 type concurrencyBackend struct {
 	name           string
 	engine         octollm.Engine
@@ -36,6 +41,9 @@ type ShardKeyConcurrency struct {
 	// concurrencyKeyFn returns the Redis key used to ZCard current concurrency for a backend.
 	concurrencyKeyFn func(req *octollm.Request, backendName string) string
 
+	// maxConcurrencyFn optionally supplies ratio denominator per request/backend; nil uses Weight only.
+	maxConcurrencyFn ShardMaxConcurrencyFn
+
 	retryTimeout  time.Duration
 	retryMaxCount int
 }
@@ -46,7 +54,7 @@ var _ octollm.Engine = (*ShardKeyConcurrency)(nil)
 // (when shardKeyListGetter is non-nil) or by lowest concurrency ratio (when nil).
 //
 // Parameters:
-//   - backends: backend items with name/concurrency/engine
+//   - backends: backend items; items with Weight<=0 are skipped unless maxConcurrencyFn is non-nil
 //   - retryTimeout: maximum time to retry failed requests
 //   - retryMaxCount: maximum number of retries
 //   - shardKeyTTL: expiration time for shard key -> backend mapping in Redis
@@ -54,6 +62,8 @@ var _ octollm.Engine = (*ShardKeyConcurrency)(nil)
 //   - redisClient: Redis client for shard-key ZSETs and concurrency ZCard
 //   - keyPrefix: prefix prepended to all Redis keys
 //   - concurrencyKeyFn: required; returns the Redis key used to track per-backend concurrency
+//   - maxConcurrencyFn: optional; when non-nil, its return value is the ratio denominator as-is (0 means no admitted capacity).
+//     When nil, BackendItem.Weight is used instead.
 func NewShardKeyConcurrency(
 	backends []BackendItem,
 	retryTimeout time.Duration,
@@ -63,11 +73,12 @@ func NewShardKeyConcurrency(
 	redisClient *redis.Client,
 	keyPrefix string,
 	concurrencyKeyFn func(req *octollm.Request, backendName string) string,
+	maxConcurrencyFn ShardMaxConcurrencyFn,
 ) (*ShardKeyConcurrency, error) {
 	cb := make([]*concurrencyBackend, 0, len(backends))
 	for _, b := range backends {
-		if b.Weight <= 0 {
-			slog.Warn(fmt.Sprintf("[ShardKey Concurrency load balancer] backend %s has weight 0, it will be ignored in concurrency-based selection", b.Name))
+		if b.Weight <= 0 && maxConcurrencyFn == nil {
+			slog.Warn(fmt.Sprintf("[ShardKey Concurrency load balancer] backend %s has weight<=0 and no maxConcurrencyFn, skipping", b.Name))
 			continue
 		}
 		cb = append(cb, &concurrencyBackend{
@@ -91,6 +102,7 @@ func NewShardKeyConcurrency(
 		shardKeyTTL:        shardKeyTTL,
 		keyPrefix:          keyPrefix,
 		concurrencyKeyFn:   concurrencyKeyFn,
+		maxConcurrencyFn:   maxConcurrencyFn,
 		retryTimeout:       retryTimeout,
 		retryMaxCount:      retryMaxCount,
 	}, nil
@@ -170,9 +182,16 @@ func (l *ShardKeyConcurrency) resolvePrioritizedBackends(
 	return prioritized
 }
 
+func (l *ShardKeyConcurrency) effectiveMaxConcurrency(req *octollm.Request, b *concurrencyBackend) int {
+	if l.maxConcurrencyFn != nil {
+		return l.maxConcurrencyFn(req, b.name)
+	}
+	return b.maxConcurrency
+}
+
 // selectByConcurrency picks the backend with the lowest currentConcurrency/maxConcurrency ratio
 // using Redis ZCard. Backends in excludeNames are skipped.
-// Falls back to uniform random selection if Redis is unavailable or no backend has maxConcurrency set.
+// Falls back to uniform random selection among backends with positive effective capacity if Redis is unavailable.
 func (l *ShardKeyConcurrency) selectByConcurrency(req *octollm.Request, excludeNames map[string]bool) (string, octollm.Engine) {
 	ctx := req.Context()
 	candidates := make([]*concurrencyBackend, 0, len(l.backends))
@@ -188,7 +207,16 @@ func (l *ShardKeyConcurrency) selectByConcurrency(req *octollm.Request, excludeN
 	rand.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
 
 	if l.redisClient == nil {
-		b := candidates[rand.Intn(len(candidates))]
+		usable := candidates[:0]
+		for _, b := range candidates {
+			if l.effectiveMaxConcurrency(req, b) > 0 {
+				usable = append(usable, b)
+			}
+		}
+		if len(usable) == 0 {
+			return "", nil
+		}
+		b := usable[rand.Intn(len(usable))]
 		return b.name, b.engine
 	}
 
@@ -199,7 +227,16 @@ func (l *ShardKeyConcurrency) selectByConcurrency(req *octollm.Request, excludeN
 	}
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
 		slog.WarnContext(ctx, fmt.Sprintf("[ShardKey Concurrency load balancer] failed to get concurrency counts from Redis: %v", err))
-		b := candidates[rand.Intn(len(candidates))]
+		usable := candidates[:0]
+		for _, b := range candidates {
+			if l.effectiveMaxConcurrency(req, b) > 0 {
+				usable = append(usable, b)
+			}
+		}
+		if len(usable) == 0 {
+			return "", nil
+		}
+		b := usable[rand.Intn(len(usable))]
 		return b.name, b.engine
 	}
 
@@ -210,7 +247,11 @@ func (l *ShardKeyConcurrency) selectByConcurrency(req *octollm.Request, excludeN
 		if err != nil {
 			continue
 		}
-		ratio := float64(count) / float64(b.maxConcurrency)
+		denom := l.effectiveMaxConcurrency(req, b)
+		if denom <= 0 {
+			continue
+		}
+		ratio := float64(count) / float64(denom)
 		if ratio < minRatio {
 			minRatio = ratio
 			selected = b
@@ -244,6 +285,13 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 		if prioritizedIndex < len(prioritized) {
 			b := prioritized[prioritizedIndex]
 			prioritizedIndex++
+			if l.effectiveMaxConcurrency(req, b) <= 0 {
+				slog.InfoContext(req.Context(),
+					fmt.Sprintf("[ShardKey Concurrency load balancer] skip prioritized backend with no effective capacity: %s (index %d/%d), shardKeys: %v", b.name, prioritizedIndex, len(prioritized), shardKeyList),
+					slog.String("backend_name", b.name),
+				)
+				continue
+			}
 			n, eng = b.name, b.engine
 			slog.InfoContext(req.Context(),
 				fmt.Sprintf("[ShardKey Concurrency load balancer] prioritized backend hit: %s (index %d/%d), shardKeys: %v", n, prioritizedIndex, len(prioritized), shardKeyList),
