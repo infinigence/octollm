@@ -486,7 +486,7 @@ func TestUniversalAdapter_ResponsesFormat(t *testing.T) {
 				Items: []*openai.ResponsesInputItem{
 					{
 						Role: "user",
-						Content: []*openai.ResponsesInputContentItem{
+						Content: openai.ResponsesInputContentArray{
 							{Type: "input_text", Text: "hello responses"},
 						},
 					},

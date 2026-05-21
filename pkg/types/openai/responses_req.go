@@ -63,23 +63,99 @@ func (r ResponsesInput) ExtractText() string {
 }
 
 type ResponsesInputItem struct {
-	Role    string                       `json:"role,omitempty"`
-	Content []*ResponsesInputContentItem `json:"content,omitempty"`
+	Role    string                `json:"role,omitempty"`
+	Content ResponsesInputContent `json:"content,omitempty"`
+}
+
+func (i *ResponsesInputItem) UnmarshalJSON(data []byte) error {
+	type Alias struct {
+		Role    string          `json:"role,omitempty"`
+		Content json.RawMessage `json:"content,omitempty"`
+	}
+
+	var alias Alias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+
+	i.Role = alias.Role
+	if len(alias.Content) > 0 {
+		content, err := unmarshalResponsesInputContent(alias.Content)
+		if err != nil {
+			return err
+		}
+		i.Content = content
+	}
+	return nil
+}
+
+func (i ResponsesInputItem) MarshalJSON() ([]byte, error) {
+	type Alias struct {
+		Role    string          `json:"role,omitempty"`
+		Content json.RawMessage `json:"content,omitempty"`
+	}
+
+	alias := Alias{Role: i.Role}
+	if i.Content != nil {
+		contentBytes, err := json.Marshal(i.Content)
+		if err != nil {
+			return nil, err
+		}
+		alias.Content = contentBytes
+	}
+	return json.Marshal(alias)
 }
 
 func (i *ResponsesInputItem) ExtractText() string {
-	if i == nil {
+	if i == nil || i.Content == nil {
 		return ""
 	}
+	return i.Content.ExtractText()
+}
 
+// ResponsesInputContent supports OpenAI Responses input item `content` polymorphism:
+// - string
+// - array of content parts (input_text, input_image, ...)
+type ResponsesInputContent interface {
+	ExtractText() string
+}
+
+type ResponsesInputContentString string
+
+func (c ResponsesInputContentString) ExtractText() string { return string(c) }
+
+func (c ResponsesInputContentString) MarshalJSON() ([]byte, error) {
+	return json.Marshal(string(c))
+}
+
+type ResponsesInputContentArray []*ResponsesInputContentItem
+
+func (c ResponsesInputContentArray) ExtractText() string {
 	text := ""
-	for _, part := range i.Content {
+	for _, part := range c {
 		if part == nil {
 			continue
 		}
 		text += part.ExtractText()
 	}
 	return text
+}
+
+func (c ResponsesInputContentArray) MarshalJSON() ([]byte, error) {
+	return json.Marshal([]*ResponsesInputContentItem(c))
+}
+
+func unmarshalResponsesInputContent(data json.RawMessage) (ResponsesInputContent, error) {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		return ResponsesInputContentString(s), nil
+	}
+
+	var items []*ResponsesInputContentItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, err
+	}
+	return ResponsesInputContentArray(items), nil
 }
 
 type ResponsesInputContentItem struct {

@@ -43,6 +43,11 @@ func TestResponsesRequest_Input_StringAndArray(t *testing.T) {
 			raw: `{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_image","image_url":{"url":"https://example.com/b.jpg","detail":"high"}}]}]}`,
 			want: "https://example.com/b.jpg",
 		},
+		{
+			name: "input array with string content",
+			raw:  `{"model":"gpt-5.4","input":[{"role":"user","content":"plain text message"}]}`,
+			want: "plain text message",
+		},
 	}
 
 	for _, tt := range tests {
@@ -58,6 +63,99 @@ func TestResponsesRequest_Input_StringAndArray(t *testing.T) {
 				t.Fatalf("ExtractText()=%q want=%q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResponsesInputContent_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "string",
+			raw:  `"hello"`,
+			want: "hello",
+		},
+		{
+			name: "array",
+			raw:  `[{"type":"input_text","text":"hi"},{"type":"input_image","image_url":"https://example.com/x.png"}]`,
+			want: "hihttps://example.com/x.png",
+		},
+		{
+			name:    "invalid number",
+			raw:     `42`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var content ResponsesInputContent
+			var item ResponsesInputItem
+			if err := json.Unmarshal([]byte(`{"role":"user","content":`+tt.raw+`}`), &item); err != nil {
+				if tt.wantErr {
+					return
+				}
+				t.Fatal(err)
+			}
+			content = item.Content
+			if tt.wantErr {
+				t.Fatal("expected error")
+			}
+			if got := content.ExtractText(); got != tt.want {
+				t.Fatalf("ExtractText()=%q want=%q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResponsesInputContent_MarshalRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "string", raw: `{"role":"user","content":"round trip"}`},
+		{name: "array", raw: `{"role":"user","content":[{"type":"input_text","text":"round trip"}]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var item ResponsesInputItem
+			if err := json.Unmarshal([]byte(tt.raw), &item); err != nil {
+				t.Fatal(err)
+			}
+			out, err := json.Marshal(item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var again ResponsesInputItem
+			if err := json.Unmarshal(out, &again); err != nil {
+				t.Fatal(err)
+			}
+			if item.Content.ExtractText() != again.Content.ExtractText() {
+				t.Fatalf("before=%q after=%q", item.Content.ExtractText(), again.Content.ExtractText())
+			}
+		})
+	}
+}
+
+func TestResponsesInputItem_ContentStringThenArray(t *testing.T) {
+	var item ResponsesInputItem
+
+	if err := json.Unmarshal([]byte(`{"role":"user","content":"first"}`), &item); err != nil {
+		t.Fatal(err)
+	}
+	if got := item.Content.ExtractText(); got != "first" {
+		t.Fatalf("string content: got %q", got)
+	}
+
+	if err := json.Unmarshal([]byte(`{"role":"user","content":[{"type":"input_text","text":"second"}]}`), &item); err != nil {
+		t.Fatal(err)
+	}
+	if got := item.Content.ExtractText(); got != "second" {
+		t.Fatalf("array content after string: got %q", got)
 	}
 }
 
