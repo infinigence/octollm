@@ -111,13 +111,113 @@ func TestResponsesInputContent_UnmarshalJSON(t *testing.T) {
 	}
 }
 
+func TestResponsesInputItem_MarshalJSON_StringContent(t *testing.T) {
+	item := ResponsesInputItem{
+		Role:    "user",
+		Content: ResponsesInputContentString("Hello, responses!"),
+	}
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["role"] != "user" {
+		t.Errorf("role: got %v", result["role"])
+	}
+	content, ok := result["content"].(string)
+	if !ok {
+		t.Fatalf("content should be JSON string, got %T (%v)", result["content"], result["content"])
+	}
+	if content != "Hello, responses!" {
+		t.Errorf("content: got %q", content)
+	}
+}
+
+func TestResponsesInputItem_MarshalJSON_ArrayContent(t *testing.T) {
+	item := ResponsesInputItem{
+		Role: "user",
+		Content: ResponsesInputContentArray([]*ResponsesInputContentItem{
+			{Type: "input_text", Text: "Hello"},
+			{Type: "input_image", ImageURL: ImageURLString("https://example.com/a.png")},
+		}),
+	}
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["role"] != "user" {
+		t.Errorf("role: got %v", result["role"])
+	}
+	content, ok := result["content"].([]interface{})
+	if !ok {
+		t.Fatalf("content should be JSON array, got %T (%v)", result["content"], result["content"])
+	}
+	if len(content) != 2 {
+		t.Fatalf("content array length: got %d want 2", len(content))
+	}
+
+	first, ok := content[0].(map[string]interface{})
+	if !ok || first["type"] != "input_text" || first["text"] != "Hello" {
+		t.Fatalf("first part: %+v", content[0])
+	}
+	second, ok := content[1].(map[string]interface{})
+	if !ok || second["type"] != "input_image" {
+		t.Fatalf("second part: %+v", content[1])
+	}
+	if second["image_url"] != "https://example.com/a.png" {
+		t.Fatalf("image_url: got %v", second["image_url"])
+	}
+}
+
 func TestResponsesInputContent_MarshalRoundTrip(t *testing.T) {
 	tests := []struct {
-		name string
-		raw  string
+		name       string
+		raw        string
+		assertJSON func(t *testing.T, content interface{})
 	}{
-		{name: "string", raw: `{"role":"user","content":"round trip"}`},
-		{name: "array", raw: `{"role":"user","content":[{"type":"input_text","text":"round trip"}]}`},
+		{
+			name: "string",
+			raw:  `{"role":"user","content":"round trip"}`,
+			assertJSON: func(t *testing.T, content interface{}) {
+				t.Helper()
+				s, ok := content.(string)
+				if !ok {
+					t.Fatalf("content should be string, got %T", content)
+				}
+				if s != "round trip" {
+					t.Fatalf("content=%q want round trip", s)
+				}
+			},
+		},
+		{
+			name: "array",
+			raw:  `{"role":"user","content":[{"type":"input_text","text":"round trip"}]}`,
+			assertJSON: func(t *testing.T, content interface{}) {
+				t.Helper()
+				parts, ok := content.([]interface{})
+				if !ok {
+					t.Fatalf("content should be array, got %T", content)
+				}
+				if len(parts) != 1 {
+					t.Fatalf("content array length: got %d want 1", len(parts))
+				}
+				part, ok := parts[0].(map[string]interface{})
+				if !ok || part["type"] != "input_text" || part["text"] != "round trip" {
+					t.Fatalf("content part: %+v", parts[0])
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -130,12 +230,22 @@ func TestResponsesInputContent_MarshalRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+
+			var marshaled map[string]interface{}
+			if err := json.Unmarshal(out, &marshaled); err != nil {
+				t.Fatal(err)
+			}
+			if marshaled["role"] != "user" {
+				t.Fatalf("role: got %v", marshaled["role"])
+			}
+			tt.assertJSON(t, marshaled["content"])
+
 			var again ResponsesInputItem
 			if err := json.Unmarshal(out, &again); err != nil {
 				t.Fatal(err)
 			}
 			if item.Content.ExtractText() != again.Content.ExtractText() {
-				t.Fatalf("before=%q after=%q", item.Content.ExtractText(), again.Content.ExtractText())
+				t.Fatalf("ExtractText before=%q after=%q", item.Content.ExtractText(), again.Content.ExtractText())
 			}
 		})
 	}

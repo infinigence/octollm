@@ -89,23 +89,6 @@ func (i *ResponsesInputItem) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (i ResponsesInputItem) MarshalJSON() ([]byte, error) {
-	type Alias struct {
-		Role    string          `json:"role,omitempty"`
-		Content json.RawMessage `json:"content,omitempty"`
-	}
-
-	alias := Alias{Role: i.Role}
-	if i.Content != nil {
-		contentBytes, err := json.Marshal(i.Content)
-		if err != nil {
-			return nil, err
-		}
-		alias.Content = contentBytes
-	}
-	return json.Marshal(alias)
-}
-
 func (i *ResponsesInputItem) ExtractText() string {
 	if i == nil || i.Content == nil {
 		return ""
@@ -124,10 +107,6 @@ type ResponsesInputContentString string
 
 func (c ResponsesInputContentString) ExtractText() string { return string(c) }
 
-func (c ResponsesInputContentString) MarshalJSON() ([]byte, error) {
-	return json.Marshal(string(c))
-}
-
 type ResponsesInputContentArray []*ResponsesInputContentItem
 
 func (c ResponsesInputContentArray) ExtractText() string {
@@ -139,10 +118,6 @@ func (c ResponsesInputContentArray) ExtractText() string {
 		text += part.ExtractText()
 	}
 	return text
-}
-
-func (c ResponsesInputContentArray) MarshalJSON() ([]byte, error) {
-	return json.Marshal([]*ResponsesInputContentItem(c))
 }
 
 func unmarshalResponsesInputContent(data json.RawMessage) (ResponsesInputContent, error) {
