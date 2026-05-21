@@ -229,7 +229,6 @@ func (s *AliModeratorService) Allow(ctx context.Context, text []rune) error {
 		}
 	}
 
-	slog.DebugContext(ctx, fmt.Sprintf("[AliModeratorService.Allow] content passed moderation"))
 	result, status = ModerationResultAllowed, ModerationRequestSuccess
 	return nil
 }

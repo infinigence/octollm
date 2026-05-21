@@ -181,23 +181,31 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 		textBuffer := make([]rune, 0)
 		chunkBuffer := make([]*octollm.StreamChunk, 0, moderateEvery)
 		chunkCountSinceLast := 0
+		streamChunkCount := 0
+		defer func() {
+			attrs := []any{
+				"chunks", streamChunkCount,
+				"blocked", moderationFailedErr != nil,
+			}
+			if moderationFailedErr != nil {
+				attrs = append(attrs, "err", moderationFailedErr.Error())
+			}
+			slog.DebugContext(ctx, "[moderate] stream output moderation finished", attrs...)
+		}()
 
-		slog.DebugContext(ctx, fmt.Sprintf("[moderate] begin reading upstream stream"))
 		for chunk := range originalChunks.Chan() {
-			// slog.DebugContext(ctx, fmt.Sprintf("[moderate] stream chunk"))
 			text, err := e.TextModeratorAdapter.ExtractTextFromBody(ctx, chunk.Body)
 			if err != nil {
 				// stream done 是正常结束信号，不应该视为错误
 				if errors.Is(err, octollm.ErrStreamDone) {
 					chunkBuffer = append(chunkBuffer, chunk)
-					slog.DebugContext(ctx, fmt.Sprintf("stream done, will process remaining chunks"))
+					streamChunkCount++
 					break
 				}
-				slog.DebugContext(ctx, fmt.Sprintf("extract text from stream chunk error: %s", err))
 				moderationFailedErr = fmt.Errorf("%w: %w", ErrModeratorInternalError, err)
 				break
 			}
-			// slog.DebugContext(ctx, fmt.Sprintf("[moderate] extract text from stream chunk: %s", string(text)))
+			streamChunkCount++
 			textBuffer = append(textBuffer, text...)
 			if len(textBuffer) > maxRuneLen {
 				// truncate text to last max rune len
@@ -209,7 +217,6 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 				textBufferTrimmed := trimRune(textBuffer)
 				if len(textBufferTrimmed) != 0 && moderationSampleHit(e.OutputModerationSampleRate) {
 					if err := e.ModeratorService.Allow(ctx, textBufferTrimmed); err != nil {
-						slog.DebugContext(ctx, fmt.Sprintf("moderate stream chunk error: %s", err))
 						moderationFailedErr = fmt.Errorf("%w: %w", ErrOutputNotAllowed, err)
 						break
 					}
@@ -228,11 +235,9 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 
 		// Handle remaining chunks after stream ends
 		if moderationFailedErr == nil && len(chunkBuffer) > 0 {
-			slog.DebugContext(ctx, fmt.Sprintf("[moderate] processing %d remaining chunks", len(chunkBuffer)))
 			textBufferTrimmed := trimRune(textBuffer)
 			if len(textBufferTrimmed) != 0 && moderationSampleHit(e.OutputModerationSampleRate) {
 				if err := e.ModeratorService.Allow(ctx, textBufferTrimmed); err != nil {
-					slog.DebugContext(ctx, fmt.Sprintf("moderate remaining stream chunks error: %s", err))
 					moderationFailedErr = fmt.Errorf("%w: %w", ErrOutputNotAllowed, err)
 				}
 			}

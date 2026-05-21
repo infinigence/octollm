@@ -136,7 +136,6 @@ func (s *NeteaseModeratorService) Allow(ctx context.Context, text []rune) error 
 		}
 
 		// Allow content to pass in other cases
-		slog.DebugContext(ctx, fmt.Sprintf("[NeteaseModeratorService.Allow] content passed moderation, suggestion: %d", suggestion))
 		result, status = ModerationResultAllowed, ModerationRequestSuccess
 		return nil
 	}
