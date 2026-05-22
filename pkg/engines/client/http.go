@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -261,7 +260,7 @@ func (e *HTTPEndpoint) processSSEStream(ctx context.Context, req *octollm.Reques
 	var recvFirstChunkTime time.Time
 
 	var totalChunkSent int
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := newScanner(resp.Body)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
 			slog.InfoContext(ctx, fmt.Sprintf("[http-endpoint] context error during stream response: %v", err))

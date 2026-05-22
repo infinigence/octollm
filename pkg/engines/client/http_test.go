@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/octollm"
@@ -169,4 +170,40 @@ data: {"type":"message_stop"}
 	got, err := testhelper.CollectSSEStream(stream, 5*time.Second)
 	assert.NoError(t, err)
 	assert.Equal(t, string(got), sseStreamNormalized)
+}
+
+func TestProcessSSEStream_LongDataLine(t *testing.T) {
+	payload := strings.Repeat("x", 100*1024)
+	sseStream := "data: " + payload + "\n\n"
+
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(sseStream)),
+	}
+
+	ch := make(chan *octollm.StreamChunk, 2)
+	parser := &octollm.JSONParser[json.RawMessage]{}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	oldSize := ScannerMaxTokenSize()
+	SetScannerMaxTokenSize(200 * 1024)
+	t.Cleanup(func() { SetScannerMaxTokenSize(oldSize) })
+
+	endpoint := NewHTTPEndpoint()
+	req := testhelper.CreateTestRequest()
+
+	go endpoint.processSSEStream(ctx, req, resp, ch, parser)
+
+	var chunks []*octollm.StreamChunk
+	for chunk := range ch {
+		chunks = append(chunks, chunk)
+	}
+
+	require.Len(t, chunks, 1)
+	body, err := chunks[0].Body.Bytes()
+	require.NoError(t, err)
+	assert.Equal(t, payload, string(body))
+
+	_, scanErr := GetClientProcessStreamError(req)
+	assert.False(t, scanErr)
 }
