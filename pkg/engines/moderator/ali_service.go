@@ -166,7 +166,7 @@ func (s *AliModeratorService) Allow(ctx context.Context, text []rune) error {
 	if err != nil {
 		slog.ErrorContext(ctx, fmt.Sprintf("[AliModeratorService.Allow] failed to marshal service parameters: %v", err))
 		result, status = ModerationResultNil, ModerationRequestFailed
-		return fmt.Errorf("failed to marshal service parameters: %w", err)
+		return fmt.Errorf("%w: marshal service parameters: %v", ErrModerationAPIFailed, err)
 	}
 
 	// Create moderation request
@@ -180,14 +180,14 @@ func (s *AliModeratorService) Allow(ctx context.Context, text []rune) error {
 	if err != nil {
 		slog.ErrorContext(ctx, fmt.Sprintf("[AliModeratorService.Allow] TextModerationPlusWithOptions error: %v", err))
 		result, status = ModerationResultNil, ModerationRequestFailed
-		return fmt.Errorf("aliyun moderation API call failed: %w", err)
+		return fmt.Errorf("%w: TextModerationPlusWithOptions: %v", ErrModerationAPIFailed, err)
 	}
 
 	// Check HTTP status code
 	if *apiResult.StatusCode != http.StatusOK {
 		slog.WarnContext(ctx, fmt.Sprintf("[AliModeratorService.Allow] aliyun API returned error status: %d, serviceParameters: %s", *apiResult.StatusCode, string(serviceParameters)))
 		result, status = ModerationResultNil, ModerationRequestFailed
-		return fmt.Errorf("aliyun API returned error status: %d", *apiResult.StatusCode)
+		return fmt.Errorf("%w: aliyun API returned error status: %d", ErrModerationAPIFailed, *apiResult.StatusCode)
 	}
 
 	// Check business status code
@@ -199,7 +199,7 @@ func (s *AliModeratorService) Allow(ctx context.Context, text []rune) error {
 		}
 		slog.WarnContext(ctx, fmt.Sprintf("[AliModeratorService.Allow] aliyun API returned error code: %d, message: %s, serviceParameters: %s", *body.Code, msg, string(serviceParameters)))
 		result, status = ModerationResultNil, ModerationRequestFailed
-		return fmt.Errorf("aliyun API returned error code: %d", *body.Code)
+		return fmt.Errorf("%w: aliyun API returned error code: %d", ErrModerationAPIFailed, *body.Code)
 	}
 
 	// Parse moderation result
@@ -225,7 +225,7 @@ func (s *AliModeratorService) Allow(ctx context.Context, text []rune) error {
 			slog.InfoContext(ctx, fmt.Sprintf("[AliModeratorService.Allow] content blocked, label: %s, confidence: %.2f, threshold: %.2f",
 				label, confidence, threshold.Value))
 			result, status = ModerationResultBlocked, ModerationRequestSuccess
-			return fmt.Errorf("content blocked by Ali moderator: %s (confidence: %.2f)", label, confidence)
+			return fmt.Errorf("%w: Aliyun label=%s confidence=%.2f threshold=%.2f", ErrModerationBlocked, label, confidence, threshold.Value)
 		}
 	}
 

@@ -78,7 +78,7 @@ func NewWeightedModeratorService(services []WeightedModeratorItem) (*WeightedMod
 func (s *WeightedModeratorService) Allow(ctx context.Context, text []rune) error {
 	_, service := s.getNextService()
 	if service == nil {
-		return fmt.Errorf("no available moderator service")
+		return fmt.Errorf("%w: no available moderator service", ErrModerationAPIFailed)
 	}
 	return service.Allow(ctx, text)
 }

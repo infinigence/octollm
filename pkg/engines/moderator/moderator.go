@@ -11,12 +11,6 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
-var (
-	ErrInputNotAllowed        = errors.New("input not allowed")
-	ErrOutputNotAllowed       = errors.New("output not allowed")
-	ErrModeratorInternalError = errors.New("moderator internal error")
-)
-
 type TextModeratorService interface {
 	Allow(ctx context.Context, text []rune) error
 	MaxRuneLen() int

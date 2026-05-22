@@ -69,7 +69,7 @@ func (s *RepeatDetectorService) Allow(ctx context.Context, text []rune) error {
 		s.logRepeatDetection(ctx, string(text), pattern, repeatCount, detectionTime)
 
 		if s.config.BlockOnDetect {
-			return fmt.Errorf("Content filter: pattern '%s' repeated %d times", pattern, repeatCount)
+			return fmt.Errorf("%w: repeat pattern=%q count=%d", moderator.ErrModerationBlocked, pattern, repeatCount)
 		}
 	}
 

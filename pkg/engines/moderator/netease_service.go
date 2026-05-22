@@ -115,14 +115,14 @@ func (s *NeteaseModeratorService) Allow(ctx context.Context, text []rune) error 
 	if err != nil {
 		slog.ErrorContext(ctx, fmt.Sprintf("[NeteaseModeratorService.Allow] SyncCheckText error: %v", err))
 		result, status = ModerationResultNil, ModerationRequestFailed
-		return fmt.Errorf("netease moderation API call failed: %w", err)
+		return fmt.Errorf("%w: SyncCheckText: %v", ErrModerationAPIFailed, err)
 	}
 
 	// Check HTTP status code
 	if apiResult.Code != http.StatusOK {
 		slog.WarnContext(ctx, fmt.Sprintf("[NeteaseModeratorService.Allow] netease API returned error code: %d, msg: %s", apiResult.Code, apiResult.Msg))
 		result, status = ModerationResultNil, ModerationRequestFailed
-		return fmt.Errorf("netease API returned error code: %d", apiResult.Code)
+		return fmt.Errorf("%w: netease API returned error code: %d", ErrModerationAPIFailed, apiResult.Code)
 	}
 
 	if apiResult.Result != nil && apiResult.Result.Antispam != nil && apiResult.Result.Antispam.Suggestion != nil {
@@ -132,7 +132,7 @@ func (s *NeteaseModeratorService) Allow(ctx context.Context, text []rune) error 
 		if suggestion == NeteaseSuggestionRisk {
 			slog.InfoContext(ctx, fmt.Sprintf("[NeteaseModeratorService.Allow] content blocked by Netease moderator, suggestion: %d", suggestion))
 			result, status = ModerationResultBlocked, ModerationRequestSuccess
-			return fmt.Errorf("content blocked by Netease moderator: risk content detected")
+			return fmt.Errorf("%w: Netease suggestion=%d", ErrModerationBlocked, suggestion)
 		}
 
 		// Allow content to pass in other cases
