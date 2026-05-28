@@ -13,9 +13,10 @@ type ContextKey string
 const errorKey ContextKey = "error"
 
 type HandlerError struct {
-	Err        error  // wrapped error returned to middleware
-	StatusCode int    // HTTP status for the client response
-	Message    string // body/message written to the client
+	Err        error       // wrapped error returned to middleware
+	StatusCode int         // HTTP status for the client response
+	Message    string      // body/message written to the client
+	Header     http.Header // optional headers to include in the response
 }
 
 func (e *HandlerError) Error() string {
@@ -24,6 +25,13 @@ func (e *HandlerError) Error() string {
 
 func (e *HandlerError) Unwrap() error {
 	return e.Err
+}
+
+func (e *HandlerError) AddHeader(key, value string) {
+	if e.Header == nil {
+		e.Header = make(http.Header)
+	}
+	e.Header.Add(key, value)
 }
 
 func WithHandlerError(r *http.Request, err *HandlerError) *http.Request {
@@ -56,6 +64,11 @@ func ErrorHandlingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				w.Header().Set("Content-Type", "application/json")
 			} else {
 				w.Header().Set("Content-Type", "text/plain")
+			}
+			for key, values := range err.Header {
+				for _, value := range values {
+					w.Header().Add(key, value)
+				}
 			}
 			w.WriteHeader(err.StatusCode)
 			w.Write(errMsgBytes)
