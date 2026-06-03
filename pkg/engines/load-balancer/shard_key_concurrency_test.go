@@ -68,7 +68,6 @@ func buildBackendWithLimiter(t *testing.T, rd *redis.Client, cfg backendConfig) 
 		nil,
 		time.Minute,
 		"",
-		nil,
 		next,
 	)
 	require.NoError(t, err)
@@ -100,7 +99,6 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
-			nil,
 		)
 		require.NoError(t, err)
 
@@ -139,7 +137,6 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
-			nil,
 		)
 		require.NoError(t, err)
 
@@ -149,7 +146,6 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
-			nil,
 		)
 		require.NoError(t, err)
 
@@ -211,7 +207,6 @@ func TestShardKeyConcurrency_Failover(t *testing.T) {
 		func(req *octollm.Request, backendName string) string {
 			return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 		},
-		nil,
 	)
 	require.NoError(t, err)
 
@@ -283,7 +278,6 @@ func TestShardKeyConcurrency_ShardKey(t *testing.T) {
 		func(req *octollm.Request, backendName string) string {
 			return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 		},
-		nil,
 	)
 	require.NoError(t, err)
 
@@ -373,16 +367,16 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			Name:   "only",
 			Weight: 10,
 			Engine: next,
+			MaxConcurrencyFn: func(_ *octollm.Request) int {
+				seenBackend.Store("only")
+				return 10
+			},
 		}}
 		lb, err := NewShardKeyConcurrency(
 			items,
 			time.Second, 3, time.Minute, nil, rd, "pfx",
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
-			},
-			func(_ *octollm.Request, backendName string) int {
-				seenBackend.Store(backendName)
-				return 10
 			},
 		)
 		require.NoError(t, err)
@@ -405,7 +399,6 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
-			nil,
 		)
 		require.NoError(t, err)
 		req := testhelper.CreateTestRequest()
@@ -420,16 +413,16 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			Name:   "only",
 			Weight: 10,
 			Engine: next,
+			MaxConcurrencyFn: func(_ *octollm.Request) int {
+				calls.Add(1)
+				return 0
+			},
 		}}
 		lb, err := NewShardKeyConcurrency(
 			items,
 			time.Second, 3, time.Minute, nil, rd, "pfx3-zero",
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
-			},
-			func(_ *octollm.Request, _ string) int {
-				calls.Add(1)
-				return 0
 			},
 		)
 		require.NoError(t, err)
@@ -440,20 +433,20 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 
 	t.Run("fn return zero skips backend two candidates", func(t *testing.T) {
 		items := []BackendItem{
-			{Name: "blocked", Weight: 100, Engine: next},
-			{Name: "open", Weight: 50, Engine: next},
+			{
+				Name: "blocked", Weight: 100, Engine: next,
+				MaxConcurrencyFn: func(_ *octollm.Request) int { return 0 },
+			},
+			{
+				Name: "open", Weight: 50, Engine: next,
+				MaxConcurrencyFn: func(_ *octollm.Request) int { return 50 },
+			},
 		}
 		lb, err := NewShardKeyConcurrency(
 			items,
 			time.Second, 3, time.Minute, nil, rd, "pfx3-two",
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
-			},
-			func(_ *octollm.Request, backendName string) int {
-				if backendName == "blocked" {
-					return 0
-				}
-				return 50
 			},
 		)
 		require.NoError(t, err)
@@ -470,8 +463,14 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 
 	t.Run("fn return zero skips prioritized shard-key backend", func(t *testing.T) {
 		items := []BackendItem{
-			{Name: "blocked", Weight: 100, Engine: next},
-			{Name: "open", Weight: 50, Engine: next},
+			{
+				Name: "blocked", Weight: 100, Engine: next,
+				MaxConcurrencyFn: func(_ *octollm.Request) int { return 0 },
+			},
+			{
+				Name: "open", Weight: 50, Engine: next,
+				MaxConcurrencyFn: func(_ *octollm.Request) int { return 50 },
+			},
 		}
 		const keyPrefix = "pfx-prioritized-zero"
 		const shardKey = "sk"
@@ -488,12 +487,6 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			rd, keyPrefix,
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
-			},
-			func(_ *octollm.Request, backendName string) int {
-				if backendName == "blocked" {
-					return 0
-				}
-				return 50
 			},
 		)
 		require.NoError(t, err)
@@ -513,15 +506,15 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			Name:   "dyn",
 			Weight: 0,
 			Engine: next,
+			MaxConcurrencyFn: func(_ *octollm.Request) int {
+				return 10
+			},
 		}}
 		lb, err := NewShardKeyConcurrency(
 			items,
 			time.Second, 3, time.Minute, nil, rd, "pfx-w0",
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
-			},
-			func(_ *octollm.Request, _ string) int {
-				return 10
 			},
 		)
 		require.NoError(t, err)
@@ -533,9 +526,10 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 
 	t.Run("weight zero fn returns zero cannot select", func(t *testing.T) {
 		items := []BackendItem{{
-			Name:   "bad",
-			Weight: 0,
-			Engine: next,
+			Name:             "bad",
+			Weight:           0,
+			Engine:           next,
+			MaxConcurrencyFn: func(_ *octollm.Request) int { return 0 },
 		}}
 		lb, err := NewShardKeyConcurrency(
 			items,
@@ -543,7 +537,6 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
-			func(_ *octollm.Request, _ string) int { return 0 },
 		)
 		require.NoError(t, err)
 		_, err = lb.Process(testhelper.CreateTestRequest())
@@ -562,7 +555,6 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
-			nil,
 		)
 		require.Error(t, err)
 	})

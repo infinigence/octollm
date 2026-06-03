@@ -17,6 +17,8 @@ type BackendItem struct {
 	Name   string // optional
 	Weight int
 	Engine octollm.Engine
+	// MaxConcurrencyFn is optional; used by ShardKeyConcurrency as ratio denominator (nil uses Weight).
+	MaxConcurrencyFn ShardMaxConcurrencyFn
 }
 
 type wrrBackend struct {
