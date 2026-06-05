@@ -244,6 +244,10 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 
 			return resp, nil
 		}
+		if isNotRetriableError(err) {
+			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] error is not retriable, return without retry: %v", err))
+			return resp, err
+		}
 		excludeNames[n] = true
 		retryCount++
 		if req.Context().Err() != nil {

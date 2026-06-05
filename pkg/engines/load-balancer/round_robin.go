@@ -1,12 +1,15 @@
 package loadbalancer
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/http"
 	"sync"
 	"time"
 
+	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
@@ -52,6 +55,16 @@ func GetSelectedBackendName(req *octollm.Request) (string, bool) {
 	}
 	name, ok := val.(string)
 	return name, ok
+}
+
+func isNotRetriableError(err error) bool {
+	var upstreamErr *errutils.UpstreamRespError
+	if errors.As(err, &upstreamErr) {
+		if upstreamErr.StatusCode == http.StatusRequestEntityTooLarge {
+			return true
+		}
+	}
+	return false
 }
 
 func NewWeightedRoundRobin(backends []BackendItem, retryTimeout time.Duration, retryMaxCount int) (*WeightedRoundRobin, error) {
@@ -103,6 +116,10 @@ func (l *WeightedRoundRobin) Process(req *octollm.Request) (*octollm.Response, e
 		resp, err := eng.Process(req)
 		if err == nil {
 			return resp, nil
+		}
+		if isNotRetriableError(err) {
+			slog.WarnContext(req.Context(), fmt.Sprintf("[WRR load balancer] error is not retriable, return without retry: %v", err))
+			return resp, err
 		}
 		retryCount++
 		if req.Context().Err() != nil {

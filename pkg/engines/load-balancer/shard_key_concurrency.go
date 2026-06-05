@@ -287,6 +287,10 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			}
 			return resp, nil
 		}
+		if isNotRetriableError(err) {
+			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] error is not retriable, return without retry: %v", err))
+			return resp, err
+		}
 		excludeNames[n] = true
 		retryCount++
 		if req.Context().Err() != nil {

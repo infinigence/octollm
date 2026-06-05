@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/infinigence/octollm/pkg/engines/limiter"
 	ruleengine "github.com/infinigence/octollm/pkg/engines/rule-engine"
+	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/exprenv"
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/octollm"
@@ -212,6 +214,40 @@ func TestShardKeyConcurrency_Failover(t *testing.T) {
 	_, err = lb.Process(req)
 	assert.Error(t, err)
 	assert.Equal(t, 3, retryCount, "expected to retry on all 3 backends before failing")
+}
+
+func TestShardKeyConcurrency_NotRetriableError(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	callCount := 0
+	// A 413 upstream error is not retriable: Process must return after a single
+	// engine call instead of failing over to the other backends.
+	nextEngine := octollm.EngineFunc(func(req *octollm.Request) (*octollm.Response, error) {
+		callCount++
+		return nil, &errutils.UpstreamRespError{StatusCode: http.StatusRequestEntityTooLarge}
+	})
+
+	items := []BackendItem{
+		{Name: "svc1", Weight: 100, Engine: nextEngine},
+		{Name: "svc2", Weight: 100, Engine: nextEngine},
+		{Name: "svc3", Weight: 100, Engine: nextEngine},
+	}
+
+	lb, err := NewShardKeyConcurrency(
+		items,
+		time.Second, 3, time.Minute, nil, rd, "",
+		func(req *octollm.Request, backendName string) string {
+			return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
+		},
+	)
+	require.NoError(t, err)
+
+	_, err = lb.Process(testhelper.CreateTestRequest())
+	assert.Error(t, err)
+	assert.Equal(t, 1, callCount, "expected no retry on a non-retriable error")
 }
 
 func TestShardKeyConcurrency_ShardKey(t *testing.T) {
