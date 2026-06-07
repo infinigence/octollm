@@ -40,8 +40,9 @@ func TestCollectFromOpenAIMessageContent(t *testing.T) {
 			t.Fatalf("len = %d, want %d", len(got), len(want))
 		}
 		for i := range want {
-			if got[i].kind != imageReplaceJobOpenAI || got[i].openai != want[i] {
-				t.Errorf("[%d] got %#v, want %#v", i, got[i].openai, want[i])
+			o, ok := got[i].(openaiImageReplaceJob)
+			if !ok || o != want[i] {
+				t.Errorf("[%d] got %#v, want %#v", i, got[i], want[i])
 			}
 		}
 	})
@@ -59,7 +60,10 @@ func TestCollectFromOpenAIMessageContent(t *testing.T) {
 		if len(got) != 1 {
 			t.Fatalf("got %v", got)
 		}
-		o := got[0].openai
+		o, ok := got[0].(openaiImageReplaceJob)
+		if !ok {
+			t.Fatalf("got %T", got[0])
+		}
 		if o.URL != "https://u.example/x.png" || o.PartIndex != 1 || o.IsObjectForm || o.MsgIndex != 1 || o.Field != "content" {
 			t.Fatalf("got %#v", o)
 		}
@@ -142,17 +146,19 @@ func TestCollectClaudeImageReplaceJobs_topLevelAndToolResult(t *testing.T) {
 	if len(jobs) != 2 {
 		t.Fatalf("len(jobs) = %d, want 2: %#v", len(jobs), jobs)
 	}
-	if jobs[0].kind != imageReplaceJobClaude || jobs[0].claude.URL != "https://a.example/top.png" {
+	job0, ok := jobs[0].(claudeImageReplaceJob)
+	if !ok || job0.URL != "https://a.example/top.png" {
 		t.Fatalf("job0 %#v", jobs[0])
 	}
-	if jobs[1].kind != imageReplaceJobClaude || jobs[1].claude.URL != "https://b.example/in-tool.png" {
+	job1, ok := jobs[1].(claudeImageReplaceJob)
+	if !ok || job1.URL != "https://b.example/in-tool.png" {
 		t.Fatalf("job1 %#v", jobs[1])
 	}
-	topPath := jobs[0].claude.jsonParserPathToSource()
+	topPath := job0.jsonParserPathToSource()
 	if topPath[3] != "[1]" || topPath[len(topPath)-1] != "source" {
 		t.Fatalf("top path: %v", topPath)
 	}
-	nestedPath := jobs[1].claude.jsonParserPathToSource()
+	nestedPath := job1.jsonParserPathToSource()
 	if nestedPath[3] != "[2]" || nestedPath[5] != "[1]" || nestedPath[len(nestedPath)-1] != "source" {
 		t.Fatalf("nested path: %v", nestedPath)
 	}

@@ -3,7 +3,6 @@ package image_url_fetch
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,7 +24,7 @@ import (
 var ErrImageURLFetch = errors.New("image url fetch engine")
 
 // ImageURLFetchEngine downloads remote images and inlines them in the raw JSON body via jsonparser.Set.
-// OpenAI Chat Completions: image_url fields become data:...;base64,... strings.
+// OpenAI Chat Completions: image_url fields become object-form data:...;base64,... URLs.
 // Anthropic Messages: image source.type "url" is replaced by the official base64 source object (type, media_type, data).
 // Array indices in paths must use bracket syntax ("[0]", "[1]"); see jsonparser.searchKeys.
 // URL discovery uses collectOpenAIImageReplaceJobs / collectClaudeImageReplaceJobs (extract.go).
@@ -148,20 +147,6 @@ func (e *ImageURLFetchEngine) Store() cache.Store {
 	return e.store
 }
 
-type imageReplaceJobKind uint8
-
-const (
-	imageReplaceJobOpenAI imageReplaceJobKind = iota
-	imageReplaceJobClaude
-)
-
-// imageReplaceJob describes one jsonparser.Set replacement. Use kind; OpenAI data is in openai, Claude in claude.
-type imageReplaceJob struct {
-	kind   imageReplaceJobKind
-	openai openaiImageReplaceJob
-	claude claudeImageReplaceJob
-}
-
 // extractImageReplaceJobsFromBody inspects the unified body like moderator.OpenAIAdapter.ExtractTextFromBody:
 // it uses Parsed() and switches on concrete types; *openai.ChatCompletionRequest and *anthropic.ClaudeMessagesRequest yield image jobs.
 // A nil body or unsupported parsed type is logged and yields (nil, nil) so the engine passes the request through.
@@ -189,20 +174,6 @@ func extractImageReplaceJobsFromBody(ctx context.Context, body *octollm.UnifiedB
 }
 
 func (e *ImageURLFetchEngine) Process(req *octollm.Request) (*octollm.Response, error) {
-	if req != nil && req.Body != nil {
-		body, err := req.Body.Bytes()
-		if err != nil {
-			return nil, fmt.Errorf("%w: get request body bytes error: %w", ErrImageURLFetch, err)
-		}
-		newBody, modified, nerr := normalizeRawOpenAIImageURLStrings(body)
-		if nerr != nil {
-			return nil, nerr
-		}
-		if modified {
-			req.Body.SetBytes(newBody)
-		}
-	}
-
 	jobs, err := extractImageReplaceJobsFromBody(req.Context(), req.Body)
 	if err != nil {
 		return nil, err
@@ -217,14 +188,34 @@ func (e *ImageURLFetchEngine) Process(req *octollm.Request) (*octollm.Response, 
 	}
 
 	unique := make(map[string]struct{})
+	out := body
+	modified := false
 	for _, j := range jobs {
-		u := jobRemoteURL(j)
-		if u == "" || strings.HasPrefix(strings.ToLower(u), "data:") {
+		u := j.remoteURL()
+		if u == "" {
+			continue
+		}
+		if isDataURL(u) {
+			path, encoded, ok, nerr := j.normalizeExistingURL()
+			if nerr != nil {
+				return nil, fmt.Errorf("%w: marshal existing image URL: %w", ErrImageURLFetch, nerr)
+			}
+			if ok {
+				var setErr error
+				out, setErr = jsonparser.Set(out, encoded, path...)
+				if setErr != nil {
+					return nil, fmt.Errorf("%w: json normalize at %v: %w", ErrImageURLFetch, path, setErr)
+				}
+				modified = true
+			}
 			continue
 		}
 		unique[u] = struct{}{}
 	}
 	if len(unique) == 0 {
+		if modified {
+			req.Body.SetBytes(out)
+		}
 		return e.Next.Process(req)
 	}
 
@@ -269,36 +260,16 @@ func (e *ImageURLFetchEngine) Process(req *octollm.Request) (*octollm.Response, 
 		e.metrics.ObserveRequestSumBytes(sumDecoded)
 	}
 
-	out := body
 	for _, job := range jobs {
-		u := jobRemoteURL(job)
-		if u == "" || strings.HasPrefix(strings.ToLower(u), "data:") {
+		u := job.remoteURL()
+		if u == "" || isDataURL(u) {
 			continue
 		}
 		fr := result[u]
 		if fr.mediaType == "" && fr.rawBase64 == "" {
 			continue
 		}
-		var encoded []byte
-		var path []string
-		var mErr error
-		switch job.kind {
-		case imageReplaceJobOpenAI:
-			dataURL := fmt.Sprintf("data:%s;base64,%s", fr.mediaType, fr.rawBase64)
-			encoded, mErr = json.Marshal(dataURL)
-			path = job.openai.jsonParserPath()
-		case imageReplaceJobClaude:
-			// https://docs.anthropic.com/en/api/messages — image with base64 source
-			src := map[string]string{
-				"type":       "base64",
-				"media_type": fr.mediaType,
-				"data":       fr.rawBase64,
-			}
-			encoded, mErr = json.Marshal(src)
-			path = job.claude.jsonParserPathToSource()
-		default:
-			continue
-		}
+		path, encoded, mErr := job.inlineReplacement(fr.mediaType, fr.rawBase64)
 		if mErr != nil {
 			return nil, fmt.Errorf("%w: marshal inline payload: %w", ErrImageURLFetch, mErr)
 		}
@@ -327,15 +298,8 @@ type fetchImageResult struct {
 	err          error
 }
 
-func jobRemoteURL(j imageReplaceJob) string {
-	switch j.kind {
-	case imageReplaceJobClaude:
-		return j.claude.remoteURL()
-	case imageReplaceJobOpenAI:
-		return j.openai.remoteURL()
-	default:
-		return ""
-	}
+func isDataURL(u string) bool {
+	return strings.HasPrefix(strings.ToLower(u), "data:")
 }
 
 func (e *ImageURLFetchEngine) fetchRemoteImage(ctx context.Context, url string) (mediaType string, rawBase64 string, decodedBytes int64, err error) {
