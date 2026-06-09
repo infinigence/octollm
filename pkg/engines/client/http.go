@@ -41,7 +41,7 @@ const (
 
 var ErrStreamScan = errors.New("scanner error reading stream body")
 
-var sensitiveHeaders = []string{"Authorization", "X-Api-Key", "X-Auth-Token", "Api-Key"}
+var sensitiveHeaders = []string{"Authorization", "X-Api-Key", "X-Auth-Token", "Api-Key", "X-Goog-Api-Key"}
 
 func redactSensitiveHeaders(h http.Header) {
 	for _, key := range sensitiveHeaders {
