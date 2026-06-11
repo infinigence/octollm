@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -20,6 +21,7 @@ type capturedRequest struct {
 	header     http.Header
 	bodyBytes  []byte
 	bodyGunzip []byte // set when Content-Encoding is gzip
+	bodyUnzstd []byte // set when Content-Encoding is zstd
 }
 
 func newEchoServer(t *testing.T, captured *capturedRequest) *httptest.Server {
@@ -36,6 +38,15 @@ func newEchoServer(t *testing.T, captured *capturedRequest) *httptest.Server {
 			uncompressed, err := io.ReadAll(gr)
 			require.NoError(t, err)
 			captured.bodyGunzip = uncompressed
+		}
+
+		if r.Header.Get("Content-Encoding") == "zstd" {
+			dec, err := zstd.NewReader(bytes.NewReader(body))
+			require.NoError(t, err)
+			uncompressed, err := io.ReadAll(dec)
+			require.NoError(t, err)
+			captured.bodyUnzstd = uncompressed
+			dec.Close()
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -66,5 +77,30 @@ func TestGeneralEndpoint_RequestCompression_Gzip(t *testing.T) {
 
 	assert.Equal(t, "gzip", captured.header.Get("Content-Encoding"))
 	assert.JSONEq(t, string(originalBody), string(captured.bodyGunzip),
+		"decompressed body should match original")
+}
+
+func TestGeneralEndpoint_RequestCompression_Zstd(t *testing.T) {
+	var captured capturedRequest
+	srv := newEchoServer(t, &captured)
+	defer srv.Close()
+
+	endpoint := NewGeneralEndpoint(GeneralEndpointConfig{
+		BaseURL: srv.URL,
+		Endpoints: map[octollm.APIFormat]string{
+			octollm.APIFormatChatCompletions: "/v1/chat/completions",
+		},
+		RequestCompression: "zstd",
+	})
+
+	req := testhelper.CreateTestRequest()
+	originalBody, err := req.Body.Bytes()
+	require.NoError(t, err)
+
+	_, err = endpoint.Process(req)
+	require.NoError(t, err)
+
+	assert.Equal(t, "zstd", captured.header.Get("Content-Encoding"))
+	assert.JSONEq(t, string(originalBody), string(captured.bodyUnzstd),
 		"decompressed body should match original")
 }

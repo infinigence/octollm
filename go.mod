@@ -16,6 +16,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/uuid v1.6.0
+	github.com/klauspost/compress v1.18.6
 	github.com/mattn/go-isatty v0.0.20
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.17.2

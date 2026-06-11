@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/klauspost/compress/zstd"
+
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
@@ -35,7 +37,7 @@ type GeneralEndpointConfig struct {
 	GoogleAPIKeyAsBearer bool
 
 	// RequestCompression specifies the compression algorithm for outbound request bodies.
-	// Currently only "gzip" is supported.
+	// Supported values: "gzip", "zstd".
 	RequestCompression string
 }
 
@@ -147,7 +149,8 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 		})
 	}
 
-	if conf.RequestCompression == "gzip" {
+	switch conf.RequestCompression {
+	case "gzip":
 		httpEndpoint = httpEndpoint.WithRequestModifier(func(req *octollm.Request, httpReq *http.Request) *http.Request {
 			bodyBytes, err := req.Body.Bytes()
 			if err != nil {
@@ -162,6 +165,27 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 			httpReq.Body = io.NopCloser(bytes.NewReader(compressed))
 			httpReq.ContentLength = int64(len(compressed))
 			httpReq.Header.Set("Content-Encoding", "gzip")
+			return httpReq
+		})
+	case "zstd":
+		httpEndpoint = httpEndpoint.WithRequestModifier(func(req *octollm.Request, httpReq *http.Request) *http.Request {
+			bodyBytes, err := req.Body.Bytes()
+			if err != nil {
+				slog.WarnContext(req.Context(), fmt.Sprintf("[general-endpoint] failed to read body for zstd compression: %v", err))
+				return httpReq
+			}
+			var buf bytes.Buffer
+			enc, err := zstd.NewWriter(&buf)
+			if err != nil {
+				slog.WarnContext(req.Context(), fmt.Sprintf("[general-endpoint] failed to create zstd writer: %v", err))
+				return httpReq
+			}
+			enc.Write(bodyBytes)
+			enc.Close()
+			compressed := buf.Bytes()
+			httpReq.Body = io.NopCloser(bytes.NewReader(compressed))
+			httpReq.ContentLength = int64(len(compressed))
+			httpReq.Header.Set("Content-Encoding", "zstd")
 			return httpReq
 		})
 	}
