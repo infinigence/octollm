@@ -15,7 +15,7 @@ import (
 )
 
 // RatesFunc resolves per-request tier limits for the limiter Lua scripts.
-// Return the full tier array used as-is by acquire Lua (same shape as concurrencyRates, e.g. from
+// Return the full tier array used as-is by acquire Lua (same shape as the output of
 // buildTotalPlusPerPriorityLimits). Any non-empty slice applies to that request only.
 // nil or empty slice means pass-through for that request (no acquire).
 // Errors fail the request.
@@ -24,7 +24,6 @@ type RatesFunc func(req *octollm.Request) ([]int, error)
 type ConcurrencyColorLimiterEngine struct {
 	redisClient         *redis.Client
 	key                 string
-	concurrencyRates    []int
 	ratesFunc           RatesFunc
 	timeout             time.Duration
 	nameSpace           string
@@ -57,30 +56,28 @@ var _ octollm.Engine = (*ConcurrencyColorLimiterEngine)(nil)
 //
 // Working principle (unchanged Lua): priority = len(rates)-1-tierIdx; lower priorities reserve slots in tier 0.
 func NewConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, totalConcurrency int, perPriorityRates []int, timeout time.Duration, nameSpace string, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
-	return newConcurrencyColorLimiterEngine(redisClient, key, totalConcurrency, perPriorityRates, timeout, nameSpace, nil, next)
-}
-
-// NewConcurrencyColorLimiterEngineWithRatesFunc creates a limiter that resolves tier limits per request via ratesFunc.
-// Static totalConcurrency/perPriorityRates are not used; tiers come only from ratesFunc at request time.
-// Non-empty return applies to that request; nil or empty return pass-through that request (no acquire).
-// timeout must be positive when limits are enforced for a given request.
-func NewConcurrencyColorLimiterEngineWithRatesFunc(redisClient *redis.Client, key string, timeout time.Duration, nameSpace string, ratesFunc RatesFunc, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
-	if ratesFunc == nil {
-		return nil, fmt.Errorf("ratesFunc must be provided")
-	}
-	return newConcurrencyColorLimiterEngine(redisClient, key, 0, nil, timeout, nameSpace, ratesFunc, next)
-}
-
-func newConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, totalConcurrency int, perPriorityRates []int, timeout time.Duration, nameSpace string, ratesFunc RatesFunc, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
 	rates, err := buildTotalPlusPerPriorityLimits(totalConcurrency, perPriorityRates)
 	if err != nil {
 		return nil, err
 	}
-	if len(rates) == 0 && ratesFunc == nil {
+	if len(rates) == 0 {
+		return NewConcurrencyColorLimiterEngineWithRatesFunc(redisClient, key, timeout, nameSpace, nil, next)
+	}
+	return NewConcurrencyColorLimiterEngineWithRatesFunc(redisClient, key, timeout, nameSpace, func(req *octollm.Request) ([]int, error) {
+		return rates, nil
+	}, next)
+}
+
+// NewConcurrencyColorLimiterEngineWithRatesFunc creates a limiter that resolves tier limits per request via ratesFunc.
+// Static totalConcurrency/perPriorityRates are not used; tiers come only from ratesFunc at request time.
+// A nil ratesFunc constructs a disabled pass-through limiter.
+// Non-empty return applies to that request; nil or empty return pass-through that request (no acquire).
+// timeout must be positive when limits are enforced for a given request.
+func NewConcurrencyColorLimiterEngineWithRatesFunc(redisClient *redis.Client, key string, timeout time.Duration, nameSpace string, ratesFunc RatesFunc, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
+	if ratesFunc == nil {
 		return &ConcurrencyColorLimiterEngine{
 			redisClient:         redisClient,
 			key:                 key,
-			concurrencyRates:    nil,
 			ratesFunc:           nil,
 			timeout:             timeout,
 			nameSpace:           nameSpace,
@@ -104,7 +101,6 @@ func newConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, tot
 	return &ConcurrencyColorLimiterEngine{
 		redisClient:         redisClient,
 		key:                 key,
-		concurrencyRates:    rates,
 		ratesFunc:           ratesFunc,
 		timeout:             timeout,
 		nameSpace:           nameSpace,
@@ -118,22 +114,14 @@ func newConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, tot
 	}, nil
 }
 
-func (e *ConcurrencyColorLimiterEngine) resolveRates(req *octollm.Request) ([]int, error) {
-	if e.ratesFunc != nil {
-		got, err := e.ratesFunc(req)
-		if err != nil {
-			return nil, err
-		}
-		return got, nil
-	}
-	return e.concurrencyRates, nil
-}
-
 // allow attempts to allow the request to pass through, performing rate limiting check.
 // When the limiter is disabled (pass-through), returns priority 0 (recorded as allow at priority 0).
 func (e *ConcurrencyColorLimiterEngine) allow(req *octollm.Request) (done func(), priority int, err error) {
 	ctx := req.Context()
-	rates, err := e.resolveRates(req)
+	if e.ratesFunc == nil {
+		return func() {}, 0, nil
+	}
+	rates, err := e.ratesFunc(req)
 	if err != nil {
 		return func() {}, 0, err
 	}

@@ -86,6 +86,15 @@ func newConcurrencyColorLimiterTestRequest(t *testing.T, ns string, priority *in
 	return r.WithContext(ctx)
 }
 
+func assertConcurrencyColorLimiterRates(t *testing.T, e *ConcurrencyColorLimiterEngine, want []int) {
+	t.Helper()
+
+	assert.NotNil(t, e.ratesFunc)
+	rates, err := e.ratesFunc(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
+	assert.NoError(t, err)
+	assert.Equal(t, want, rates)
+}
+
 func TestBuildTotalPlusPerPriorityLimits(t *testing.T) {
 	got, err := buildTotalPlusPerPriorityLimits(80, []int{70, 50, 30})
 	assert.NoError(t, err)
@@ -132,7 +141,7 @@ func TestNewConcurrencyColorLimiterEngine_ValidationAndFiltering(t *testing.T) {
 
 	e, err := NewConcurrencyColorLimiterEngine(nil, "k", 0, nil, time.Second, "ns", next)
 	assert.NoError(t, err)
-	assert.Nil(t, e.concurrencyRates)
+	assert.Nil(t, e.ratesFunc)
 	assert.Nil(t, e.acquireSingleScript)
 	assert.Nil(t, e.acquireDualScript)
 
@@ -141,11 +150,11 @@ func TestNewConcurrencyColorLimiterEngine_ValidationAndFiltering(t *testing.T) {
 
 	e, err = NewConcurrencyColorLimiterEngine(client, "k", 10, []int{10}, time.Second, "ns", next)
 	assert.NoError(t, err)
-	assert.Equal(t, []int{10, 10}, e.concurrencyRates)
+	assertConcurrencyColorLimiterRates(t, e, []int{10, 10})
 
 	e, err = NewConcurrencyColorLimiterEngine(client, "k", 10, []int{5, 6, 1}, time.Second, "ns", next)
 	assert.NoError(t, err)
-	assert.Equal(t, []int{10, 5, 6, 1}, e.concurrencyRates)
+	assertConcurrencyColorLimiterRates(t, e, []int{10, 5, 6, 1})
 }
 
 func TestConcurrencyColorLimiter_PassThroughWhenDisabled(t *testing.T) {
@@ -162,6 +171,18 @@ func TestConcurrencyColorLimiter_PassThroughWhenDisabled(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.Equal(t, 1, next.callCount)
 	assertLimiterAllow(t, req, 0)
+
+	nextFromRatesFunc := &nextStubEngine{resp: &octollm.Response{StatusCode: 200}}
+	disabledFromRatesFunc, err := NewConcurrencyColorLimiterEngineWithRatesFunc(client, "k2", time.Second, "ns", nil, nextFromRatesFunc)
+	assert.NoError(t, err)
+	assert.Nil(t, disabledFromRatesFunc.ratesFunc)
+	assert.Nil(t, disabledFromRatesFunc.acquireSingleScript)
+	assert.Nil(t, disabledFromRatesFunc.acquireDualScript)
+
+	resp, err = disabledFromRatesFunc.Process(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, 1, nextFromRatesFunc.callCount)
 }
 
 func TestConcurrencyColorLimiter_PriorityMappingAndReservation(t *testing.T) {
@@ -512,7 +533,7 @@ func TestConcurrencyColorLimiter_RatesFuncUsesReturnedTiersAsIs(t *testing.T) {
 	assert.NoError(t, resp.Body.Close())
 }
 
-func TestConcurrencyColorLimiter_concurrencyRatesImmutableAfterInit(t *testing.T) {
+func TestConcurrencyColorLimiter_StaticRatesImmutableAfterInit(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
@@ -520,7 +541,7 @@ func TestConcurrencyColorLimiter_concurrencyRatesImmutableAfterInit(t *testing.T
 	per := []int{5, 6}
 	e, err := NewConcurrencyColorLimiterEngine(client, "k", 10, per, time.Second, "ns", &nextStubEngine{})
 	assert.NoError(t, err)
-	assert.Equal(t, []int{10, 5, 6}, e.concurrencyRates)
+	assertConcurrencyColorLimiterRates(t, e, []int{10, 5, 6})
 	per[0] = 999
-	assert.Equal(t, 5, e.concurrencyRates[1])
+	assertConcurrencyColorLimiterRates(t, e, []int{10, 5, 6})
 }

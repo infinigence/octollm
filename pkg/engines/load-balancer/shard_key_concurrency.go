@@ -15,14 +15,15 @@ import (
 
 // ShardMaxConcurrencyFn returns the capacity denominator for concurrency ratio (count/denom).
 // When non-nil, each value—including 0—is used directly (no fallback to BackendItem.Weight).
-// Denominators <= 0 exclude that backend from ratio-based selection. When fn is nil, Weight is used.
+// Denominators <= 0 exclude that backend from ratio-based selection. When a BackendItem has no
+// function, NewShardKeyConcurrency wraps its Weight as a static denominator.
 type ShardMaxConcurrencyFn func(req *octollm.Request) int
 
 type concurrencyBackend struct {
-	name           string
-	engine         octollm.Engine
-	maxConcurrency int
-	// maxConcurrencyFn optionally supplies ratio denominator per request; nil uses maxConcurrency (Weight).
+	name   string
+	engine octollm.Engine
+	// maxConcurrencyFn supplies the ratio denominator per request. It is always set by construction:
+	// dynamic backends use BackendItem.MaxConcurrencyFn, static backends use a closure over Weight.
 	maxConcurrencyFn ShardMaxConcurrencyFn
 }
 
@@ -53,7 +54,8 @@ var _ octollm.Engine = (*ShardKeyConcurrency)(nil)
 // (when shardKeyListGetter is non-nil) or by lowest concurrency ratio (when nil).
 //
 // Parameters:
-//   - backends: backend items; items with Weight<=0 are skipped unless MaxConcurrencyFn is non-nil
+//   - backends: backend items; items with Weight<=0 are skipped unless MaxConcurrencyFn is non-nil.
+//     Static Weight values are converted into fixed MaxConcurrencyFn closures.
 //   - retryTimeout: maximum time to retry failed requests
 //   - retryMaxCount: maximum number of retries
 //   - shardKeyTTL: expiration time for shard key -> backend mapping in Redis
@@ -80,11 +82,18 @@ func NewShardKeyConcurrency(
 			slog.Warn(fmt.Sprintf("[ShardKey Concurrency load balancer] backend %s has weight<=0 and no MaxConcurrencyFn, skipping", b.Name))
 			continue
 		}
+		maxConcurrencyFn := b.MaxConcurrencyFn
+		if maxConcurrencyFn == nil {
+			static := b.Weight
+			maxConcurrencyFn = func(req *octollm.Request) int {
+				return static
+			}
+		}
+
 		cb = append(cb, &concurrencyBackend{
 			name:             b.Name,
 			engine:           b.Engine,
-			maxConcurrency:   b.Weight,
-			maxConcurrencyFn: b.MaxConcurrencyFn,
+			maxConcurrencyFn: maxConcurrencyFn,
 		})
 	}
 
@@ -181,13 +190,6 @@ func (l *ShardKeyConcurrency) resolvePrioritizedBackends(
 	return prioritized
 }
 
-func (b *concurrencyBackend) effectiveMaxConcurrency(req *octollm.Request) int {
-	if b.maxConcurrencyFn != nil {
-		return b.maxConcurrencyFn(req)
-	}
-	return b.maxConcurrency
-}
-
 // selectByConcurrency picks the backend with the lowest currentConcurrency/maxConcurrency ratio
 // using Redis ZCard. Backends in excludeNames are skipped.
 // Falls back to uniform random selection among backends with positive effective capacity if Redis Exec fails.
@@ -214,7 +216,7 @@ func (l *ShardKeyConcurrency) selectByConcurrency(req *octollm.Request, excludeN
 		slog.WarnContext(ctx, fmt.Sprintf("[ShardKey Concurrency load balancer] failed to get concurrency counts from Redis: %v", err))
 		usable := candidates[:0]
 		for _, b := range candidates {
-			if b.effectiveMaxConcurrency(req) > 0 {
+			if b.maxConcurrencyFn(req) > 0 {
 				usable = append(usable, b)
 			}
 		}
@@ -232,7 +234,7 @@ func (l *ShardKeyConcurrency) selectByConcurrency(req *octollm.Request, excludeN
 		if err != nil {
 			continue
 		}
-		denom := b.effectiveMaxConcurrency(req)
+		denom := b.maxConcurrencyFn(req)
 		if denom <= 0 {
 			continue
 		}
@@ -270,7 +272,7 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 		if prioritizedIndex < len(prioritized) {
 			b := prioritized[prioritizedIndex]
 			prioritizedIndex++
-			if b.effectiveMaxConcurrency(req) <= 0 {
+			if b.maxConcurrencyFn(req) <= 0 {
 				slog.InfoContext(req.Context(),
 					fmt.Sprintf("[ShardKey Concurrency load balancer] skip prioritized backend with no effective capacity: %s (index %d/%d), shardKeys: %v", b.name, prioritizedIndex, len(prioritized), shardKeyList),
 					slog.String("backend_name", b.name),
