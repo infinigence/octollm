@@ -19,10 +19,10 @@ type ClaudeMessagesResponse struct {
 // Usage represents token usage information
 type Usage struct {
 	// Total input tokens
-	InputTokens int64 `json:"input_tokens"`
+	InputTokens *int64 `json:"input_tokens,omitempty"`
 
 	// Total output tokens
-	OutputTokens int64 `json:"output_tokens"`
+	OutputTokens *int64 `json:"output_tokens,omitempty"`
 
 	// Tokens from cache creation (prompt caching)
 	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens,omitempty"`

@@ -345,9 +345,11 @@ func (e *ChatCompletionToClaudeMessages) convertNonStreamResponseBody(ctx contex
 		if openaiResp.Usage.PromptTokensDetails != nil && openaiResp.Usage.PromptTokensDetails.CachedTokens > 0 {
 			cached = int64(openaiResp.Usage.PromptTokensDetails.CachedTokens)
 		}
+		inputTokens := int64(openaiResp.Usage.PromptTokens) - cached
+		outputTokens := int64(openaiResp.Usage.CompletionTokens)
 		claudeResp.Usage = &anthropic.Usage{
-			InputTokens:  int64(openaiResp.Usage.PromptTokens) - cached,
-			OutputTokens: int64(openaiResp.Usage.CompletionTokens),
+			InputTokens:  &inputTokens,
+			OutputTokens: &outputTokens,
 		}
 		if cached > 0 {
 			claudeResp.Usage.CacheReadInputTokens = &cached
@@ -485,9 +487,11 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 						if pendingUsage.PromptTokensDetails != nil && pendingUsage.PromptTokensDetails.CachedTokens > 0 {
 							cached = int64(pendingUsage.PromptTokensDetails.CachedTokens)
 						}
+						inputTokens := int64(pendingUsage.PromptTokens) - cached
+						outputTokens := int64(pendingUsage.CompletionTokens)
 						msgDelta.Usage = &anthropic.Usage{
-							InputTokens:  int64(pendingUsage.PromptTokens) - cached,
-							OutputTokens: int64(pendingUsage.CompletionTokens),
+							InputTokens:  &inputTokens,
+							OutputTokens: &outputTokens,
 						}
 						if cached > 0 {
 							msgDelta.Usage.CacheReadInputTokens = &cached
@@ -520,6 +524,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 				msgID = openaiChunk.ID
 				model = openaiChunk.Model
 				// Send message_start
+				zeroInput, zeroOutput := int64(0), int64(0)
 				msgStart := &anthropic.ClaudeMessagesStreamEvent{
 					Type: "message_start",
 					Message: &anthropic.ClaudeMessagesResponse{
@@ -528,7 +533,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 						Role:    "assistant",
 						Model:   model,
 						Content: []*anthropic.MessageContentBlock{},
-						Usage:   &anthropic.Usage{InputTokens: 0, OutputTokens: 0}, // Placeholder
+						Usage:   &anthropic.Usage{InputTokens: &zeroInput, OutputTokens: &zeroOutput}, // Placeholder
 					},
 				}
 				if err := e.sendEvent(ctx, outCh, msgStart); err != nil {

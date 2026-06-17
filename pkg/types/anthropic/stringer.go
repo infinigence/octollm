@@ -177,7 +177,14 @@ func (r ClaudeMessagesResponse) String() string {
 		fmt.Fprintf(w, "  StopSequence: %q\n", *r.StopSequence)
 	}
 	if u := r.Usage; u != nil {
-		fmt.Fprintf(w, "  Usage: input=%d, output=%d", u.InputTokens, u.OutputTokens)
+		var inputTokens, outputTokens int64
+		if u.InputTokens != nil {
+			inputTokens = *u.InputTokens
+		}
+		if u.OutputTokens != nil {
+			outputTokens = *u.OutputTokens
+		}
+		fmt.Fprintf(w, "  Usage: input=%d, output=%d", inputTokens, outputTokens)
 		if u.CacheCreationInputTokens != nil {
 			fmt.Fprintf(w, ", cache_creation=%d", *u.CacheCreationInputTokens)
 		}

@@ -35,14 +35,14 @@ func NewClaudeWithFixedOutput(outputString string, ttft, tpot time.Duration) *Cl
 // Claude uses stop_reason "end_turn" / "max_tokens" instead of "stop" / "length",
 // and Usage uses InputTokens / OutputTokens / CacheReadInputTokens.
 type claudeMockParams struct {
-	rawParams    string
-	httpStatus   int
-	ttft         time.Duration
-	tpot         time.Duration
-	output       string
-	outputRunes  []rune
-	stopReason   string
-	usage        *anthropic.Usage
+	rawParams   string
+	httpStatus  int
+	ttft        time.Duration
+	tpot        time.Duration
+	output      string
+	outputRunes []rune
+	stopReason  string
+	usage       *anthropic.Usage
 }
 
 func (e *ClaudeMockEndpoint) newClaudeMockParams(v *anthropic.ClaudeMessagesRequest) *claudeMockParams {
@@ -155,9 +155,11 @@ func (e *ClaudeMockEndpoint) newClaudeMockParams(v *anthropic.ClaudeMessagesRequ
 		p.outputRunes = output
 	}
 
+	inputTokens := int64(inputLen)
+	outputTokens := int64(len(p.outputRunes))
 	p.usage = &anthropic.Usage{
-		InputTokens:  int64(inputLen),
-		OutputTokens: int64(len(p.outputRunes)),
+		InputTokens:  &inputTokens,
+		OutputTokens: &outputTokens,
 	}
 	if cachedLen > 0 {
 		cached := int64(cachedLen)
@@ -254,7 +256,7 @@ func (e *ClaudeMockEndpoint) claudeStreamResponse(req *octollm.Request, v *anthr
 				Model: v.Model,
 				Usage: &anthropic.Usage{
 					InputTokens:  p.usage.InputTokens,
-					OutputTokens: 0,
+					OutputTokens: int64Ptr(0),
 				},
 			},
 		}
@@ -321,10 +323,10 @@ func (e *ClaudeMockEndpoint) claudeStreamResponse(req *octollm.Request, v *anthr
 
 		deltaStopReason := p.stopReason
 		msgDelta := &anthropic.ClaudeMessagesStreamEvent{
-			Type: "message_delta",
+			Type:     "message_delta",
 			DeltaRaw: fmt.Appendf(nil, `{"stop_reason":%q}`, deltaStopReason),
 			Usage: &anthropic.Usage{
-				OutputTokens: int64(len(p.outputRunes)),
+				OutputTokens: int64Ptr(int64(len(p.outputRunes))),
 			},
 		}
 		select {
@@ -360,3 +362,4 @@ func (e *ClaudeMockEndpoint) claudeStreamResponse(req *octollm.Request, v *anthr
 
 func intPtr(i int) *int       { return &i }
 func strPtr(s string) *string { return &s }
+func int64Ptr(i int64) *int64 { return &i }
