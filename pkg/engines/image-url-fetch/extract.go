@@ -50,12 +50,12 @@ func collectFromOpenAIMessageContent(msgIndex int, field string, c openai.Messag
 			continue
 		}
 		_, isObject := item.ImageURL.(*openai.MessageContentItemImageURL)
-		jobs = append(jobs, openaiImageReplaceJob{
-			MsgIndex:     msgIndex,
-			Field:        field,
-			PartIndex:    i,
-			URL:          u,
-			IsObjectForm: isObject,
+		jobs = append(jobs, &openaiImageReplaceJob{
+			msgIndex:     msgIndex,
+			field:        field,
+			partIndex:    i,
+			url:          u,
+			isObjectForm: isObject,
 		})
 	}
 	return jobs
@@ -95,10 +95,10 @@ func collectFromClaudeContentSlice(msgIndex int, prefix []int, items []anthropic
 				strings.EqualFold(strings.TrimSpace(v.Source.Type), "url") {
 				u := strings.TrimSpace(v.Source.Url)
 				if u != "" && !strings.HasPrefix(strings.ToLower(u), "data:") {
-					jobs = append(jobs, claudeImageReplaceJob{
-						MsgIndex:       msgIndex,
-						ContentIndices: append([]int(nil), pathToBlock...),
-						URL:            u,
+					jobs = append(jobs, &claudeImageReplaceJob{
+						msgIndex:       msgIndex,
+						contentIndices: append([]int(nil), pathToBlock...),
+						url:            u,
 					})
 				}
 			}

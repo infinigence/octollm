@@ -32,16 +32,16 @@ func TestCollectFromOpenAIMessageContent(t *testing.T) {
 			{Type: "image_url", ImageURL: &openai.MessageContentItemImageURL{URL: "https://b.example/2.png", Detail: "high"}},
 		})
 		got := collectFromOpenAIMessageContent(3, "content", c)
-		want := []openaiImageReplaceJob{
-			{MsgIndex: 3, Field: "content", PartIndex: 1, URL: "https://a.example/1.png", IsObjectForm: false},
-			{MsgIndex: 3, Field: "content", PartIndex: 2, URL: "https://b.example/2.png", IsObjectForm: true},
+		want := []*openaiImageReplaceJob{
+			{msgIndex: 3, field: "content", partIndex: 1, url: "https://a.example/1.png", isObjectForm: false},
+			{msgIndex: 3, field: "content", partIndex: 2, url: "https://b.example/2.png", isObjectForm: true},
 		}
 		if len(got) != len(want) {
 			t.Fatalf("len = %d, want %d", len(got), len(want))
 		}
 		for i := range want {
-			o, ok := got[i].(openaiImageReplaceJob)
-			if !ok || o != want[i] {
+			o, ok := got[i].(*openaiImageReplaceJob)
+			if !ok || *o != *want[i] {
 				t.Errorf("[%d] got %#v, want %#v", i, got[i], want[i])
 			}
 		}
@@ -60,11 +60,11 @@ func TestCollectFromOpenAIMessageContent(t *testing.T) {
 		if len(got) != 1 {
 			t.Fatalf("got %v", got)
 		}
-		o, ok := got[0].(openaiImageReplaceJob)
+		o, ok := got[0].(*openaiImageReplaceJob)
 		if !ok {
 			t.Fatalf("got %T", got[0])
 		}
-		if o.URL != "https://u.example/x.png" || o.PartIndex != 1 || o.IsObjectForm || o.MsgIndex != 1 || o.Field != "content" {
+		if o.url != "https://u.example/x.png" || o.partIndex != 1 || o.isObjectForm || o.msgIndex != 1 || o.field != "content" {
 			t.Fatalf("got %#v", o)
 		}
 	})
@@ -77,7 +77,7 @@ func TestCollectFromOpenAIMessageContent_nil(t *testing.T) {
 }
 
 func TestOpenaiImageReplaceJob_JSONParserPath(t *testing.T) {
-	j := openaiImageReplaceJob{MsgIndex: 1, Field: "content", PartIndex: 2, URL: "https://x", IsObjectForm: true}
+	j := &openaiImageReplaceJob{msgIndex: 1, field: "content", partIndex: 2, url: "https://x", isObjectForm: true}
 	got := j.jsonParserPath()
 	want := []string{"messages", "[1]", "content", "[2]", "image_url", "url"}
 	for i := range want {
@@ -85,7 +85,7 @@ func TestOpenaiImageReplaceJob_JSONParserPath(t *testing.T) {
 			t.Fatalf("jsonParserPath() = %v, want %v", got, want)
 		}
 	}
-	j2 := openaiImageReplaceJob{MsgIndex: 0, Field: "reasoning_content", PartIndex: 0, IsObjectForm: false}
+	j2 := &openaiImageReplaceJob{msgIndex: 0, field: "reasoning_content", partIndex: 0, isObjectForm: false}
 	got2 := j2.jsonParserPath()
 	want2 := []string{"messages", "[0]", "reasoning_content", "[0]", "image_url"}
 	for i := range want2 {
@@ -96,7 +96,7 @@ func TestOpenaiImageReplaceJob_JSONParserPath(t *testing.T) {
 }
 
 func TestClaudeImageReplaceJob_JSONParserPath(t *testing.T) {
-	ref := claudeImageReplaceJob{MsgIndex: 1, ContentIndices: []int{2}, URL: "https://x"}
+	ref := &claudeImageReplaceJob{msgIndex: 1, contentIndices: []int{2}, url: "https://x"}
 	got := ref.jsonParserPathToSource()
 	want := []string{"messages", "[1]", "content", "[2]", "source"}
 	if len(got) != len(want) {
@@ -108,7 +108,7 @@ func TestClaudeImageReplaceJob_JSONParserPath(t *testing.T) {
 		}
 	}
 
-	ref2 := claudeImageReplaceJob{MsgIndex: 0, ContentIndices: []int{4, 1}, URL: "https://nested"}
+	ref2 := &claudeImageReplaceJob{msgIndex: 0, contentIndices: []int{4, 1}, url: "https://nested"}
 	got2 := ref2.jsonParserPathToSource()
 	want2 := []string{"messages", "[0]", "content", "[4]", "content", "[1]", "source"}
 	for i := range want2 {
@@ -146,12 +146,12 @@ func TestCollectClaudeImageReplaceJobs_topLevelAndToolResult(t *testing.T) {
 	if len(jobs) != 2 {
 		t.Fatalf("len(jobs) = %d, want 2: %#v", len(jobs), jobs)
 	}
-	job0, ok := jobs[0].(claudeImageReplaceJob)
-	if !ok || job0.URL != "https://a.example/top.png" {
+	job0, ok := jobs[0].(*claudeImageReplaceJob)
+	if !ok || job0.url != "https://a.example/top.png" {
 		t.Fatalf("job0 %#v", jobs[0])
 	}
-	job1, ok := jobs[1].(claudeImageReplaceJob)
-	if !ok || job1.URL != "https://b.example/in-tool.png" {
+	job1, ok := jobs[1].(*claudeImageReplaceJob)
+	if !ok || job1.url != "https://b.example/in-tool.png" {
 		t.Fatalf("job1 %#v", jobs[1])
 	}
 	topPath := job0.jsonParserPathToSource()
