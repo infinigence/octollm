@@ -99,6 +99,7 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
+			1.0,
 		)
 		require.NoError(t, err)
 
@@ -137,6 +138,7 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
+			1.0,
 		)
 		require.NoError(t, err)
 
@@ -146,6 +148,7 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
+			1.0,
 		)
 		require.NoError(t, err)
 
@@ -207,6 +210,7 @@ func TestShardKeyConcurrency_Failover(t *testing.T) {
 		func(req *octollm.Request, backendName string) string {
 			return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 		},
+		1.0,
 	)
 	require.NoError(t, err)
 
@@ -242,6 +246,7 @@ func TestShardKeyConcurrency_NotRetriableError(t *testing.T) {
 		func(req *octollm.Request, backendName string) string {
 			return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 		},
+		1.0,
 	)
 	require.NoError(t, err)
 
@@ -278,6 +283,7 @@ func TestShardKeyConcurrency_ShardKey(t *testing.T) {
 		func(req *octollm.Request, backendName string) string {
 			return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 		},
+		1.0,
 	)
 	require.NoError(t, err)
 
@@ -378,6 +384,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			1.0,
 		)
 		require.NoError(t, err)
 		req := testhelper.CreateTestRequest()
@@ -399,6 +406,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			1.0,
 		)
 		require.NoError(t, err)
 		req := testhelper.CreateTestRequest()
@@ -424,6 +432,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			1.0,
 		)
 		require.NoError(t, err)
 		_, err = lb.Process(testhelper.CreateTestRequest())
@@ -448,6 +457,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			1.0,
 		)
 		require.NoError(t, err)
 		req := testhelper.CreateTestRequest()
@@ -488,6 +498,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			1.0,
 		)
 		require.NoError(t, err)
 		req := testhelper.CreateTestRequest()
@@ -516,6 +527,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			1.0,
 		)
 		require.NoError(t, err)
 		req := testhelper.CreateTestRequest()
@@ -537,6 +549,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			1.0,
 		)
 		require.NoError(t, err)
 		_, err = lb.Process(testhelper.CreateTestRequest())
@@ -555,7 +568,247 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			1.0,
 		)
 		require.Error(t, err)
+	})
+}
+
+// seedConcurrency seeds the concurrency ZSET for a backend with n distinct members, so the load
+// balancer's ZCard reads back exactly n in-flight requests.
+func seedConcurrency(t *testing.T, rd *redis.Client, backendName string, n int) {
+	t.Helper()
+	if n <= 0 {
+		return
+	}
+	members := make([]redis.Z, n)
+	for i := range members {
+		members[i] = redis.Z{Score: float64(i), Member: fmt.Sprintf("m%d", i)}
+	}
+	require.NoError(t, rd.ZAdd(t.Context(), "concurrency:"+backendName+":tier_0", members...).Err())
+}
+
+func TestShardKeyConcurrency_Headroom(t *testing.T) {
+	concurrencyKeyFn := func(_ *octollm.Request, backendName string) string {
+		return "concurrency:" + backendName + ":tier_0"
+	}
+	okEngine := octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+		return &octollm.Response{StatusCode: 200}, nil
+	})
+	selectedBackend := func(t *testing.T, req *octollm.Request) string {
+		t.Helper()
+		mv, ok := req.GetMetadataValue(backendName)
+		require.True(t, ok)
+		name, ok := mv.(string)
+		require.True(t, ok)
+		return name
+	}
+
+	t.Run("cache hit on last-two shard key bypasses headroom ceiling", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		items := []BackendItem{
+			{Name: "hot", Weight: 10, Engine: okEngine},
+			{Name: "cool", Weight: 10, Engine: okEngine},
+		}
+		// hot is fully utilized (10/10 = 1.0 > 0.9) but is resolved from the last shard key.
+		seedConcurrency(t, rd, "hot", 10)
+
+		const keyPrefix = "hr-a"
+		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
+
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute,
+			func(_ *octollm.Request) []string { return []string{"sk0", "sk1", "sk2"} },
+			rd, keyPrefix, concurrencyKeyFn,
+			0.9,
+		)
+		require.NoError(t, err)
+
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, "hot", selectedBackend(t, req), "cache-hit backend should be used even over the ceiling")
+	})
+
+	t.Run("non-cache-hit prioritized backend over ceiling is skipped", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		items := []BackendItem{
+			{Name: "hot", Weight: 10, Engine: okEngine},
+			{Name: "cool", Weight: 10, Engine: okEngine},
+		}
+		seedConcurrency(t, rd, "hot", 10) // 1.0 > 0.9
+		seedConcurrency(t, rd, "cool", 0) // 0.0 < 0.9
+
+		const keyPrefix = "hr-b"
+		// hot is resolved from sk0, the third-from-last shard key -> not a cache hit.
+		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk0", redis.Z{Score: 1, Member: "hot"}).Err())
+
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute,
+			func(_ *octollm.Request) []string { return []string{"sk0", "sk1", "sk2"} },
+			rd, keyPrefix, concurrencyKeyFn,
+			0.9,
+		)
+		require.NoError(t, err)
+
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, "cool", selectedBackend(t, req), "over-ceiling non-cache-hit backend should be skipped for the under-ceiling one")
+	})
+
+	t.Run("full miss with all backends over ceiling returns 429", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		items := []BackendItem{
+			{Name: "a", Weight: 10, Engine: okEngine},
+			{Name: "b", Weight: 10, Engine: okEngine},
+		}
+		seedConcurrency(t, rd, "a", 10)
+		seedConcurrency(t, rd, "b", 10)
+
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute, nil, rd, "hr-c", concurrencyKeyFn,
+			0.9,
+		)
+		require.NoError(t, err)
+
+		resp, err := lb.Process(testhelper.CreateTestRequest())
+		require.ErrorIs(t, err, ErrCacheMissHeadroom)
+		assert.Nil(t, resp)
+	})
+
+	t.Run("full miss under ceiling is allowed", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		items := []BackendItem{
+			{Name: "a", Weight: 10, Engine: okEngine},
+			{Name: "b", Weight: 10, Engine: okEngine},
+		}
+		seedConcurrency(t, rd, "a", 5) // 0.5 < 0.9
+		seedConcurrency(t, rd, "b", 5)
+
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute, nil, rd, "hr-d", concurrencyKeyFn,
+			0.9,
+		)
+		require.NoError(t, err)
+
+		resp, err := lb.Process(testhelper.CreateTestRequest())
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+	})
+
+	t.Run("disabled headroom (1.0) serves over-ceiling miss", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		items := []BackendItem{
+			{Name: "a", Weight: 10, Engine: okEngine},
+			{Name: "b", Weight: 10, Engine: okEngine},
+		}
+		seedConcurrency(t, rd, "a", 10)
+		seedConcurrency(t, rd, "b", 10)
+
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute, nil, rd, "hr-e", concurrencyKeyFn,
+			1.0,
+		)
+		require.NoError(t, err)
+
+		resp, err := lb.Process(testhelper.CreateTestRequest())
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+	})
+
+	// Both subtests below exercise the prioritized-loop exhaustion branch: skipping a weak cache hit
+	// over the ceiling excludes the last remaining backend.
+	t.Run("all weak cache hits over ceiling returns 429", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		items := []BackendItem{
+			{Name: "a", Weight: 10, Engine: okEngine},
+			{Name: "b", Weight: 10, Engine: okEngine},
+		}
+		seedConcurrency(t, rd, "a", 10) // 1.0 > 0.9
+		seedConcurrency(t, rd, "b", 10)
+
+		const keyPrefix = "hr-f"
+		// Both backends are resolved only from sk0 (third-from-last) -> weak cache hits.
+		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk0",
+			redis.Z{Score: 1, Member: "a"}, redis.Z{Score: 2, Member: "b"}).Err())
+
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute,
+			func(_ *octollm.Request) []string { return []string{"sk0", "sk1", "sk2"} },
+			rd, keyPrefix, concurrencyKeyFn,
+			0.9,
+		)
+		require.NoError(t, err)
+
+		resp, err := lb.Process(testhelper.CreateTestRequest())
+		require.ErrorIs(t, err, ErrCacheMissHeadroom)
+		assert.Nil(t, resp)
+	})
+
+	t.Run("strong cache hit fails then weak hits over ceiling returns previous error", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		upstreamErr := fmt.Errorf("upstream temporarily unavailable")
+		failEngine := octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+			return nil, upstreamErr
+		})
+
+		items := []BackendItem{
+			{Name: "strong", Weight: 10, Engine: failEngine},
+			{Name: "weak1", Weight: 10, Engine: okEngine},
+			{Name: "weak2", Weight: 10, Engine: okEngine},
+		}
+		// strong bypasses the ceiling (last shard key) but its engine fails; the two weak hits are
+		// over the ceiling and get skipped, exhausting all backends on a failover.
+		seedConcurrency(t, rd, "weak1", 10) // 1.0 > 0.9
+		seedConcurrency(t, rd, "weak2", 10)
+
+		const keyPrefix = "hr-g"
+		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "strong"}).Err())
+		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk0",
+			redis.Z{Score: 1, Member: "weak1"}, redis.Z{Score: 2, Member: "weak2"}).Err())
+
+		lb, err := NewShardKeyConcurrency(
+			items,
+			time.Second, 3, time.Minute,
+			func(_ *octollm.Request) []string { return []string{"sk0", "sk1", "sk2"} },
+			rd, keyPrefix, concurrencyKeyFn,
+			0.9,
+		)
+		require.NoError(t, err)
+
+		resp, err := lb.Process(testhelper.CreateTestRequest())
+		require.ErrorIs(t, err, upstreamErr, "failover should surface the upstream error, not the headroom sentinel")
+		require.NotErrorIs(t, err, ErrCacheMissHeadroom)
+		assert.Nil(t, resp)
 	})
 }
