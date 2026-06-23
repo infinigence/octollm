@@ -4,6 +4,7 @@
 .vscode/
 .claude/*.local.*
 .cursor/
+CLAUDE.local.md
 
 # Build artifacts
 /main
