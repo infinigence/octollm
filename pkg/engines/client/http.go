@@ -175,6 +175,7 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 
 	resp, err := e.client.Do(httpReq)
 	if err != nil {
+		slog.ErrorContext(req.Context(), fmt.Sprintf("[http-endpoint] do request error: %v", err))
 		return nil, &errutils.UpstreamHTTPError{
 			Err: fmt.Errorf("do request error: %w", err),
 		}

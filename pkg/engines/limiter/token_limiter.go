@@ -55,12 +55,14 @@ func DoDeduction(ctx context.Context, req *octollm.Request, used int64) (err err
 	}()
 	deductionCallbacks, ok := req.GetMetadataValue(deductionCallbackKey{})
 	if !ok {
-		slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] deductionCallbacks not found in request metadata"))
-		return fmt.Errorf("deductionCallbacks not found in request metadata")
+		// No deduction callbacks registered. This is expected when no TokenLimiterEngine
+		// is present in the engine chain, so there is nothing to deduct: treat as a no-op.
+		slog.DebugContext(ctx, "[TokenLimiterEngine] no deduction callbacks registered, skipping deduction")
+		return nil
 	}
 	callbacks, ok := deductionCallbacks.(DeductionCallbacks)
 	if !ok {
-		slog.ErrorContext(ctx, fmt.Sprintf("DeductionCallbacks type assertion failed"))
+		slog.ErrorContext(ctx, "[TokenLimiterEngine] DeductionCallbacks type assertion failed")
 		return fmt.Errorf("DeductionCallbacks type assertion failed")
 	}
 	for _, callback := range callbacks.callbacks {
@@ -309,7 +311,7 @@ func (e *TokenLimiterEngine) Process(req *octollm.Request) (*octollm.Response, e
 	} else {
 		callbacks, ok := deductionCallbacks.(DeductionCallbacks)
 		if !ok {
-			slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] DeductionCallbacks type assertion failed in token limiter engine"))
+			slog.ErrorContext(ctx, "[TokenLimiterEngine] DeductionCallbacks type assertion failed in token limiter engine")
 			return nil, fmt.Errorf("%w: DeductionCallbacks type assertion failed", ErrLimiterInternalError)
 		}
 		callbacks.callbacks = append(callbacks.callbacks, func(ctx context.Context, used int64) error {

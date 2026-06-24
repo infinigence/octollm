@@ -315,11 +315,12 @@ func TestTokenLimiter_Process_SuccessAndDeduction(t *testing.T) {
 	assert.Equal(t, int64(e.burst)-4, tokens)
 }
 
-func TestDoDeduction_WithoutCallbackReturnsError(t *testing.T) {
+func TestDoDeduction_WithoutCallbackIsNoOp(t *testing.T) {
+	// When no TokenLimiterEngine is in the chain, no callbacks are registered.
+	// This is expected: deduction should be a no-op and return nil.
 	req := newLimiterTestRequest(t)
 	err := DoDeduction(context.Background(), req, 10)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "deductionCallbacks not found")
+	assert.NoError(t, err)
 }
 
 func TestTokenLimiter_Process_StackedEnginesBothKeysDeducted(t *testing.T) {
