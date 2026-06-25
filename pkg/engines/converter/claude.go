@@ -1,6 +1,7 @@
 package converter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -146,63 +147,55 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 		role := msg.Role
 		if role == anthropic.MessageParamRoleUser {
 			var contentParts []*openai.MessageContentItem
-			for _, block := range msg.Content {
-				contentBlock, ok := block.(*anthropic.MessageContentBlock)
-				if !ok {
-					// Handle MessageContentString case
-					if str, ok := block.(anthropic.MessageContentString); ok {
+			switch content := msg.Content.(type) {
+			case anthropic.MessageContentString:
+				contentParts = append(contentParts, &openai.MessageContentItem{
+					Type: anthropic.MessageContentTextType,
+					Text: string(content),
+				})
+			case anthropic.MessageContentBlockArray:
+				for _, block := range content {
+					switch b := block.(type) {
+					case *anthropic.TextBlockParam:
 						contentParts = append(contentParts, &openai.MessageContentItem{
 							Type: anthropic.MessageContentTextType,
-							Text: string(str),
+							Text: b.Text,
 						})
-					}
-					continue
-				}
-
-				switch contentBlock.Type {
-				case anthropic.MessageContentTextType:
-					if contentBlock.Text != nil {
-						contentParts = append(contentParts, &openai.MessageContentItem{
-							Type: anthropic.MessageContentTextType,
-							Text: *contentBlock.Text,
-						})
-					}
-				case anthropic.MessageContentImageType:
-					if contentBlock.Source != nil {
-						url := ""
-						if contentBlock.Source.Type == "base64" && len(contentBlock.Source.Data) > 0 {
-							mediaType := "image/jpeg"
-							if contentBlock.Source.MediaType != "" {
-								mediaType = contentBlock.Source.MediaType
+					case *anthropic.ImageBlockParam:
+						if b.Source != nil {
+							url := ""
+							if b.Source.Type == "base64" && len(b.Source.Data) > 0 {
+								mediaType := "image/jpeg"
+								if b.Source.MediaType != "" {
+									mediaType = b.Source.MediaType
+								}
+								var dataStr string
+								if err := json.Unmarshal(b.Source.Data, &dataStr); err == nil {
+									url = fmt.Sprintf("data:%s;base64,%s", mediaType, dataStr)
+								}
+							} else if b.Source.Type == "url" {
+								url = b.Source.Url
 							}
-							var dataStr string
-							if err := json.Unmarshal(contentBlock.Source.Data, &dataStr); err == nil {
-								url = fmt.Sprintf("data:%s;base64,%s", mediaType, dataStr)
-							}
-						} else if contentBlock.Source.Type == "url" {
-							url = contentBlock.Source.Url
+							contentParts = append(contentParts, &openai.MessageContentItem{
+								Type: "image_url",
+								ImageURL: &openai.MessageContentItemImageURL{
+									URL: url,
+								},
+							})
 						}
-						contentParts = append(contentParts, &openai.MessageContentItem{
-							Type: "image_url",
-							ImageURL: &openai.MessageContentItemImageURL{
-								URL: url,
-							},
-						})
-					}
-				case anthropic.MessageContentToolResultType:
-					// Tool result should be converted to tool message
-					if contentBlock.MessageContentToolResult != nil && contentBlock.ToolUseID != nil {
-						var resultText string
-						if len(contentBlock.MessageContentToolResult.Content) > 0 {
-							for _, c := range contentBlock.MessageContentToolResult.Content {
-								resultText += c.ExtractText()
+					case *anthropic.ToolResultBlockParam:
+						// Tool result should be converted to tool message
+						if b.ToolUseID != "" {
+							resultText := ""
+							if b.Content != nil {
+								resultText = b.Content.ExtractText()
 							}
+							messages = append(messages, &openai.Message{
+								Role:       anthropic.MessageParamRoleTool,
+								Content:    openai.MessageContentString(resultText),
+								ToolCallID: b.ToolUseID,
+							})
 						}
-						messages = append(messages, &openai.Message{
-							Role:       anthropic.MessageParamRoleTool,
-							Content:    openai.MessageContentString(resultText),
-							ToolCallID: *contentBlock.ToolUseID,
-						})
 					}
 				}
 			}
@@ -219,39 +212,36 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 			var toolCalls []*openai.MessageToolCall
 			toolCallIndex := 0
 
-			for _, block := range msg.Content {
-				contentBlock, ok := block.(*anthropic.MessageContentBlock)
-				if !ok {
-					// Handle MessageContentString case
-					if str, ok := block.(anthropic.MessageContentString); ok {
+			switch content := msg.Content.(type) {
+			case anthropic.MessageContentString:
+				contentParts = append(contentParts, &openai.MessageContentItem{
+					Type: anthropic.MessageContentTextType,
+					Text: string(content),
+				})
+			case anthropic.MessageContentBlockArray:
+				for _, block := range content {
+					switch b := block.(type) {
+					case *anthropic.TextBlockParam:
 						contentParts = append(contentParts, &openai.MessageContentItem{
 							Type: anthropic.MessageContentTextType,
-							Text: string(str),
+							Text: b.Text,
 						})
+					case *anthropic.ToolUseBlockParam:
+						var compacted bytes.Buffer
+						if err := json.Compact(&compacted, b.Input); err != nil {
+							return nil, fmt.Errorf("failed to compact tool use input: %w", err)
+						}
+						toolCalls = append(toolCalls, &openai.MessageToolCall{
+							ID:    b.ID,
+							Index: toolCallIndex,
+							Type:  "function",
+							Function: &openai.ToolCallFunction{
+								Name:      b.Name,
+								Arguments: compacted.String(),
+							},
+						})
+						toolCallIndex++
 					}
-					continue
-				}
-
-				if contentBlock.Type == "text" && contentBlock.Text != nil {
-					contentParts = append(contentParts, &openai.MessageContentItem{
-						Type: anthropic.MessageContentTextType,
-						Text: *contentBlock.Text,
-					})
-				} else if contentBlock.Type == "tool_use" && contentBlock.MessageContentToolUse != nil {
-					inputs, err := json.Marshal(contentBlock.MessageContentToolUse.Input)
-					if err != nil {
-						return nil, fmt.Errorf("failed to marshal tool use input: %w", err)
-					}
-					toolCalls = append(toolCalls, &openai.MessageToolCall{
-						ID:    contentBlock.MessageContentToolUse.ID,
-						Index: toolCallIndex,
-						Type:  "function",
-						Function: &openai.ToolCallFunction{
-							Name:      contentBlock.MessageContentToolUse.Name,
-							Arguments: string(inputs),
-						},
-					})
-					toolCallIndex++
 				}
 			}
 
@@ -360,20 +350,19 @@ func (e *ChatCompletionToClaudeMessages) convertNonStreamResponseBody(ctx contex
 		msg := choice.Message
 		if msg != nil {
 			if msg.ReasoningContent != nil {
-				claudeResp.Content = append(claudeResp.Content, &anthropic.MessageContentBlock{
-					Type: "thinking",
-					MessageContentThinking: &anthropic.MessageContentThinking{
-						Thinking: msg.ReasoningContent.ExtractText(),
-					},
+				claudeResp.Content = append(claudeResp.Content, &anthropic.ThinkingBlockParam{
+					Type:      "thinking",
+					Thinking:  msg.ReasoningContent.ExtractText(),
+					Signature: "",
 				})
 			}
 			// Content
 			if msg.Content != nil {
 				text := msg.Content.ExtractText()
 				if text != "" {
-					claudeResp.Content = append(claudeResp.Content, &anthropic.MessageContentBlock{
+					claudeResp.Content = append(claudeResp.Content, &anthropic.TextBlockParam{
 						Type: "text",
-						Text: &text,
+						Text: text,
 					})
 				}
 			}
@@ -383,13 +372,11 @@ func (e *ChatCompletionToClaudeMessages) convertNonStreamResponseBody(ctx contex
 				if toolCall.Function == nil {
 					continue
 				}
-				claudeResp.Content = append(claudeResp.Content, &anthropic.MessageContentBlock{
-					Type: "tool_use",
-					MessageContentToolUse: &anthropic.MessageContentToolUse{
-						ID:    toolCall.ID,
-						Name:  toolCall.Function.Name,
-						Input: json.RawMessage(toolCall.Function.Arguments),
-					},
+				claudeResp.Content = append(claudeResp.Content, &anthropic.ToolUseBlockParam{
+					Type:  "tool_use",
+					ID:    toolCall.ID,
+					Name:  toolCall.Function.Name,
+					Input: json.RawMessage(toolCall.Function.Arguments),
 				})
 			}
 		}
@@ -470,12 +457,12 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 					mappedFr := e.mapFinishReason(*pendingFinishReason)
 					msgDelta := &anthropic.ClaudeMessagesStreamEvent{
 						Type: "message_delta",
+						Delta: &anthropic.DeltaUnion{
+							MessageDelta: anthropic.MessageDelta{
+								StopReason: &mappedFr,
+							},
+						},
 					}
-					deltaData := &anthropic.ApiMessageDelta{
-						StopReason: &mappedFr,
-					}
-					deltaBytes, _ := json.Marshal(deltaData)
-					msgDelta.DeltaRaw = deltaBytes
 
 					if pendingUsage != nil {
 						cached := int64(0)
@@ -527,7 +514,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 						Type:    "message",
 						Role:    "assistant",
 						Model:   model,
-						Content: []*anthropic.MessageContentBlock{},
+						Content: anthropic.MessageContentBlockArray{},
 						Usage:   &anthropic.Usage{InputTokens: &zeroInput, OutputTokens: &zeroOutput}, // Placeholder
 					},
 				}
@@ -593,16 +580,14 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 					// Create new thinking block
 					currentBlockIndex++
 
-					// Start thinking block - manually construct JSON to include empty thinking field
+					// Start thinking block
 					blockStart := &anthropic.ClaudeMessagesStreamEvent{
 						Type:  "content_block_start",
 						Index: &currentBlockIndex,
-						ContentBlock: &anthropic.MessageContentBlock{
-							Type: "thinking",
-							MessageContentThinking: &anthropic.MessageContentThinking{
-								Thinking:  "",
-								Signature: "",
-							},
+						ContentBlock: &anthropic.ThinkingBlockParam{
+							Type:      "thinking",
+							Thinking:  "",
+							Signature: "",
 						},
 					}
 					if err := e.sendEvent(ctx, outCh, blockStart); err != nil {
@@ -616,13 +601,13 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 				deltaEvent := &anthropic.ClaudeMessagesStreamEvent{
 					Type:  "content_block_delta",
 					Index: intPtr(currentBlockIndex),
+					Delta: &anthropic.DeltaUnion{
+						ContentBlockDelta: anthropic.ContentBlockDelta{
+							Type:     "thinking_delta",
+							Thinking: &reasoningContent,
+						},
+					},
 				}
-				deltaData := &anthropic.ApiContentBlockDelta{
-					Type:     "thinking_delta",
-					Thinking: &reasoningContent,
-				}
-				deltaBytes, _ := json.Marshal(deltaData)
-				deltaEvent.DeltaRaw = deltaBytes
 
 				if err := e.sendEvent(ctx, outCh, deltaEvent); err != nil {
 					slog.ErrorContext(ctx, fmt.Sprintf("failed to send content_block_delta event: %v", err))
@@ -660,13 +645,12 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 					currentBlockIndex++
 
 					// Start text block
-					emptyText := ""
 					blockStart := &anthropic.ClaudeMessagesStreamEvent{
 						Type:  "content_block_start",
 						Index: intPtr(currentBlockIndex),
-						ContentBlock: &anthropic.MessageContentBlock{
+						ContentBlock: &anthropic.TextBlockParam{
 							Type: "text",
-							Text: &emptyText,
+							Text: "",
 						},
 					}
 					if err := e.sendEvent(ctx, outCh, blockStart); err != nil {
@@ -680,13 +664,13 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 				deltaEvent := &anthropic.ClaudeMessagesStreamEvent{
 					Type:  "content_block_delta",
 					Index: intPtr(currentBlockIndex),
+					Delta: &anthropic.DeltaUnion{
+						ContentBlockDelta: anthropic.ContentBlockDelta{
+							Type: "text_delta",
+							Text: &deltaContent,
+						},
+					},
 				}
-				deltaData := &anthropic.ApiContentBlockDelta{
-					Type: "text_delta",
-					Text: &deltaContent,
-				}
-				deltaBytes, _ := json.Marshal(deltaData)
-				deltaEvent.DeltaRaw = deltaBytes
 
 				if err := e.sendEvent(ctx, outCh, deltaEvent); err != nil {
 					slog.ErrorContext(ctx, fmt.Sprintf("failed to send content_block_delta event: %v", err))
@@ -730,13 +714,11 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 						blockStart := &anthropic.ClaudeMessagesStreamEvent{
 							Type:  "content_block_start",
 							Index: intPtr(currentBlockIndex),
-							ContentBlock: &anthropic.MessageContentBlock{
-								Type: "tool_use",
-								MessageContentToolUse: &anthropic.MessageContentToolUse{
-									ID:    toolCall.ID,
-									Name:  toolCall.Function.Name,
-									Input: json.RawMessage("{}"),
-								},
+							ContentBlock: &anthropic.ToolUseBlockParam{
+								Type:  "tool_use",
+								ID:    toolCall.ID,
+								Name:  toolCall.Function.Name,
+								Input: json.RawMessage("{}"),
 							},
 						}
 						if err := e.sendEvent(ctx, outCh, blockStart); err != nil {
@@ -752,13 +734,13 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 						deltaEvent := &anthropic.ClaudeMessagesStreamEvent{
 							Type:  "content_block_delta",
 							Index: intPtr(currentBlockIndex),
+							Delta: &anthropic.DeltaUnion{
+								ContentBlockDelta: anthropic.ContentBlockDelta{
+									Type:        "input_json_delta",
+									PartialJSON: &toolCall.Function.Arguments,
+								},
+							},
 						}
-						deltaData := &anthropic.ApiContentBlockDelta{
-							Type:        "input_json_delta",
-							PartialJSON: &toolCall.Function.Arguments,
-						}
-						deltaBytes, _ := json.Marshal(deltaData)
-						deltaEvent.DeltaRaw = deltaBytes
 
 						if err := e.sendEvent(ctx, outCh, deltaEvent); err != nil {
 							slog.ErrorContext(ctx, fmt.Sprintf("failed to send input_json_delta event: %v", err))

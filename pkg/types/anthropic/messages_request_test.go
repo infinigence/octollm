@@ -8,456 +8,418 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestApiMessagesRequest_UnmarshalJSON_StringContent(t *testing.T) {
-	jsonStr := `{
-		"model": "claude-3-5-sonnet-20241022",
-		"max_tokens": 1024,
-		"messages": [
-			{
-				"role": "user",
-				"content": "Hello, Claude!"
-			}
-		]
-	}`
+func strPtr(s string) *string { return &s }
+func intPtr(i int) *int       { return &i }
+func int64Ptr(i int64) *int64 { return &i }
+func boolPtr(b bool) *bool    { return &b }
 
-	var req ClaudeMessagesRequest
-	err := json.Unmarshal([]byte(jsonStr), &req)
-	require.NoError(t, err)
-
-	assert.Equal(t, "claude-3-5-sonnet-20241022", req.Model)
-	assert.Equal(t, int64(1024), req.MaxTokens)
-	require.Len(t, req.Messages, 1)
-
-	msg := req.Messages[0]
-	assert.Equal(t, "user", msg.Role)
-	require.Len(t, msg.Content, 1)
-
-	// Check if it's a MessageContentString
-	if str, ok := msg.Content[0].(MessageContentString); ok {
-		assert.Equal(t, "Hello, Claude!", string(str))
-	} else if block, ok := msg.Content[0].(*MessageContentBlock); ok {
-		assert.Equal(t, "text", block.Type)
-		assert.NotNil(t, block.Text)
-		assert.Equal(t, "Hello, Claude!", *block.Text)
-	} else {
-		t.Fatalf("unexpected content type: %T", msg.Content[0])
-	}
-}
-
-func TestApiMessagesRequest_UnmarshalJSON_ArrayContent(t *testing.T) {
-	jsonStr := `{
-		"model": "claude-3-5-sonnet-20241022",
-		"max_tokens": 1024,
-		"messages": [
-			{
-				"role": "user",
-				"content": [
+func TestClaudeMessagesRequest_Marshal_UnmarshalJSON(t *testing.T) {
+	testCases := []struct {
+		Name          string
+		JSON          string
+		Object        ClaudeMessagesRequest
+		UnmarshalOnly bool
+	}{
+		{
+			Name: "StringContent",
+			JSON: `{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"messages":[{"role":"user","content":"Hello, Claude!"}]}`,
+			Object: ClaudeMessagesRequest{
+				Model:     "claude-3-5-sonnet-20241022",
+				MaxTokens: 1024,
+				Messages: []*MessageParam{
+					{Role: "user", Content: MessageContentString("Hello, Claude!")},
+				},
+			},
+		},
+		{
+			Name: "ArrayContent",
+			JSON: `{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"messages":[{"role":"user","content":[{"type":"text","text":"Hello, Claude!"}]}]}`,
+			Object: ClaudeMessagesRequest{
+				Model:     "claude-3-5-sonnet-20241022",
+				MaxTokens: 1024,
+				Messages: []*MessageParam{
+					{Role: "user", Content: MessageContentBlockArray{&TextBlockParam{Type: "text", Text: "Hello, Claude!"}}},
+				},
+			},
+		},
+		{
+			Name: "ObjectContent",
+			JSON: `{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"messages":[{"role":"user","content":{"type":"text","text":"Hello, Claude!"}}]}`,
+			Object: ClaudeMessagesRequest{
+				Model:     "claude-3-5-sonnet-20241022",
+				MaxTokens: 1024,
+				Messages: []*MessageParam{
+					{Role: "user", Content: MessageContentBlockArray{&TextBlockParam{Type: "text", Text: "Hello, Claude!"}}},
+				},
+			},
+			UnmarshalOnly: true, // single block object unmarshals to array, but array marshals as array
+		},
+		{
+			Name: "SystemString",
+			JSON: `{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"system":"You are a helpful assistant","messages":[{"role":"user","content":"Hello, Claude!"}]}`,
+			Object: ClaudeMessagesRequest{
+				Model:     "claude-3-5-sonnet-20241022",
+				MaxTokens: 1024,
+				System:    SystemString("You are a helpful assistant"),
+				Messages: []*MessageParam{
+					{Role: "user", Content: MessageContentString("Hello, Claude!")},
+				},
+			},
+		},
+		{
+			Name: "SystemBlocks",
+			JSON: `{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"system":[{"type":"text","text":"You are a helpful assistant"},{"type":"text","text":"Be concise"}],"messages":[{"role":"user","content":"Hello, Claude!"}]}`,
+			Object: ClaudeMessagesRequest{
+				Model:     "claude-3-5-sonnet-20241022",
+				MaxTokens: 1024,
+				System: SystemBlocks{
+					{Type: "text", Text: "You are a helpful assistant"},
+					{Type: "text", Text: "Be concise"},
+				},
+				Messages: []*MessageParam{
+					{Role: "user", Content: MessageContentString("Hello, Claude!")},
+				},
+			},
+		},
+		{
+			Name: "ToolResult",
+			JSON: `{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"messages":[{"role":"user","content":[{"tool_use_id":"call_4cba1ad8bc8e4ba2983278ac","type":"tool_result","content":[{"type":"text","text":"API Error: 404"},{"type":"text","text":"agentId: a168307"}]},{"type":"text","text":"[Request interrupted by user]"},{"type":"text","text":"帮我看看这个项目是在做什么","cache_control":{"type":"ephemeral"}}]}]}`,
+			Object: ClaudeMessagesRequest{
+				Model:     "claude-3-5-sonnet-20241022",
+				MaxTokens: 1024,
+				Messages: []*MessageParam{
 					{
-						"type": "text",
-						"text": "Hello, Claude!"
-					}
-				]
-			}
-		]
-	}`
-
-	var req ClaudeMessagesRequest
-	err := json.Unmarshal([]byte(jsonStr), &req)
-	require.NoError(t, err)
-
-	assert.Equal(t, "claude-3-5-sonnet-20241022", req.Model)
-	assert.Equal(t, int64(1024), req.MaxTokens)
-	require.Len(t, req.Messages, 1)
-
-	msg := req.Messages[0]
-	assert.Equal(t, "user", msg.Role)
-	require.Len(t, msg.Content, 1)
-
-	// Should be a MessageContentBlock
-	block, ok := msg.Content[0].(*MessageContentBlock)
-	require.True(t, ok, "content should be *MessageContentBlock")
-	assert.Equal(t, "text", block.Type)
-	assert.NotNil(t, block.Text)
-	assert.Equal(t, "Hello, Claude!", *block.Text)
-}
-
-func TestApiMessagesRequest_UnmarshalJSON_ObjectContent(t *testing.T) {
-	jsonStr := `{
-		"model": "claude-3-5-sonnet-20241022",
-		"max_tokens": 1024,
-		"messages": [
-			{
-				"role": "user",
-				"content": {
-					"type": "text",
-					"text": "Hello, Claude!"
-				}
-			}
-		]
-	}`
-
-	var req ClaudeMessagesRequest
-	err := json.Unmarshal([]byte(jsonStr), &req)
-	require.NoError(t, err)
-
-	require.Len(t, req.Messages, 1)
-	msg := req.Messages[0]
-	require.Len(t, msg.Content, 1)
-
-	// Should be a MessageContentBlock
-	block, ok := msg.Content[0].(*MessageContentBlock)
-	require.True(t, ok, "content should be *MessageContentBlock")
-	assert.Equal(t, "text", block.Type)
-	assert.NotNil(t, block.Text)
-	assert.Equal(t, "Hello, Claude!", *block.Text)
-}
-
-func TestApiMessagesRequest_MarshalJSON_SimpleRequest(t *testing.T) {
-	text := "Hello, Claude!"
-	req := &ClaudeMessagesRequest{
-		Model:     "claude-3-5-sonnet-20241022",
-		MaxTokens: 1024,
-		Messages: []*MessageParam{
-			{
-				Role: "user",
-				Content: []MessageContent{
-					&MessageContentBlock{
-						Type: "text",
-						Text: &text,
+						Role: "user",
+						Content: MessageContentBlockArray{
+							&ToolResultBlockParam{
+								Type:      "tool_result",
+								ToolUseID: "call_4cba1ad8bc8e4ba2983278ac",
+								Content: MessageContentBlockArray{
+									&TextBlockParam{Type: "text", Text: "API Error: 404"},
+									&TextBlockParam{Type: "text", Text: "agentId: a168307"},
+								},
+							},
+							&TextBlockParam{Type: "text", Text: "[Request interrupted by user]"},
+							&TextBlockParam{
+								Type:         "text",
+								Text:         "帮我看看这个项目是在做什么",
+								CacheControl: &CacheControl{Type: "ephemeral"},
+							},
+						},
 					},
 				},
 			},
 		},
-	}
-
-	data, err := json.Marshal(req)
-	require.NoError(t, err)
-
-	// Verify basic structure
-	var result map[string]interface{}
-	err = json.Unmarshal(data, &result)
-	require.NoError(t, err)
-
-	assert.Equal(t, "claude-3-5-sonnet-20241022", result["model"])
-	assert.Equal(t, float64(1024), result["max_tokens"])
-
-	// Verify messages
-	messages, ok := result["messages"].([]interface{})
-	require.True(t, ok)
-	require.Len(t, messages, 1)
-
-	msg, ok := messages[0].(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, "user", msg["role"])
-
-	// Content is now an array
-	contentArray, ok := msg["content"].([]interface{})
-	require.True(t, ok)
-	require.Len(t, contentArray, 1)
-
-	content, ok := contentArray[0].(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, "text", content["type"])
-	assert.Equal(t, "Hello, Claude!", content["text"])
-}
-
-func TestApiMessagesRequest_MarshalJSON_WithSystemString(t *testing.T) {
-	text := "Hello!"
-	req := &ClaudeMessagesRequest{
-		Model:     "claude-3-5-sonnet-20241022",
-		MaxTokens: 1024,
-		System:    SystemString("You are a helpful assistant"),
-		Messages: []*MessageParam{
-			{
-				Role: "user",
-				Content: []MessageContent{
-					&MessageContentBlock{
-						Type: "text",
-						Text: &text,
-					},
-				},
-			},
+		{
+			Name:          "TopLevelNull",
+			JSON:          `null`,
+			Object:        ClaudeMessagesRequest{},
+			UnmarshalOnly: true,
 		},
 	}
 
-	data, err := json.Marshal(req)
-	require.NoError(t, err)
-
-	var result map[string]interface{}
-	err = json.Unmarshal(data, &result)
-	require.NoError(t, err)
-
-	// System should be serialized as string
-	system, ok := result["system"].(string)
-	require.True(t, ok)
-	assert.Equal(t, "You are a helpful assistant", system)
+	for _, tc := range testCases {
+		if !tc.UnmarshalOnly {
+			t.Run("Marshal_"+tc.Name, func(t *testing.T) {
+				data, err := json.Marshal(tc.Object)
+				require.NoError(t, err)
+				assert.JSONEq(t, tc.JSON, string(data))
+			})
+		}
+		t.Run("Unmarshal_"+tc.Name, func(t *testing.T) {
+			var req ClaudeMessagesRequest
+			err := json.Unmarshal([]byte(tc.JSON), &req)
+			require.NoError(t, err)
+			assert.Equal(t, tc.Object, req)
+		})
+	}
 }
 
-func TestApiMessagesRequest_MarshalJSON_WithTopNull(t *testing.T) {
-	jsonStr := `null`
-	var req ClaudeMessagesRequest
-	err := json.Unmarshal([]byte(jsonStr), &req)
-	require.NoError(t, err)
-
-	assert.Equal(t, "", req.Model)
-	assert.Equal(t, int64(0), req.MaxTokens)
-	require.Len(t, req.Messages, 0)
-}
-func TestApiMessagesRequest_UnmarshalJSON_WithTopNull(t *testing.T) {
-	jsonStr := `null`
-	var req MessageContentBlock
-	err := json.Unmarshal([]byte(jsonStr), &req)
-	require.NoError(t, err)
-
-	assert.Nil(t, req.Text)
-}
-func TestApiMessageParam_UnmarshalJSON_WithToolResult(t *testing.T) {
-	jsonStr := `null`
-	var req MessageParam
-	err := json.Unmarshal([]byte(jsonStr), &req)
+func TestMessageParam_UnmarshalJSON_NullContent(t *testing.T) {
+	var msg MessageParam
+	err := json.Unmarshal([]byte(`null`), &msg)
 	require.ErrorContains(t, err, "content field cannot be null or empty")
 }
-func TestApiMessagesRequest_MarshalJSON_WithMultiSystem(t *testing.T) {
-	text := "Hello!"
-	req := &ClaudeMessagesRequest{
-		Model:     "claude-3-5-sonnet-20241022",
-		MaxTokens: 1024,
-		System: SystemBlocks{
-			{
-				Type: "text",
-				Text: "You are a helpful assistant",
-			},
-			{
-				Type: "text",
-				Text: "Be concise",
-			},
+
+func TestMessageContent_Marshal_UnmarshalJSON(t *testing.T) {
+	testCases := []struct {
+		Name          string
+		JSON          string
+		Object        MessageContent
+		UnmarshalOnly bool
+	}{
+		{
+			Name:   "String",
+			JSON:   `"hello"`,
+			Object: MessageContentString("hello"),
 		},
-		Messages: []*MessageParam{
-			{
-				Role: "user",
-				Content: []MessageContent{
-					&MessageContentBlock{
-						Type: "text",
-						Text: &text,
-					},
-				},
+		{
+			Name:   "BlockArray",
+			JSON:   `[{"type":"text","text":"Hello!"}]`,
+			Object: MessageContentBlockArray{&TextBlockParam{Type: "text", Text: "Hello!"}},
+		},
+		{
+			Name:          "SingleBlockObject",
+			JSON:          `{"type":"text","text":"Hello!"}`,
+			Object:        MessageContentBlockArray{&TextBlockParam{Type: "text", Text: "Hello!"}},
+			UnmarshalOnly: true, // single block object unmarshals to array, but array marshals as array
+		},
+		{
+			Name: "ImageBlockBase64",
+			JSON: `[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]`,
+			Object: MessageContentBlockArray{&ImageBlockParam{
+				Type:   "image",
+				Source: &MessageContentSource{Type: "base64", MediaType: "image/png", Data: json.RawMessage(`"iVBORw0KGgo="`)},
+			}},
+		},
+		{
+			Name: "ImageBlockURL",
+			JSON: `[{"type":"image","source":{"type":"url","url":"https://example.com/img.png"}}]`,
+			Object: MessageContentBlockArray{&ImageBlockParam{
+				Type:   "image",
+				Source: &MessageContentSource{Type: "url", Url: "https://example.com/img.png"},
+			}},
+		},
+		{
+			Name: "DocumentBlock",
+			JSON: `[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="},"title":"doc.pdf","context":"A document","citations":{"enabled":true}}]`,
+			Object: MessageContentBlockArray{&DocumentBlockParam{
+				Type:      "document",
+				Source:    &MessageContentSource{Type: "base64", MediaType: "application/pdf", Data: json.RawMessage(`"JVBERi0="`)},
+				Title:     "doc.pdf",
+				Context:   "A document",
+				Citations: &DocumentCitations{Enabled: true},
+			}},
+		},
+		{
+			Name: "ThinkingBlock",
+			JSON: `[{"type":"thinking","thinking":"Let me think...","signature":"sig_abc"}]`,
+			Object: MessageContentBlockArray{&ThinkingBlockParam{
+				Type:      "thinking",
+				Thinking:  "Let me think...",
+				Signature: "sig_abc",
+			}},
+		},
+		{
+			Name: "RedactedThinkingBlock",
+			JSON: `[{"type":"redacted_thinking","data":"base64data"}]`,
+			Object: MessageContentBlockArray{&RedactedThinkingBlockParam{
+				Type: "redacted_thinking",
+				Data: "base64data",
+			}},
+		},
+		{
+			Name: "ToolUseBlock",
+			JSON: `[{"type":"tool_use","id":"toolu_123","name":"get_weather","input":{"location":"SF"}}]`,
+			Object: MessageContentBlockArray{&ToolUseBlockParam{
+				Type:  "tool_use",
+				ID:    "toolu_123",
+				Name:  "get_weather",
+				Input: json.RawMessage(`{"location":"SF"}`),
+			}},
+		},
+		{
+			Name: "ToolUseBlockEmptyInput",
+			JSON: `[{"type":"tool_use","id":"toolu_456","name":"no_args","input":{}}]`,
+			Object: MessageContentBlockArray{&ToolUseBlockParam{
+				Type:  "tool_use",
+				ID:    "toolu_456",
+				Name:  "no_args",
+				Input: json.RawMessage(`{}`),
+			}},
+		},
+		{
+			Name: "ToolResultBlockStringContent",
+			JSON: `[{"type":"tool_result","tool_use_id":"toolu_123","content":"15 degrees"}]`,
+			Object: MessageContentBlockArray{&ToolResultBlockParam{
+				Type:      "tool_result",
+				ToolUseID: "toolu_123",
+				Content:   MessageContentString("15 degrees"),
+			}},
+		},
+		{
+			Name: "ToolResultBlockArrayContent",
+			JSON: `[{"type":"tool_result","tool_use_id":"toolu_123","content":[{"type":"text","text":"15 degrees"}]}]`,
+			Object: MessageContentBlockArray{&ToolResultBlockParam{
+				Type:      "tool_result",
+				ToolUseID: "toolu_123",
+				Content:   MessageContentBlockArray{&TextBlockParam{Type: "text", Text: "15 degrees"}},
+			}},
+		},
+		{
+			Name: "ToolResultBlockNoContent",
+			JSON: `[{"type":"tool_result","tool_use_id":"toolu_123"}]`,
+			Object: MessageContentBlockArray{&ToolResultBlockParam{
+				Type:      "tool_result",
+				ToolUseID: "toolu_123",
+			}},
+		},
+		{
+			Name: "ToolResultBlockIsError",
+			JSON: `[{"type":"tool_result","tool_use_id":"toolu_123","content":"error occurred","is_error":true}]`,
+			Object: MessageContentBlockArray{&ToolResultBlockParam{
+				Type:      "tool_result",
+				ToolUseID: "toolu_123",
+				Content:   MessageContentString("error occurred"),
+				IsError:   boolPtr(true),
+			}},
+		},
+		{
+			Name: "GeneralBlockUnknownType",
+			JSON: `[{"type":"custom_block"}]`,
+			Object: MessageContentBlockArray{&GeneralBlockParam{
+				Type: "custom_block",
+			}},
+		},
+		{
+			Name:   "Null",
+			JSON:   `null`,
+			Object: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		if !tc.UnmarshalOnly {
+			t.Run("Marshal_"+tc.Name, func(t *testing.T) {
+				data, err := json.Marshal(tc.Object)
+				require.NoError(t, err)
+				assert.JSONEq(t, tc.JSON, string(data))
+			})
+		}
+		t.Run("Unmarshal_"+tc.Name, func(t *testing.T) {
+			var f messageContentField
+			err := json.Unmarshal([]byte(tc.JSON), &f)
+			require.NoError(t, err)
+			assert.Equal(t, tc.Object, f.Value)
+		})
+	}
+}
+
+func TestMessageContent_ExtractText(t *testing.T) {
+	testCases := []struct {
+		Name         string
+		JSON         string
+		ExpectedText string
+	}{
+		{
+			Name:         "String",
+			JSON:         `"hello"`,
+			ExpectedText: "hello",
+		},
+		{
+			Name:         "BlockArray",
+			JSON:         `[{"type":"text","text":"Hello!"}]`,
+			ExpectedText: "Hello!",
+		},
+		{
+			Name:         "SingleBlockObject",
+			JSON:         `{"type":"text","text":"Hello!"}`,
+			ExpectedText: "Hello!",
+		},
+		{
+			Name:         "ImageBlockBase64",
+			JSON:         `[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]`,
+			ExpectedText: "(base64_inline_image/png)",
+		},
+		{
+			Name:         "ImageBlockURL",
+			JSON:         `[{"type":"image","source":{"type":"url","url":"https://example.com/img.png"}}]`,
+			ExpectedText: "https://example.com/img.png",
+		},
+		{
+			Name:         "DocumentBlock",
+			JSON:         `[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="},"title":"doc.pdf","context":"A document","citations":{"enabled":true}}]`,
+			ExpectedText: "doc.pdf:A document:(base64_inline_application/pdf)",
+		},
+		{
+			Name:         "ThinkingBlock",
+			JSON:         `[{"type":"thinking","thinking":"Let me think...","signature":"sig_abc"}]`,
+			ExpectedText: "Let me think...",
+		},
+		{
+			Name:         "RedactedThinkingBlock",
+			JSON:         `[{"type":"redacted_thinking","data":"base64data"}]`,
+			ExpectedText: "",
+		},
+		{
+			Name:         "ToolUseBlock",
+			JSON:         `[{"type":"tool_use","id":"toolu_123","name":"get_weather","input":{"location":"SF"}}]`,
+			ExpectedText: `{"location":"SF"}`,
+		},
+		{
+			Name:         "ToolUseBlockEmptyInput",
+			JSON:         `[{"type":"tool_use","id":"toolu_456","name":"no_args"}]`,
+			ExpectedText: "",
+		},
+		{
+			Name:         "ToolResultBlockStringContent",
+			JSON:         `[{"type":"tool_result","tool_use_id":"toolu_123","content":"15 degrees"}]`,
+			ExpectedText: "15 degrees",
+		},
+		{
+			Name:         "ToolResultBlockArrayContent",
+			JSON:         `[{"type":"tool_result","tool_use_id":"toolu_123","content":[{"type":"text","text":"15 degrees"}]}]`,
+			ExpectedText: "15 degrees",
+		},
+		{
+			Name:         "ToolResultBlockNoContent",
+			JSON:         `[{"type":"tool_result","tool_use_id":"toolu_123"}]`,
+			ExpectedText: "",
+		},
+		{
+			Name:         "ToolResultBlockIsError",
+			JSON:         `[{"type":"tool_result","tool_use_id":"toolu_123","content":"error occurred","is_error":true}]`,
+			ExpectedText: "error occurred",
+		},
+		{
+			Name:         "GeneralBlockUnknownType",
+			JSON:         `[{"type":"custom_block"}]`,
+			ExpectedText: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.Name, func(t *testing.T) {
+			var f messageContentField
+			err := json.Unmarshal([]byte(tc.JSON), &f)
+			require.NoError(t, err)
+			assert.Equal(t, tc.ExpectedText, f.Value.ExtractText())
+		})
+	}
+}
+
+func TestSystemValue_Marshal_UnmarshalJSON(t *testing.T) {
+	testCases := []struct {
+		Name   string
+		JSON   string
+		Object SystemContent
+	}{
+		{
+			Name:   "String",
+			JSON:   `"You are a helpful assistant"`,
+			Object: SystemString("You are a helpful assistant"),
+		},
+		{
+			Name: "Blocks",
+			JSON: `[{"type":"text","text":"You are a helpful assistant"},{"type":"text","text":"Be concise"}]`,
+			Object: SystemBlocks{
+				{Type: "text", Text: "You are a helpful assistant"},
+				{Type: "text", Text: "Be concise"},
 			},
 		},
 	}
 
-	data, err := json.Marshal(req)
-	require.NoError(t, err)
-
-	var result map[string]interface{}
-	err = json.Unmarshal(data, &result)
-	require.NoError(t, err)
-
-	// System should be serialized as array (MultiSystem takes precedence)
-	system, ok := result["system"].([]interface{})
-	require.True(t, ok)
-	require.Len(t, system, 2)
-
-	sysBlock1, ok := system[0].(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, "text", sysBlock1["type"])
-	assert.Equal(t, "You are a helpful assistant", sysBlock1["text"])
-}
-
-func TestApiMessagesRequest_UnmarshalJSON_WithSystemString(t *testing.T) {
-	jsonStr := `{
-		"model": "claude-3-5-sonnet-20241022",
-		"max_tokens": 1024,
-		"system": "You are a helpful assistant",
-		"messages": [
-			{
-				"role": "user",
-				"content": "Hello, Claude!"
-			}
-		]
-	}`
-
-	var req ClaudeMessagesRequest
-	err := json.Unmarshal([]byte(jsonStr), &req)
-	require.NoError(t, err)
-
-	assert.Equal(t, "claude-3-5-sonnet-20241022", req.Model)
-	assert.Equal(t, int64(1024), req.MaxTokens)
-
-	// System should be SystemString
-	systemStr, ok := req.System.(SystemString)
-	require.True(t, ok, "system should be SystemString")
-	assert.Equal(t, "You are a helpful assistant", string(systemStr))
-}
-
-func TestApiMessagesRequest_UnmarshalJSON_WithSystemArray(t *testing.T) {
-	jsonStr := `{
-		"model": "claude-3-5-sonnet-20241022",
-		"max_tokens": 1024,
-		"system": [
-			{
-				"type": "text",
-				"text": "You are a helpful assistant"
-			},
-			{
-				"type": "text",
-				"text": "Be concise"
-			}
-		],
-		"messages": [
-			{
-				"role": "user",
-				"content": "Hello, Claude!"
-			}
-		]
-	}`
-
-	var req ClaudeMessagesRequest
-	err := json.Unmarshal([]byte(jsonStr), &req)
-	require.NoError(t, err)
-
-	assert.Equal(t, "claude-3-5-sonnet-20241022", req.Model)
-	assert.Equal(t, int64(1024), req.MaxTokens)
-
-	// System should be SystemBlocks
-	systemBlocks, ok := req.System.(SystemBlocks)
-	require.True(t, ok, "system should be SystemBlocks")
-	require.Len(t, systemBlocks, 2)
-	assert.Equal(t, "text", systemBlocks[0].Type)
-	assert.Equal(t, "You are a helpful assistant", systemBlocks[0].Text)
-	assert.Equal(t, "Be concise", systemBlocks[1].Text)
-}
-
-func TestApiMessagesRequest_RoundTrip_SystemString(t *testing.T) {
-	original := &ClaudeMessagesRequest{
-		Model:     "claude-3-5-sonnet-20241022",
-		MaxTokens: 1024,
-		System:    SystemString("You are a helpful assistant"),
-		Messages: []*MessageParam{
-			{
-				Role: "user",
-				Content: []MessageContent{
-					MessageContentString("Hello"),
-				},
-			},
-		},
+	for _, tc := range testCases {
+		t.Run("Unmarshal_"+tc.Name, func(t *testing.T) {
+			var sf systemField
+			err := json.Unmarshal([]byte(tc.JSON), &sf)
+			require.NoError(t, err)
+			assert.Equal(t, tc.Object, sf.Value)
+		})
+		t.Run("Marshal_"+tc.Name, func(t *testing.T) {
+			data, err := json.Marshal(tc.Object)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.JSON, string(data))
+		})
 	}
-
-	data, err := json.Marshal(original)
-	require.NoError(t, err)
-
-	var unmarshaled ClaudeMessagesRequest
-	err = json.Unmarshal(data, &unmarshaled)
-	require.NoError(t, err)
-
-	// Verify system
-	systemStr, ok := unmarshaled.System.(SystemString)
-	require.True(t, ok)
-	assert.Equal(t, string(original.System.(SystemString)), string(systemStr))
-}
-
-func TestApiMessagesRequest_RoundTrip_SystemBlocks(t *testing.T) {
-	original := &ClaudeMessagesRequest{
-		Model:     "claude-3-5-sonnet-20241022",
-		MaxTokens: 1024,
-		System: SystemBlocks{
-			{
-				Type: "text",
-				Text: "You are a helpful assistant",
-			},
-		},
-		Messages: []*MessageParam{
-			{
-				Role: "user",
-				Content: []MessageContent{
-					MessageContentString("Hello"),
-				},
-			},
-		},
-	}
-
-	data, err := json.Marshal(original)
-	require.NoError(t, err)
-
-	var unmarshaled ClaudeMessagesRequest
-	err = json.Unmarshal(data, &unmarshaled)
-	require.NoError(t, err)
-
-	// Verify system
-	systemBlocks, ok := unmarshaled.System.(SystemBlocks)
-	require.True(t, ok)
-	require.Len(t, systemBlocks, 1)
-	assert.Equal(t, original.System.(SystemBlocks)[0].Text, systemBlocks[0].Text)
-}
-
-func TestApiMessagesRequest_UnmarshalJSON_WithToolResult(t *testing.T) {
-	jsonStr := `{
-		"model": "claude-3-5-sonnet-20241022",
-		"max_tokens": 1024,
-		"messages": [
-			{
-				"role": "user",
-				"content": [
-					{
-						"tool_use_id": "call_4cba1ad8bc8e4ba2983278ac",
-						"type": "tool_result",
-						"content": [
-							{
-								"type": "text",
-								"text": "API Error: 404"
-							},
-							{
-								"type": "text",
-								"text": "agentId: a168307"
-							}
-						]
-					},
-					{
-						"type": "text",
-						"text": "[Request interrupted by user]"
-					},
-					{
-						"type": "text",
-						"text": "帮我看看这个项目是在做什么",
-						"cache_control": {
-							"type": "ephemeral"
-						}
-					}
-				]
-			}
-		]
-	}`
-
-	var req ClaudeMessagesRequest
-	err := json.Unmarshal([]byte(jsonStr), &req)
-	require.NoError(t, err, "should successfully unmarshal tool_result with nested content")
-
-	assert.Equal(t, "claude-3-5-sonnet-20241022", req.Model)
-	assert.Equal(t, int64(1024), req.MaxTokens)
-	require.Len(t, req.Messages, 1)
-
-	msg := req.Messages[0]
-	assert.Equal(t, "user", msg.Role)
-	require.Len(t, msg.Content, 3)
-
-	// First block should be tool_result
-	block0, ok := msg.Content[0].(*MessageContentBlock)
-	require.True(t, ok, "first content should be *MessageContentBlock")
-	assert.Equal(t, "tool_result", block0.Type)
-	assert.NotNil(t, block0.MessageContentToolResult)
-	assert.Equal(t, "call_4cba1ad8bc8e4ba2983278ac", *block0.ToolUseID)
-	require.Len(t, block0.Content, 2)
-
-	// Second block should be text
-	block1, ok := msg.Content[1].(*MessageContentBlock)
-	require.True(t, ok, "second content should be *MessageContentBlock")
-	assert.Equal(t, "text", block1.Type)
-	assert.Equal(t, "[Request interrupted by user]", *block1.Text)
-
-	// Third block should be text with cache_control
-	block2, ok := msg.Content[2].(*MessageContentBlock)
-	require.True(t, ok, "third content should be *MessageContentBlock")
-	assert.Equal(t, "text", block2.Type)
-	assert.Equal(t, "帮我看看这个项目是在做什么", *block2.Text)
-	assert.NotNil(t, block2.CacheControl)
-	assert.Equal(t, "ephemeral", block2.CacheControl.Type)
 }

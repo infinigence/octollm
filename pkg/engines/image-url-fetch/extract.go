@@ -69,30 +69,31 @@ func collectClaudeImageReplaceJobs(req *anthropic.ClaudeMessagesRequest) []image
 	}
 	var jobs []imageReplaceJob
 	for msgIndex, msg := range req.Messages {
-		if msg == nil || len(msg.Content) == 0 {
+		if msg == nil || msg.Content == nil {
 			continue
 		}
-		jobs = append(jobs, collectFromClaudeContentSlice(msgIndex, nil, msg.Content)...)
+		arr, ok := msg.Content.(anthropic.MessageContentBlockArray)
+		if !ok || len(arr) == 0 {
+			continue
+		}
+		jobs = append(jobs, collectFromClaudeContentSlice(msgIndex, nil, arr)...)
 	}
 	return jobs
 }
 
-func collectFromClaudeContentSlice(msgIndex int, prefix []int, items []anthropic.MessageContent) []imageReplaceJob {
+func collectFromClaudeContentSlice(msgIndex int, prefix []int, items anthropic.MessageContentBlockArray) []imageReplaceJob {
 	var jobs []imageReplaceJob
-	for i, mc := range items {
-		if mc == nil {
+	for i, block := range items {
+		if block == nil {
 			continue
 		}
 		pathToBlock := appendCopy(prefix, i)
-		switch v := mc.(type) {
-		case anthropic.MessageContentString:
-			continue
-		case *anthropic.MessageContentBlock:
-			if v == nil {
+		switch v := block.(type) {
+		case *anthropic.ImageBlockParam:
+			if v == nil || v.Source == nil {
 				continue
 			}
-			if v.Type == anthropic.MessageContentImageType && v.Source != nil &&
-				strings.EqualFold(strings.TrimSpace(v.Source.Type), "url") {
+			if strings.EqualFold(strings.TrimSpace(v.Source.Type), "url") {
 				u := strings.TrimSpace(v.Source.Url)
 				if u != "" && !strings.HasPrefix(strings.ToLower(u), "data:") {
 					jobs = append(jobs, &claudeImageReplaceJob{
@@ -102,9 +103,12 @@ func collectFromClaudeContentSlice(msgIndex int, prefix []int, items []anthropic
 					})
 				}
 			}
-			if v.Type == anthropic.MessageContentToolResultType && v.MessageContentToolResult != nil &&
-				len(v.MessageContentToolResult.Content) > 0 {
-				jobs = append(jobs, collectFromClaudeContentSlice(msgIndex, pathToBlock, v.MessageContentToolResult.Content)...)
+		case *anthropic.ToolResultBlockParam:
+			if v == nil || v.Content == nil {
+				continue
+			}
+			if nested, ok := v.Content.(anthropic.MessageContentBlockArray); ok && len(nested) > 0 {
+				jobs = append(jobs, collectFromClaudeContentSlice(msgIndex, pathToBlock, nested)...)
 			}
 		default:
 			continue

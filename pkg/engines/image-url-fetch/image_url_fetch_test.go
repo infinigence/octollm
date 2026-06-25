@@ -501,22 +501,27 @@ func TestImageURLFetchEngine_claudeTopLevelAndToolResult(t *testing.T) {
 	var out anthropic.ClaudeMessagesRequest
 	require.NoError(t, json.Unmarshal(nextBody, &out))
 	require.Len(t, out.Messages, 2)
-	require.Len(t, out.Messages[0].Content, 3)
-	require.Len(t, out.Messages[1].Content, 1)
 
-	topImg, ok := out.Messages[0].Content[1].(*anthropic.MessageContentBlock)
+	msg0Content, ok := out.Messages[0].Content.(anthropic.MessageContentBlockArray)
 	require.True(t, ok)
-	require.Equal(t, anthropic.MessageContentImageType, topImg.Type)
+	require.Len(t, msg0Content, 3)
+
+	msg1Content, ok := out.Messages[1].Content.(anthropic.MessageContentBlockArray)
+	require.True(t, ok)
+	require.Len(t, msg1Content, 1)
+
+	topImg, ok := msg0Content[1].(*anthropic.ImageBlockParam)
+	require.True(t, ok)
 	require.NotNil(t, topImg.Source)
 	require.Equal(t, "base64", topImg.Source.Type)
 	require.Equal(t, "image/png", topImg.Source.MediaType)
 
-	nestedTool, ok := out.Messages[0].Content[2].(*anthropic.MessageContentBlock)
+	nestedTool, ok := msg0Content[2].(*anthropic.ToolResultBlockParam)
 	require.True(t, ok)
-	require.Equal(t, anthropic.MessageContentToolResultType, nestedTool.Type)
-	require.NotNil(t, nestedTool.MessageContentToolResult)
-	require.Len(t, nestedTool.MessageContentToolResult.Content, 1)
-	nestedImg, ok := nestedTool.MessageContentToolResult.Content[0].(*anthropic.MessageContentBlock)
+	nestedContent, ok := nestedTool.Content.(anthropic.MessageContentBlockArray)
+	require.True(t, ok)
+	require.Len(t, nestedContent, 1)
+	nestedImg, ok := nestedContent[0].(*anthropic.ImageBlockParam)
 	require.True(t, ok)
 	wantB64 := base64.StdEncoding.EncodeToString(pngBytes)
 	var topData, nestedData string
@@ -527,9 +532,8 @@ func TestImageURLFetchEngine_claudeTopLevelAndToolResult(t *testing.T) {
 	require.Equal(t, "image/png", nestedImg.Source.MediaType)
 	require.Equal(t, wantB64, nestedData)
 
-	secondImg, ok := out.Messages[1].Content[0].(*anthropic.MessageContentBlock)
+	secondImg, ok := msg1Content[0].(*anthropic.ImageBlockParam)
 	require.True(t, ok)
-	require.Equal(t, anthropic.MessageContentImageType, secondImg.Type)
 	require.NotNil(t, secondImg.Source)
 	require.Equal(t, "base64", secondImg.Source.Type)
 	require.Equal(t, "image/png", secondImg.Source.MediaType)

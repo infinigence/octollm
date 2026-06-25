@@ -20,11 +20,10 @@ func combinedTextForChatCompletionsMessage(msg *openai.Message) string {
 
 // combinedTextForAnthropicMessage concatenates ExtractText() from all content blocks.
 func combinedTextForAnthropicMessage(msg *anthropic.MessageParam) string {
-	var sb strings.Builder
-	for _, c := range msg.Content {
-		sb.WriteString(c.ExtractText())
+	if msg.Content != nil {
+		return msg.Content.ExtractText()
 	}
-	return sb.String()
+	return ""
 }
 
 func checkIsAnthropicBillingHead(text string) bool {
@@ -71,9 +70,11 @@ func anthropicMessageTextForHash(msg *anthropic.MessageParam) string {
 	if strings.TrimSpace(txt) != "" {
 		return txt
 	}
-	for _, c := range msg.Content {
-		if b, ok := c.(*anthropic.MessageContentBlock); ok && b.Type == "tool_use" && b.MessageContentToolUse != nil {
-			return string(b.MessageContentToolUse.Input)
+	if arr, ok := msg.Content.(anthropic.MessageContentBlockArray); ok {
+		for _, block := range arr {
+			if b, ok := block.(*anthropic.ToolUseBlockParam); ok {
+				return string(b.Input)
+			}
 		}
 	}
 	return ""

@@ -2,7 +2,6 @@ package moderator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -52,12 +51,10 @@ func (a *ClaudeAdapter) extractTextFromRequest(ctx context.Context, body *anthro
 
 	// 提取 Messages
 	for _, msg := range body.Messages {
-		if msg == nil {
+		if msg == nil || msg.Content == nil {
 			continue
 		}
-		for _, content := range msg.Content {
-			r = append(r, []rune(content.ExtractText())...)
-		}
+		r = append(r, []rune(msg.Content.ExtractText())...)
 	}
 
 	return r, nil
@@ -71,11 +68,6 @@ func (a *ClaudeAdapter) extractTextFromNonStreamResponse(ctx context.Context, bo
 			continue
 		}
 		r = append(r, []rune(block.ExtractText())...)
-
-		// 如果是 tool_use，额外提取 input（ExtractText 已返回一次，此处补充追加）
-		if block.Type == "tool_use" && block.MessageContentToolUse != nil {
-			r = append(r, []rune(string(block.MessageContentToolUse.Input))...)
-		}
 	}
 
 	return r, nil
@@ -86,21 +78,18 @@ func (a *ClaudeAdapter) extractTextFromStreamResponse(ctx context.Context, body 
 
 	// 从 content_block_delta 中提取文本
 	if body.Type == "content_block_delta" {
-		delta, err := body.GetContentBlockDelta()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get content block delta: %w", err)
+		if body.Delta == nil {
+			return nil, fmt.Errorf("content_block_delta: delta is nil")
 		}
-
-		if delta != nil {
-			if delta.Text != nil {
-				r = append(r, []rune(*delta.Text)...)
-			}
-			if delta.Thinking != nil {
-				r = append(r, []rune(*delta.Thinking)...)
-			}
-			if delta.PartialJSON != nil {
-				r = append(r, []rune(*delta.PartialJSON)...)
-			}
+		delta := &body.Delta.ContentBlockDelta
+		if delta.Text != nil {
+			r = append(r, []rune(*delta.Text)...)
+		}
+		if delta.Thinking != nil {
+			r = append(r, []rune(*delta.Thinking)...)
+		}
+		if delta.PartialJSON != nil {
+			r = append(r, []rune(*delta.PartialJSON)...)
 		}
 	}
 
@@ -161,10 +150,10 @@ func (a *ClaudeAdapter) getReplacementNonStreamResponse(ctx context.Context, res
 		Role:       "assistant",
 		Model:      resp.Model,
 		StopReason: a.ReplacementStopReason,
-		Content: []*anthropic.MessageContentBlock{
-			{
+		Content: anthropic.MessageContentBlockArray{
+			&anthropic.TextBlockParam{
 				Type: "text",
-				Text: &text,
+				Text: text,
 			},
 		},
 		Usage: resp.Usage,
@@ -178,22 +167,15 @@ func (a *ClaudeAdapter) getReplacementStreamResponse(ctx context.Context, event 
 		return nil
 	}
 
-	// 创建替换的 delta 事件
-	delta := &anthropic.ApiContentBlockDelta{
-		Type: "text_delta",
-		Text: &a.ReplacementTextForStreaming,
-	}
-
-	deltaRaw, err := json.Marshal(delta)
-	if err != nil {
-		slog.DebugContext(ctx, fmt.Sprintf("failed to marshal delta: %s", err))
-		return nil
-	}
-
 	r := &anthropic.ClaudeMessagesStreamEvent{
-		Type:     "content_block_delta",
-		Index:    event.Index,
-		DeltaRaw: deltaRaw,
+		Type:  "content_block_delta",
+		Index: event.Index,
+		Delta: &anthropic.DeltaUnion{
+			ContentBlockDelta: anthropic.ContentBlockDelta{
+				Type: "text_delta",
+				Text: &a.ReplacementTextForStreaming,
+			},
+		},
 	}
 
 	return r

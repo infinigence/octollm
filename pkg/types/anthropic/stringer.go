@@ -9,52 +9,48 @@ import (
 func (m MessageParam) String() string {
 	w := &strings.Builder{}
 	fmt.Fprintf(w, "Role: %q, ", m.Role)
-	// Single MessageContentString: show byte length, matching the OpenAI Message stringer pattern.
-	if len(m.Content) == 1 {
-		if s, ok := m.Content[0].(MessageContentString); ok {
-			fmt.Fprintf(w, "Content: len(%d), ", len(s))
-			return fmt.Sprintf("(MessageParam) {%s}", w.String())
+	switch c := m.Content.(type) {
+	case MessageContentString:
+		fmt.Fprintf(w, "Content: len(%d), ", len(c))
+	case MessageContentBlockArray:
+		fmt.Fprintf(w, "Content: [")
+		for _, block := range c {
+			if block == nil {
+				continue
+			}
+			switch b := block.(type) {
+			case *TextBlockParam:
+				fmt.Fprintf(w, "text(len=%d), ", len(b.Text))
+			case *ImageBlockParam:
+				fmt.Fprintf(w, "image, ")
+			case *ToolUseBlockParam:
+				fmt.Fprintf(w, "tool_use(name=%s,input_len=%d), ", b.Name, len(b.Input))
+			case *ToolResultBlockParam:
+				fmt.Fprintf(w, "tool_result(id=%s,len=%d), ", b.ToolUseID, contentLen(b.Content))
+			case *ThinkingBlockParam:
+				fmt.Fprintf(w, "thinking(len=%d), ", len(b.Thinking))
+			case *GeneralBlockParam:
+				fmt.Fprintf(w, "%s, ", b.Type)
+			default:
+				fmt.Fprintf(w, "%T, ", b)
+			}
 		}
+		fmt.Fprintf(w, "], ")
+	default:
+		fmt.Fprintf(w, "Content: %T, ", c)
 	}
-	// Array of blocks: bracket notation, matching the OpenAI array content pattern.
-	fmt.Fprintf(w, "Content: [")
-	for _, c := range m.Content {
-		if c == nil {
-			continue
-		}
-		b, ok := c.(*MessageContentBlock)
-		if !ok {
-			continue
-		}
-		switch b.Type {
-		case "text":
-			if b.Text != nil {
-				fmt.Fprintf(w, "text(len=%d), ", len(*b.Text))
-			}
-		case "image":
-			fmt.Fprintf(w, "image, ")
-		case "tool_use":
-			if b.MessageContentToolUse != nil {
-				fmt.Fprintf(w, "tool_use(name=%s,input_len=%d), ", b.MessageContentToolUse.Name, len(b.MessageContentToolUse.Input))
-			}
-		case "tool_result":
-			if b.MessageContentToolResult != nil {
-				id := ""
-				if b.MessageContentToolResult.ToolUseID != nil {
-					id = *b.MessageContentToolResult.ToolUseID
-				}
-				fmt.Fprintf(w, "tool_result(id=%s,len=%d), ", id, len(b.MessageContentToolResult.Content))
-			}
-		case "thinking":
-			if b.MessageContentThinking != nil {
-				fmt.Fprintf(w, "thinking(len=%d), ", len(b.MessageContentThinking.Thinking))
-			}
-		default:
-			fmt.Fprintf(w, "%s, ", b.Type)
-		}
-	}
-	fmt.Fprintf(w, "], ")
 	return fmt.Sprintf("(MessageParam) {%s}", w.String())
+}
+
+// contentLen returns the number of content elements in a MessageContent.
+func contentLen(c MessageContent) int {
+	if c == nil {
+		return 0
+	}
+	if arr, ok := c.(MessageContentBlockArray); ok {
+		return len(arr)
+	}
+	return 0
 }
 
 // String formats the struct safely for logging (no sensitive data).
@@ -118,40 +114,26 @@ func (r ClaudeMessagesRequest) String() string {
 	return fmt.Sprintf("(ClaudeMessagesRequest) {\n%s}", w.String())
 }
 
-// contentBlockString formats a MessageContentBlock safely for logging.
-func contentBlockString(b *MessageContentBlock) string {
+// contentBlockString formats a MessageContentBlockParam safely for logging.
+func contentBlockString(b MessageContentBlockParam) string {
 	if b == nil {
 		return "nil"
 	}
-	switch b.Type {
-	case "text":
-		if b.Text != nil {
-			return fmt.Sprintf("text(len=%d)", len(*b.Text))
-		}
-		return "text"
-	case "image":
+	switch v := b.(type) {
+	case *TextBlockParam:
+		return fmt.Sprintf("text(len=%d)", len(v.Text))
+	case *ImageBlockParam:
 		return "image"
-	case "tool_use":
-		if b.MessageContentToolUse != nil {
-			return fmt.Sprintf("tool_use(name=%s,input_len=%d)", b.MessageContentToolUse.Name, len(b.MessageContentToolUse.Input))
-		}
-		return "tool_use"
-	case "tool_result":
-		if b.MessageContentToolResult != nil {
-			id := ""
-			if b.MessageContentToolResult.ToolUseID != nil {
-				id = *b.MessageContentToolResult.ToolUseID
-			}
-			return fmt.Sprintf("tool_result(id=%s,len=%d)", id, len(b.MessageContentToolResult.Content))
-		}
-		return "tool_result"
-	case "thinking":
-		if b.MessageContentThinking != nil {
-			return fmt.Sprintf("thinking(len=%d)", len(b.MessageContentThinking.Thinking))
-		}
-		return "thinking"
+	case *ToolUseBlockParam:
+		return fmt.Sprintf("tool_use(name=%s,input_len=%d)", v.Name, len(v.Input))
+	case *ToolResultBlockParam:
+		return fmt.Sprintf("tool_result(id=%s,len=%d)", v.ToolUseID, contentLen(v.Content))
+	case *ThinkingBlockParam:
+		return fmt.Sprintf("thinking(len=%d)", len(v.Thinking))
+	case *GeneralBlockParam:
+		return v.Type
 	default:
-		return b.Type
+		return fmt.Sprintf("%T", v)
 	}
 }
 

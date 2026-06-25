@@ -173,12 +173,11 @@ func (p *claudeMockParams) String() string {
 	return p.rawParams
 }
 
-func extractClaudeText(content []anthropic.MessageContent) string {
-	var sb strings.Builder
-	for _, c := range content {
-		sb.WriteString(c.ExtractText())
+func extractClaudeText(content anthropic.MessageContent) string {
+	if content == nil {
+		return ""
 	}
-	return sb.String()
+	return content.ExtractText()
 }
 
 func (e *ClaudeMockEndpoint) Process(req *octollm.Request) (*octollm.Response, error) {
@@ -219,10 +218,10 @@ func (e *ClaudeMockEndpoint) claudeNonStreamResponse(req *octollm.Request, v *an
 		ID:   "msg_mock-id",
 		Type: "message",
 		Role: "assistant",
-		Content: []*anthropic.MessageContentBlock{
-			{
+		Content: anthropic.MessageContentBlockArray{
+			&anthropic.TextBlockParam{
 				Type: "text",
-				Text: &text,
+				Text: text,
 			},
 		},
 		Model:      v.Model,
@@ -274,9 +273,9 @@ func (e *ClaudeMockEndpoint) claudeStreamResponse(req *octollm.Request, v *anthr
 		blockStart := &anthropic.ClaudeMessagesStreamEvent{
 			Type:  "content_block_start",
 			Index: intPtr(0),
-			ContentBlock: &anthropic.MessageContentBlock{
+			ContentBlock: &anthropic.TextBlockParam{
 				Type: "text",
-				Text: strPtr(""),
+				Text: "",
 			},
 		}
 		select {
@@ -290,11 +289,15 @@ func (e *ClaudeMockEndpoint) claudeStreamResponse(req *octollm.Request, v *anthr
 
 		for _, c := range p.outputRunes {
 			deltaText := string(c)
-			deltaRaw := fmt.Sprintf(`{"type":"text_delta","text":%q}`, deltaText)
 			deltaEvent := &anthropic.ClaudeMessagesStreamEvent{
-				Type:     "content_block_delta",
-				Index:    intPtr(0),
-				DeltaRaw: []byte(deltaRaw),
+				Type:  "content_block_delta",
+				Index: intPtr(0),
+				Delta: &anthropic.DeltaUnion{
+					ContentBlockDelta: anthropic.ContentBlockDelta{
+						Type: "text_delta",
+						Text: &deltaText,
+					},
+				},
 			}
 			select {
 			case ch <- &octollm.StreamChunk{
@@ -323,8 +326,12 @@ func (e *ClaudeMockEndpoint) claudeStreamResponse(req *octollm.Request, v *anthr
 
 		deltaStopReason := p.stopReason
 		msgDelta := &anthropic.ClaudeMessagesStreamEvent{
-			Type:     "message_delta",
-			DeltaRaw: fmt.Appendf(nil, `{"stop_reason":%q}`, deltaStopReason),
+			Type: "message_delta",
+			Delta: &anthropic.DeltaUnion{
+				MessageDelta: anthropic.MessageDelta{
+					StopReason: &deltaStopReason,
+				},
+			},
 			Usage: &anthropic.Usage{
 				OutputTokens: int64Ptr(int64(len(p.outputRunes))),
 			},

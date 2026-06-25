@@ -21,16 +21,12 @@ func TestClaudeAdapter_ExtractTextFromRequest(t *testing.T) {
 		System: anthropic.SystemString("You are a helpful assistant."),
 		Messages: []*anthropic.MessageParam{
 			{
-				Role: "user",
-				Content: []anthropic.MessageContent{
-					anthropic.MessageContentString("Hello, how are you?"),
-				},
+				Role:    "user",
+				Content: anthropic.MessageContentString("Hello, how are you?"),
 			},
 			{
-				Role: "assistant",
-				Content: []anthropic.MessageContent{
-					anthropic.MessageContentString("I'm doing great, thank you!"),
-				},
+				Role:    "assistant",
+				Content: anthropic.MessageContentString("I'm doing great, thank you!"),
 			},
 		},
 	}
@@ -85,10 +81,16 @@ func TestClaudeAdapter_ExtractTextFromNonStreamResponse(t *testing.T) {
 		Role:       "assistant",
 		Model:      "claude-3-5-sonnet-20241022",
 		StopReason: "end_turn",
-		Content: []*anthropic.MessageContentBlock{
-			&anthropic.MessageContentBlock{
+		Content: anthropic.MessageContentBlockArray{
+			&anthropic.TextBlockParam{
 				Type: "text",
-				Text: &text,
+				Text: text,
+			},
+			&anthropic.ToolUseBlockParam{
+				Type:  "tool_use",
+				ID:    "call_xxx",
+				Name:  "Read",
+				Input: json.RawMessage([]byte(`{"file_path": "test.txt"}`)),
 			},
 		},
 	}
@@ -98,7 +100,7 @@ func TestClaudeAdapter_ExtractTextFromNonStreamResponse(t *testing.T) {
 
 	extractedText, err := adapter.ExtractTextFromBody(context.Background(), body)
 	require.NoError(t, err)
-	assert.Equal(t, "This is a test response.", string(extractedText))
+	assert.Equal(t, `This is a test response.{"file_path": "test.txt"}`, string(extractedText))
 }
 
 func TestClaudeAdapter_extractTextFromNonStreamResponse_JSON_skips_null_and_tool_use(t *testing.T) {
@@ -133,17 +135,9 @@ func TestClaudeAdapter_extractTextFromNonStreamResponse_JSON_skips_null_and_tool
 	// 标准解码器保留 null 元素为 nil 指针，不过滤，len == 2
 	require.Len(t, resp.Content, 2)
 	assert.Nil(t, resp.Content[0])
-
 	require.NotNil(t, resp.Content[1])
-	assert.Equal(t, "tool_use", resp.Content[1].Type)
-	require.NotNil(t, resp.Content[1].MessageContentToolUse)
-	assert.Equal(t, "call_xxx", resp.Content[1].MessageContentToolUse.ID)
-	assert.Equal(t, "Read", resp.Content[1].MessageContentToolUse.Name)
-	assert.Equal(t, json.RawMessage([]byte(`null`)), resp.Content[1].MessageContentToolUse.Input)
 
-	// nil 元素被 extractTextFromNonStreamResponse 里的 block==nil continue 跳过
-	// tool_use: ExtractText 返回 "null"，tool 分支再 append 一次 → "nullnull"
-	assert.Equal(t, "nullnull", string(got))
+	assert.Equal(t, "null", string(got))
 }
 
 func TestClaudeAdapter_ExtractTextFromStreamResponse(t *testing.T) {
@@ -151,16 +145,15 @@ func TestClaudeAdapter_ExtractTextFromStreamResponse(t *testing.T) {
 
 	// 测试 content_block_delta
 	deltaText := "Hello"
-	delta := &anthropic.ApiContentBlockDelta{
-		Type: "text_delta",
-		Text: &deltaText,
-	}
-	deltaRaw, _ := json.Marshal(delta)
-
 	event := &anthropic.ClaudeMessagesStreamEvent{
-		Type:     "content_block_delta",
-		Index:    intPtr(0),
-		DeltaRaw: deltaRaw,
+		Type:  "content_block_delta",
+		Index: intPtr(0),
+		Delta: &anthropic.DeltaUnion{
+			ContentBlockDelta: anthropic.ContentBlockDelta{
+				Type: "text_delta",
+				Text: &deltaText,
+			},
+		},
 	}
 
 	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{})
@@ -182,10 +175,10 @@ func TestClaudeAdapter_ExtractTextWithRepetition(t *testing.T) {
 		Role:       "assistant",
 		Model:      "claude-3-5-sonnet-20241022",
 		StopReason: "end_turn",
-		Content: []*anthropic.MessageContentBlock{
-			&anthropic.MessageContentBlock{
+		Content: anthropic.MessageContentBlockArray{
+			&anthropic.TextBlockParam{
 				Type: "text",
-				Text: &repeatedText,
+				Text: repeatedText,
 			},
 		},
 	}
@@ -211,10 +204,10 @@ func TestClaudeAdapter_GetReplacementNonStreamResponse(t *testing.T) {
 		Role:       "assistant",
 		Model:      "claude-3-5-sonnet-20241022",
 		StopReason: "end_turn",
-		Content: []*anthropic.MessageContentBlock{
-			&anthropic.MessageContentBlock{
+		Content: anthropic.MessageContentBlockArray{
+			&anthropic.TextBlockParam{
 				Type: "text",
-				Text: &originalText,
+				Text: originalText,
 			},
 		},
 	}
@@ -232,9 +225,10 @@ func TestClaudeAdapter_GetReplacementNonStreamResponse(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "content_filtered", claudeResp.StopReason)
 	assert.Len(t, claudeResp.Content, 1)
-	assert.Equal(t, "text", claudeResp.Content[0].Type)
-	assert.NotNil(t, claudeResp.Content[0].Text)
-	assert.Equal(t, "Content blocked due to policy violation.", *claudeResp.Content[0].Text)
+	textBlock, ok := claudeResp.Content[0].(*anthropic.TextBlockParam)
+	require.True(t, ok)
+	assert.Equal(t, "text", textBlock.Type)
+	assert.Equal(t, "Content blocked due to policy violation.", textBlock.Text)
 }
 
 func TestClaudeAdapter_GetReplacementStreamResponse(t *testing.T) {
@@ -243,16 +237,15 @@ func TestClaudeAdapter_GetReplacementStreamResponse(t *testing.T) {
 	}
 
 	deltaText := "Bad content"
-	delta := &anthropic.ApiContentBlockDelta{
-		Type: "text_delta",
-		Text: &deltaText,
-	}
-	deltaRaw, _ := json.Marshal(delta)
-
 	event := &anthropic.ClaudeMessagesStreamEvent{
-		Type:     "content_block_delta",
-		Index:    intPtr(0),
-		DeltaRaw: deltaRaw,
+		Type:  "content_block_delta",
+		Index: intPtr(0),
+		Delta: &anthropic.DeltaUnion{
+			ContentBlockDelta: anthropic.ContentBlockDelta{
+				Type: "text_delta",
+				Text: &deltaText,
+			},
+		},
 	}
 
 	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{})
@@ -268,8 +261,7 @@ func TestClaudeAdapter_GetReplacementStreamResponse(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "content_block_delta", claudeEvent.Type)
 
-	replacementDelta, err := claudeEvent.GetContentBlockDelta()
-	require.NoError(t, err)
+	replacementDelta := &claudeEvent.Delta.ContentBlockDelta
 	require.NotNil(t, replacementDelta)
 	assert.Equal(t, "text_delta", replacementDelta.Type)
 	assert.NotNil(t, replacementDelta.Text)
@@ -287,10 +279,10 @@ func TestUniversalAdapter_ClaudeFormat(t *testing.T) {
 		Role:       "assistant",
 		Model:      "claude-3-5-sonnet-20241022",
 		StopReason: "end_turn",
-		Content: []*anthropic.MessageContentBlock{
-			&anthropic.MessageContentBlock{
+		Content: anthropic.MessageContentBlockArray{
+			&anthropic.TextBlockParam{
 				Type: "text",
-				Text: &text,
+				Text: text,
 			},
 		},
 	}
@@ -311,16 +303,15 @@ func TestUniversalAdapter_ClaudeStreamWithRepetition(t *testing.T) {
 	accumulatedText := ""
 
 	for i := 0; i < 60; i++ {
-		delta := &anthropic.ApiContentBlockDelta{
-			Type: "text_delta",
-			Text: &repeatedText,
-		}
-		deltaRaw, _ := json.Marshal(delta)
-
 		event := &anthropic.ClaudeMessagesStreamEvent{
-			Type:     "content_block_delta",
-			Index:    intPtr(0),
-			DeltaRaw: deltaRaw,
+			Type:  "content_block_delta",
+			Index: intPtr(0),
+			Delta: &anthropic.DeltaUnion{
+				ContentBlockDelta: anthropic.ContentBlockDelta{
+					Type: "text_delta",
+					Text: &repeatedText,
+				},
+			},
 		}
 
 		body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{})

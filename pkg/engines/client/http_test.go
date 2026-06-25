@@ -159,7 +159,7 @@ data: {"type":"message_stop"}
 				Model:     "claude-sonnet-4-6",
 				MaxTokens: 1024,
 				Messages: []*anthropic.MessageParam{
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("Hello")}},
+					{Role: "user", Content: anthropic.MessageContentString("Hello")},
 				},
 			},
 		),

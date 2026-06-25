@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ClaudeMessagesRequest represents a complete Anthropic Messages API request
@@ -10,7 +11,7 @@ type ClaudeMessagesRequest struct {
 	MaxTokens   int64           `json:"max_tokens"`
 	Messages    []*MessageParam `json:"messages"`
 	Model       string          `json:"model"`
-	System      SystemContent   `json:"-"`
+	System      SystemContent   `json:"system,omitempty"`
 	Temperature *float64        `json:"temperature,omitempty"`
 	TopK        *int64          `json:"top_k,omitempty"`
 	TopP        *float64        `json:"top_p,omitempty"`
@@ -43,10 +44,6 @@ type SystemString string
 
 func (SystemString) isSystemContent() {}
 
-func (s SystemString) MarshalJSON() ([]byte, error) {
-	return json.Marshal(string(s))
-}
-
 // SystemBlocks represents an array of system blocks
 type SystemBlocks []SystemBlock
 
@@ -66,16 +63,14 @@ type SystemBlock struct {
 
 // MessageParam represents an input message
 type MessageParam struct {
-	// Role: "user" or "assistant"
-	Role    string           `json:"role"`
-	Content []MessageContent `json:"content"`
-	Name    string           `json:"name,omitempty"`
+	Role    string         `json:"role"` // "user" or "assistant"
+	Content MessageContent `json:"content"`
+	Name    string         `json:"name,omitempty"`
 }
 
 // MessageContent is an interface for message content (string or content block)
+// can be MessageContentString or MessageContentBlockArray
 type MessageContent interface {
-	// GetType returns the content type (e.g., "text", "image")
-	GetType() string
 	// ExtractText extracts text content if available
 	ExtractText() string
 }
@@ -83,73 +78,201 @@ type MessageContent interface {
 // MessageContentString represents simple string content
 type MessageContentString string
 
-func (m MessageContentString) GetType() string     { return "text" }
 func (m MessageContentString) ExtractText() string { return string(m) }
 
-func (m MessageContentString) MarshalJSON() ([]byte, error) {
-	return json.Marshal(string(m))
+// MessageContentBlockArray represents an array of content blocks
+type MessageContentBlockArray []MessageContentBlockParam
+
+func (m MessageContentBlockArray) ExtractText() string {
+	var sb strings.Builder
+	for _, block := range m {
+		if block == nil {
+			continue
+		}
+		sb.WriteString(block.ExtractText())
+	}
+	return sb.String()
 }
 
-// MessageContentBlock represents a content block object
-type MessageContentBlock struct {
+func (m *MessageContentBlockArray) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" || len(data) == 0 {
+		return nil
+	}
+	var fields []messageContentBlockParamField
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*m = make(MessageContentBlockArray, len(fields))
+	for i, field := range fields {
+		(*m)[i] = field.Value
+	}
+	return nil
+}
+
+// MessageContentBlockParam is an interface for content block parameters
+// can be TextBlockParam, ImageBlockParam, DocumentBlockParam, ThinkingBlockParam, RedactedThinkingBlockParam
+// ToolUseBlockParam, ToolResultBlockParam, GeneralBlockParam (with type field only)
+type MessageContentBlockParam interface {
+	ExtractText() string
+}
+
+// --- Concrete MessageContentBlockParam implementations ---
+
+// TextBlockParam represents a text content block
+type TextBlockParam struct {
+	Type         string        `json:"type"` // "text"
+	Text         string        `json:"text"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	Citations    []*Citation   `json:"citations,omitempty"`
+}
+
+func (b *TextBlockParam) ExtractText() string { return b.Text }
+
+// ImageBlockParam represents an image content block
+type ImageBlockParam struct {
+	Type         string                `json:"type"` // "image"
+	Source       *MessageContentSource `json:"source"`
+	CacheControl *CacheControl         `json:"cache_control,omitempty"`
+}
+
+func (b *ImageBlockParam) ExtractText() string {
+	if b.Source == nil {
+		return ""
+	}
+	return b.Source.ExtractText()
+}
+
+// DocumentBlockParam represents a document content block
+type DocumentBlockParam struct {
+	Type         string                `json:"type"` // "document"
+	Source       *MessageContentSource `json:"source"`
+	CacheControl *CacheControl         `json:"cache_control,omitempty"`
+	Citations    *DocumentCitations    `json:"citations,omitempty"` // CitationsConfigParam
+	Context      string                `json:"context,omitempty"`
+	Title        string                `json:"title,omitempty"`
+}
+
+func (b *DocumentBlockParam) ExtractText() string {
+	var sb strings.Builder
+	if b.Title != "" {
+		sb.WriteString(b.Title)
+		sb.WriteString(":")
+	}
+	if b.Context != "" {
+		sb.WriteString(b.Context)
+		sb.WriteString(":")
+	}
+	if b.Source != nil {
+		sb.WriteString(b.Source.ExtractText())
+	}
+	return sb.String()
+}
+
+// ThinkingBlockParam represents a thinking content block
+type ThinkingBlockParam struct {
+	Type      string `json:"type"` // "thinking"
+	Thinking  string `json:"thinking"`
+	Signature string `json:"signature"`
+}
+
+func (b *ThinkingBlockParam) ExtractText() string { return b.Thinking }
+
+// RedactedThinkingBlockParam represents a redacted thinking content block
+type RedactedThinkingBlockParam struct {
+	Type string `json:"type"` // "redacted_thinking"
+	Data string `json:"data"`
+}
+
+func (b *RedactedThinkingBlockParam) ExtractText() string { return "" }
+
+// ToolUseBlockParam represents a tool_use content block
+type ToolUseBlockParam struct {
+	Type         string          `json:"type"` // "tool_use"
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Input        json.RawMessage `json:"input"`
+	CacheControl *CacheControl   `json:"cache_control,omitempty"`
+}
+
+func (b *ToolUseBlockParam) ExtractText() string { return string(b.Input) }
+
+// ToolResultBlockParam represents a tool_result content block
+type ToolResultBlockParam struct {
+	Type         string         `json:"type"` // "tool_result"
+	ToolUseID    string         `json:"tool_use_id"`
+	Content      MessageContent `json:"content,omitempty"`
+	IsError      *bool          `json:"is_error,omitempty"`
+	CacheControl *CacheControl  `json:"cache_control,omitempty"`
+}
+
+func (b *ToolResultBlockParam) ExtractText() string {
+	if b.Content == nil {
+		return ""
+	}
+	return b.Content.ExtractText()
+}
+
+func (b *ToolResultBlockParam) UnmarshalJSON(data []byte) error {
+	type Alias ToolResultBlockParam
+	aux := struct {
+		Content messageContentField `json:"content,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(b),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	b.Content = aux.Content.Value
+	return nil
+}
+
+// GeneralBlockParam is a fallback for unrecognized block types
+type GeneralBlockParam struct {
 	Type string `json:"type"`
-
-	Text *string `json:"text,omitempty"`
-
-	Source *MessageContentSource `json:"source,omitempty"`
-
-	*MessageContentToolResult
-
-	*MessageContentToolUse
-
-	PartialJson *string `json:"partial_json,omitempty"`
-
-	CacheControl *MessageCacheControl `json:"cache_control,omitempty"`
-
-	Citations []Citation `json:"citations_list,omitempty"`
-
-	Citation *Citation `json:"citation_delta,omitempty"`
-
-	// For document content
-	Title             string             `json:"title,omitempty"`
-	Context           string             `json:"context,omitempty"`
-	DocumentCitations *DocumentCitations `json:"citations,omitempty"` // Used in requests
-
-	// Thinking-related fields
-	*MessageContentThinking
-
-	*MessageContentRedactedThinking
 }
 
-func (m *MessageContentBlock) GetType() string {
-	if m == nil {
-		return ""
-	}
-	return m.Type
-}
-func (m *MessageContentBlock) ExtractText() string {
-	if m == nil {
-		return ""
-	}
-	if m.Text != nil {
-		return *m.Text
-	}
-	if m.Type == "tool_use" && m.MessageContentToolUse != nil {
-		return string(m.MessageContentToolUse.Input)
-	}
-	return ""
+func (b *GeneralBlockParam) ExtractText() string { return "" }
+
+// --- Field helpers for polymorphic dispatch ---
+
+// messageContentBlockParamField dispatches a single ContentBlockParam by type
+type messageContentBlockParamField struct {
+	Value MessageContentBlockParam
 }
 
-type MessageContentToolUse struct {
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
-}
-
-type MessageContentToolResult struct {
-	ToolUseID *string          `json:"tool_use_id,omitempty"`
-	Content   []MessageContent `json:"content,omitempty"`
-	IsError   *bool            `json:"is_error,omitempty"`
+func (f *messageContentBlockParamField) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" || len(data) == 0 {
+		return nil
+	}
+	var peek struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &peek); err != nil {
+		return err
+	}
+	var v MessageContentBlockParam = &GeneralBlockParam{}
+	switch peek.Type {
+	case "text":
+		v = &TextBlockParam{}
+	case "image":
+		v = &ImageBlockParam{}
+	case "document":
+		v = &DocumentBlockParam{}
+	case "thinking":
+		v = &ThinkingBlockParam{}
+	case "redacted_thinking":
+		v = &RedactedThinkingBlockParam{}
+	case "tool_use":
+		v = &ToolUseBlockParam{}
+	case "tool_result":
+		v = &ToolResultBlockParam{}
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		return err
+	}
+	f.Value = v
+	return nil
 }
 
 type MessageContentSource struct {
@@ -160,17 +283,29 @@ type MessageContentSource struct {
 	Url       string           `json:"url,omitempty"`
 }
 
+func (s *MessageContentSource) ExtractText() string {
+	switch s.Type {
+	case "url":
+		return s.Url
+	case "base64":
+		return fmt.Sprintf("(base64_inline_%s)", s.MediaType)
+	case "text":
+		return string(s.Data)
+	case "content":
+		sb := strings.Builder{}
+		for _, c := range s.Content {
+			if c != nil {
+				sb.WriteString(c.ExtractText())
+			}
+		}
+		return sb.String()
+	default:
+		return ""
+	}
+}
+
 type DocumentCitations struct {
 	Enabled bool `json:"enabled"`
-}
-
-type MessageContentThinking struct {
-	Thinking  string `json:"thinking"`
-	Signature string `json:"signature"`
-}
-
-type MessageContentRedactedThinking struct {
-	Data string `json:"data,omitempty"`
 }
 
 type Citation struct {
@@ -190,39 +325,6 @@ type Citation struct {
 	// For block_index citations
 	StartBlockIndex *int `json:"start_block_index,omitempty"`
 	EndBlockIndex   *int `json:"end_block_index,omitempty"`
-}
-
-// ApiContentBlock represents a content block in a message
-type ApiContentBlock struct {
-	// Type: "text", "image", "tool_use", "tool_result", "document"
-	Type string `json:"type"`
-
-	// For text blocks
-	Text *string `json:"text,omitempty"`
-
-	// For image blocks
-	Source *ImageSource `json:"source,omitempty"`
-
-	// For tool_use blocks
-	ID    *string         `json:"id,omitempty"`
-	Name  *string         `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
-
-	// For tool_result blocks
-	ToolUseID *string         `json:"tool_use_id,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"` // string or array
-	IsError   *bool           `json:"is_error,omitempty"`
-
-	// Cache control
-	CacheControl *CacheControl `json:"cache_control,omitempty"`
-}
-
-// ImageSource represents an image source (base64 or URL)
-type ImageSource struct {
-	Type      string  `json:"type"`       // "base64" or "url"
-	MediaType *string `json:"media_type"` // "image/jpeg", "image/png", etc.
-	Data      *string `json:"data,omitempty"`
-	URL       *string `json:"url,omitempty"`
 }
 
 // CacheControl for prompt caching
@@ -248,7 +350,7 @@ type ToolDefinition struct {
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 
-	CacheControl *MessageCacheControl `json:"cache_control,omitempty"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 
 	MaxCharacters int `json:"max_characters,omitempty"`
 
@@ -287,187 +389,81 @@ type ToolChoice struct {
 	DisableParallelToolUse *bool `json:"disable_parallel_tool_use,omitempty"`
 }
 
-type MessageCacheControl struct {
-	Type string  `json:"type"`
-	TTL  *string `json:"ttl,omitempty"`
-}
-
-func (r ClaudeMessagesRequest) MarshalJSON() ([]byte, error) {
-	type Alias ClaudeMessagesRequest
-	aux := struct {
-		System interface{} `json:"system,omitempty"`
-		Alias
-	}{
-		Alias: (Alias)(r),
-	}
-
-	if r.System != nil {
-		aux.System = r.System
-	}
-
-	return json.Marshal(aux)
-}
-
 func (r *ClaudeMessagesRequest) UnmarshalJSON(data []byte) error {
 	type Alias ClaudeMessagesRequest
 	aux := struct {
-		System json.RawMessage `json:"system,omitempty"`
+		System systemField `json:"system,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(r),
 	}
-
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-
-	// Parse System field
-	if len(aux.System) > 0 {
-		// Try to unmarshal as string first
-		var systemStr string
-		if err := json.Unmarshal(aux.System, &systemStr); err == nil {
-			r.System = SystemString(systemStr)
-			return nil
-		}
-
-		// Try to unmarshal as array of system blocks
-		var systemBlocks []SystemBlock
-		if err := json.Unmarshal(aux.System, &systemBlocks); err == nil {
-			r.System = SystemBlocks(systemBlocks)
-			return nil
-		}
-
-		return fmt.Errorf("system must be a string or an array of system blocks")
-	}
-
+	r.System = aux.System.Value
 	return nil
 }
 
-func (m *MessageContentBlock) UnmarshalJSON(data []byte) error {
-	type Alias MessageContentBlock
-	aux := struct {
-		Citations []Citation      `json:"citations"`
-		Content   json.RawMessage `json:"content,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(m),
+type systemField struct {
+	Value SystemContent
+}
+
+func (f *systemField) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		f.Value = SystemString(s)
+		return nil
 	}
-	if err := json.Unmarshal(data, &aux); err != nil {
+	var blocks []SystemBlock
+	if err := json.Unmarshal(data, &blocks); err != nil {
 		return err
 	}
+	f.Value = SystemBlocks(blocks)
+	return nil
+}
 
-	// Copy Citations from aux to m
-	m.Citations = aux.Citations
+type messageContentField struct {
+	Value MessageContent
+}
 
-	// Handle nested content for tool_result type
-	if m.Type == "tool_result" && len(aux.Content) > 0 {
-		// Initialize MessageContentToolResult if needed
-		if m.MessageContentToolResult == nil {
-			m.MessageContentToolResult = &MessageContentToolResult{}
-		}
-
-		// Parse the nested content field
-		// It can be a string or an array of content blocks
-		var contentStr string
-		if err := json.Unmarshal(aux.Content, &contentStr); err == nil {
-			// Content is a string
-			m.MessageContentToolResult.Content = []MessageContent{MessageContentString(contentStr)}
-			return nil
-		}
-
-		// Try to parse as array of content blocks
-		var contentArray []*MessageContentBlock
-		if err := json.Unmarshal(aux.Content, &contentArray); err == nil {
-			m.MessageContentToolResult.Content = make([]MessageContent, len(contentArray))
-			for i, block := range contentArray {
-				m.MessageContentToolResult.Content[i] = block
-			}
-			return nil
-		}
-
-		// Try to parse as single content block
-		var contentSingle MessageContentBlock
-		if err := json.Unmarshal(aux.Content, &contentSingle); err == nil {
-			m.MessageContentToolResult.Content = []MessageContent{&contentSingle}
-			return nil
-		}
-
-		return fmt.Errorf("tool_result content must be a string, object, or array of objects")
+func (f *messageContentField) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" || len(data) == 0 {
+		return nil
 	}
-
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		f.Value = MessageContentString(s)
+		return nil
+	}
+	// Try as array of ContentBlockParam
+	var fields MessageContentBlockArray
+	if err := json.Unmarshal(data, &fields); err == nil {
+		f.Value = fields
+		return nil
+	}
+	// Try as single ContentBlockParam object
+	var field messageContentBlockParamField
+	if err := json.Unmarshal(data, &field); err != nil {
+		return err
+	}
+	f.Value = MessageContentBlockArray{field.Value}
 	return nil
 }
 
 func (m *MessageParam) UnmarshalJSON(data []byte) error {
-	// First try to unmarshal as normal structure with content array
 	type Alias MessageParam
 	aux := struct {
-		Content json.RawMessage `json:"content"`
+		Content messageContentField `json:"content"`
 		*Alias
 	}{
 		Alias: (*Alias)(m),
 	}
-
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-
-	// Handle null or empty content
-	if len(aux.Content) == 0 || string(aux.Content) == "null" {
+	m.Content = aux.Content.Value
+	if m.Content == nil {
 		return fmt.Errorf("content field cannot be null or empty")
 	}
-
-	// Check if content is a string
-	var contentStr string
-	if err := json.Unmarshal(aux.Content, &contentStr); err == nil {
-		// Content is a string, convert to MessageContentString
-		m.Content = []MessageContent{MessageContentString(contentStr)}
-		return nil
-	}
-
-	// Try to unmarshal as array of content blocks
-	var contentArray []*MessageContentBlock
-	if err := json.Unmarshal(aux.Content, &contentArray); err == nil {
-		m.Content = make([]MessageContent, len(contentArray))
-		for i, block := range contentArray {
-			m.Content[i] = block
-		}
-		return nil
-	}
-
-	// Try to unmarshal as single content block
-	var contentSingle MessageContentBlock
-	if err := json.Unmarshal(aux.Content, &contentSingle); err == nil {
-		m.Content = []MessageContent{&contentSingle}
-		return nil
-	}
-
-	// Provide more detailed error information
-	return fmt.Errorf("content must be a string, object, or array of objects, got: %s", string(aux.Content))
-}
-
-func (m *MessageParam) MarshalJSON() ([]byte, error) {
-	type Alias MessageParam
-	aux := struct {
-		Role    string      `json:"role"`
-		Content interface{} `json:"content"`
-		Name    string      `json:"name,omitempty"`
-	}{
-		Role: m.Role,
-		Name: m.Name,
-	}
-
-	// Convert MessageContent interface slice to appropriate JSON format
-	if len(m.Content) == 1 {
-		// Single content item - check if it's a string
-		if str, ok := m.Content[0].(MessageContentString); ok {
-			aux.Content = string(str)
-		} else {
-			aux.Content = m.Content
-		}
-	} else {
-		aux.Content = m.Content
-	}
-
-	return json.Marshal(aux)
+	return nil
 }

@@ -268,7 +268,7 @@ func TestMessage5Hash_Features_Anthropic(t *testing.T) {
 				Model:  "gpt-3.5-turbo",
 				System: anthropic.SystemString("系统消息"),
 				Messages: []*anthropic.MessageParam{
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("一23四五6七89十1二三45六7八九")}},
+					{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
 				},
 			},
 			expected: "8dca59b1-a89afb9a",
@@ -279,8 +279,8 @@ func TestMessage5Hash_Features_Anthropic(t *testing.T) {
 				Model:  "gpt-3.5-turbo",
 				System: anthropic.SystemString("系统消息"),
 				Messages: []*anthropic.MessageParam{
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("一23四五6七89十1二三45六7八九")}},
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("下一个数字是多少？")}},
+					{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
+					{Role: "user", Content: anthropic.MessageContentString("下一个数字是多少？")},
 				},
 			},
 			expected: "8dca59b1-a89afb9a-5bf09c53",
@@ -291,8 +291,8 @@ func TestMessage5Hash_Features_Anthropic(t *testing.T) {
 				Model:  "gpt-3.5-turbo",
 				System: anthropic.SystemString("系统消息"),
 				Messages: []*anthropic.MessageParam{
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("Some other resource inputs. Some other resource inputs. Some other resource inputs. Some other resource inputs. Some other resource inputs. Some other resource inputs.")}},
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("下一个数字是多少？")}},
+					{Role: "user", Content: anthropic.MessageContentString("Some other resource inputs. Some other resource inputs. Some other resource inputs. Some other resource inputs. Some other resource inputs. Some other resource inputs.")},
+					{Role: "user", Content: anthropic.MessageContentString("下一个数字是多少？")},
 				},
 			},
 			expected: "8dca59b1-c5f9b440-569d3b59",
@@ -306,14 +306,12 @@ func TestMessage5Hash_Features_Anthropic(t *testing.T) {
 				Messages: []*anthropic.MessageParam{
 					{
 						Role: "assistant",
-						Content: []anthropic.MessageContent{
-							&anthropic.MessageContentBlock{
-								Type: "tool_use",
-								MessageContentToolUse: &anthropic.MessageContentToolUse{
-									ID:    "call_123",
-									Name:  "get_current_weather",
-									Input: json.RawMessage(`{"location":"San Francisco, CA","unit":"fahrenheit"}`),
-								},
+						Content: anthropic.MessageContentBlockArray{
+							&anthropic.ToolUseBlockParam{
+								Type:  "tool_use",
+								ID:    "call_123",
+								Name:  "get_current_weather",
+								Input: json.RawMessage(`{"location":"San Francisco, CA","unit":"fahrenheit"}`),
 							},
 						},
 					},
@@ -328,8 +326,8 @@ func TestMessage5Hash_Features_Anthropic(t *testing.T) {
 				Model:  "gpt-3.5-turbo",
 				System: anthropic.SystemString("系统消息"),
 				Messages: []*anthropic.MessageParam{
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("")}},
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("一23四五6七89十1二三45六7八九")}},
+					{Role: "user", Content: anthropic.MessageContentString("")},
+					{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
 				},
 			},
 			expected: "8dca59b1-a89afb9a",
@@ -342,7 +340,7 @@ func TestMessage5Hash_Features_Anthropic(t *testing.T) {
 				System: anthropic.SystemString("系统消息"),
 				Messages: []*anthropic.MessageParam{
 					nil,
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("一23四五6七89十1二三45六7八九")}},
+					{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
 				},
 			},
 			expected: "8dca59b1-a89afb9a",
@@ -363,7 +361,7 @@ func TestMessage5Hash_Features_Anthropic(t *testing.T) {
 		// 					},
 		// 				},
 		// 			},
-		// 			{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("一23四五6七89十1二三45六7八九")}},
+		// 			{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
 		// 		},
 		// 	},
 		// 	expected: "8dca59b1-a89afb9a",
@@ -383,11 +381,11 @@ func TestMessage5Hash_Features_Anthropic(t *testing.T) {
 				Model:  "gpt-3.5-turbo",
 				System: anthropic.SystemString("系统消息"),
 				Messages: []*anthropic.MessageParam{
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("一23四五6七89十1二三45六7八九")}},
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("下一个数字是多少？")}},
-					{Role: "assistant", Content: []anthropic.MessageContent{anthropic.MessageContentString("10")}},
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("下一个数字是多少？")}},
-					{Role: "assistant", Content: []anthropic.MessageContent{anthropic.MessageContentString("11")}},
+					{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
+					{Role: "user", Content: anthropic.MessageContentString("下一个数字是多少？")},
+					{Role: "assistant", Content: anthropic.MessageContentString("10")},
+					{Role: "user", Content: anthropic.MessageContentString("下一个数字是多少？")},
+					{Role: "assistant", Content: anthropic.MessageContentString("11")},
 				},
 			},
 			expected: "8dca59b1-a89afb9a-5bf09c53-54fb23c2-ad98232b",
@@ -411,7 +409,7 @@ func TestMessage5Hash_Features_Anthropic(t *testing.T) {
 					},
 				},
 				Messages: []*anthropic.MessageParam{
-					{Role: "user", Content: []anthropic.MessageContent{anthropic.MessageContentString("hello")}},
+					{Role: "user", Content: anthropic.MessageContentString("hello")},
 				},
 			},
 			expected: "d6a59d1f-5f5cd586-29790936",
