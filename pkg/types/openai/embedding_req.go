@@ -6,31 +6,26 @@ import (
 
 // EmbeddingRequest represents the request structure for OpenAI embeddings API
 type EmbeddingRequest struct {
-	Input               RequestContentStringOrStringArray `json:"input" binding:"required"`
-	Model               string                            `json:"model" binding:"required"`
-	NormalizeEmbeddings *bool                             `json:"normalize_embeddings,omitempty"`
+	Input               EmbeddingRequestInputValue `json:"input" binding:"required"`
+	Model               string                     `json:"model" binding:"required"`
+	NormalizeEmbeddings *bool                      `json:"normalize_embeddings,omitempty"`
 }
 
-// RequestContentStringOrStringArray is an interface for input that can be either a string or string array
-type RequestContentStringOrStringArray interface {
-	isContentStringOrStringArray()
-	IsArray() bool
-	GetDataLength() int
+// EmbeddingRequestInputValue is an interface for input that can be either a string or string array
+type EmbeddingRequestInputValue interface {
+	isEmbeddingRequestInput()
 }
 
-// RequestContentString represents a single string input
-type RequestContentString string
+// EmbeddingRequestInputString represents a single string input
+type EmbeddingRequestInputString string
 
-func (RequestContentString) isContentStringOrStringArray() {}
-func (r RequestContentString) IsArray() bool               { return false }
-func (r RequestContentString) GetDataLength() int          { return len(r) }
+func (EmbeddingRequestInputString) isEmbeddingRequestInput() {}
 
-// RequestContentStringArray represents an array of string inputs
-type RequestContentStringArray []string
+// EmbeddingRequestInputStringArray represents an array of string inputs
+type EmbeddingRequestInputStringArray []string
 
-func (RequestContentStringArray) isContentStringOrStringArray() {}
-func (r RequestContentStringArray) IsArray() bool               { return true }
-func (r RequestContentStringArray) GetDataLength() int {
+func (EmbeddingRequestInputStringArray) isEmbeddingRequestInput() {}
+func (r EmbeddingRequestInputStringArray) GetDataLength() int {
 	totalLen := 0
 	for _, v := range r {
 		totalLen += len(v)
@@ -40,61 +35,34 @@ func (r RequestContentStringArray) GetDataLength() int {
 
 // UnmarshalJSON implements custom JSON unmarshaling for EmbeddingRequest
 func (m *EmbeddingRequest) UnmarshalJSON(d []byte) error {
-	type basicMsg struct {
-		Input               json.RawMessage `json:"input"`
-		Model               string          `json:"model"`
-		NormalizeEmbeddings *bool           `json:"normalize_embeddings,omitempty"`
+	type Alias EmbeddingRequest
+	aux := struct {
+		Input embeddingInputField `json:"input"`
+		*Alias
+	}{
+		Alias: (*Alias)(m),
 	}
-	bm := &basicMsg{}
-	if err := json.Unmarshal(d, bm); err != nil {
+	if err := json.Unmarshal(d, &aux); err != nil {
 		return err
 	}
-	m.Model = bm.Model
-	m.NormalizeEmbeddings = bm.NormalizeEmbeddings
-
-	if bm.Input == nil {
-		m.Input = RequestContentString("")
-		return nil
-	}
-
-	// Try to unmarshal as string first
-	cs := ""
-	if err := json.Unmarshal(bm.Input, &cs); err == nil {
-		m.Input = RequestContentString(cs)
-		return nil
-	}
-
-	// If not string, must be array
-	ca := RequestContentStringArray{}
-	if err := json.Unmarshal(bm.Input, &ca); err != nil {
-		return err
-	}
-	m.Input = ca
-
+	m.Input = aux.Input.Value
 	return nil
 }
 
-// MarshalJSON implements custom JSON marshaling for EmbeddingRequest
-func (m EmbeddingRequest) MarshalJSON() ([]byte, error) {
-	type Alias struct {
-		Input               json.RawMessage `json:"input"`
-		Model               string          `json:"model"`
-		NormalizeEmbeddings *bool           `json:"normalize_embeddings,omitempty"`
-	}
+type embeddingInputField struct {
+	Value EmbeddingRequestInputValue
+}
 
-	alias := Alias{
-		Model:               m.Model,
-		NormalizeEmbeddings: m.NormalizeEmbeddings,
+func (f *embeddingInputField) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		f.Value = EmbeddingRequestInputString(s)
+		return nil
 	}
-
-	// Marshal input
-	if m.Input != nil {
-		inputBytes, err := json.Marshal(m.Input)
-		if err != nil {
-			return nil, err
-		}
-		alias.Input = inputBytes
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err != nil {
+		return err
 	}
-
-	return json.Marshal(alias)
+	f.Value = EmbeddingRequestInputStringArray(arr)
+	return nil
 }

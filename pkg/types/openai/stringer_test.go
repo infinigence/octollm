@@ -15,19 +15,51 @@ func mustUnmarshalChatReq(t *testing.T, jsonStr string) ChatCompletionRequest {
 	return req
 }
 
-func TestToolChoiceString_String(t *testing.T) {
+func TestEmbeddingRequest_String(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
 	tests := []struct {
 		name     string
-		tc       ToolChoiceString
+		req      EmbeddingRequest
 		expected string
 	}{
-		{name: "auto", tc: ToolChoiceString("auto"), expected: "auto"},
-		{name: "none", tc: ToolChoiceString("none"), expected: "none"},
-		{name: "required", tc: ToolChoiceString("required"), expected: "required"},
+		{
+			name: "string input with normalize",
+			req: EmbeddingRequest{
+				Model:               "text-embedding-3-small",
+				Input:               EmbeddingRequestInputString("hello"),
+				NormalizeEmbeddings: boolPtr(true),
+			},
+			expected: `(EmbeddingRequest) {
+  Model: "text-embedding-3-small"
+  Input: string(len=5)
+  NormalizeEmbeddings: true
+}`,
+		},
+		{
+			name: "array input",
+			req: EmbeddingRequest{
+				Model: "text-embedding-3-small",
+				Input: EmbeddingRequestInputStringArray{"hello", "world"},
+			},
+			expected: `(EmbeddingRequest) {
+  Model: "text-embedding-3-small"
+  Input: array(total_len=10)
+}`,
+		},
+		{
+			name: "nil input",
+			req: EmbeddingRequest{
+				Model: "text-embedding-3-small",
+			},
+			expected: `(EmbeddingRequest) {
+  Model: "text-embedding-3-small"
+}`,
+		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, tt.tc.String())
+			assert.Equal(t, tt.expected, tt.req.String())
 		})
 	}
 }

@@ -76,8 +76,6 @@ func (m Message) String() string {
 	return fmt.Sprintf("(Message) {%s}", w.String())
 }
 
-func (t ToolChoiceString) String() string { return string(t) }
-
 func (t ToolChoiceObject) String() string {
 	switch t.Type {
 	case "function":
@@ -207,10 +205,13 @@ func (r EmbeddingRequest) String() string {
 	w := &strings.Builder{}
 	fmt.Fprintf(w, "  Model: %q\n", r.Model)
 	if r.Input != nil {
-		if r.Input.IsArray() {
-			fmt.Fprintf(w, "  Input: array(len=%d)\n", r.Input.GetDataLength())
-		} else {
-			fmt.Fprintf(w, "  Input: string(len=%d)\n", r.Input.GetDataLength())
+		switch v := r.Input.(type) {
+		case EmbeddingRequestInputString:
+			fmt.Fprintf(w, "  Input: string(len=%d)\n", len(v))
+		case EmbeddingRequestInputStringArray:
+			fmt.Fprintf(w, "  Input: array(total_len=%d)\n", v.GetDataLength())
+		default:
+			fmt.Fprintf(w, "  Input: other\n")
 		}
 	}
 	if r.NormalizeEmbeddings != nil {
