@@ -3,7 +3,7 @@ package openai
 // ResponsesResponse is a minimal POST /v1/responses response object: only usage is typed
 // for gateway logic; other JSON keys are ignored on unmarshal.
 type ResponsesResponse struct {
-	Id     string                 `json:"id"`
+	Id     string                 `json:"id,omitempty"`
 	Output []*ResponsesOutputItem `json:"output,omitempty"`
 	Usage  *ResponsesUsage        `json:"usage,omitempty"`
 }

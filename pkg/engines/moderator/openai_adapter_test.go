@@ -482,13 +482,11 @@ func TestUniversalAdapter_ResponsesFormat(t *testing.T) {
 	t.Run("extract text from responses request", func(t *testing.T) {
 		req := &openai.ResponsesRequest{
 			Model: "gpt-5.4",
-			Input: &openai.ResponsesInput{
-				Items: []*openai.ResponsesInputItem{
-					{
-						Role: "user",
-						Content: openai.ResponsesInputContentArray{
-							{Type: "input_text", Text: "hello responses"},
-						},
+			Input: openai.ResponsesInputMessageArray{
+				{
+					Role: "user",
+					Content: openai.ResponsesInputMessageContentArray{
+						{Type: "input_text", Text: "hello responses"},
 					},
 				},
 			},

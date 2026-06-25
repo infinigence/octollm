@@ -16,10 +16,6 @@ func floatPtr(f float64) *float64 {
 	return &f
 }
 
-func strPtr(s string) *string {
-	return &s
-}
-
 func TestMessage_Marshal_UnmarshalJSON(t *testing.T) {
 	testCases := []struct {
 		Name   string

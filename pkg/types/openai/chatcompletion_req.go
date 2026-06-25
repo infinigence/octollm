@@ -17,7 +17,7 @@ type ChatCompletionRequest struct {
 	Stop                StopValue       `json:"stop,omitempty"`
 	Stream              *bool           `json:"stream,omitempty"`
 	Tools               []*Tool         `json:"tools,omitempty"` // 可用函数工具列表
-	ToolChoice          ToolChoiceValue `json:"tool_choice,omitempty"`
+	ToolChoice          ToolChoiceValue `json:"tool_choice,omitempty"` // 指定强制调用的函数（可选）
 }
 
 func (r *ChatCompletionRequest) UnmarshalJSON(data []byte) error {
