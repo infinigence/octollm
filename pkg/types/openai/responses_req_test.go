@@ -35,12 +35,12 @@ func TestResponsesRequest_Input_StringAndArray(t *testing.T) {
 		},
 		{
 			name: "input array with text and image",
-			raw: `{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"what is in this image?"},{"type":"input_image","image_url":"https://example.com/a.jpg"}]}]}`,
+			raw:  `{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"what is in this image?"},{"type":"input_image","image_url":"https://example.com/a.jpg"}]}]}`,
 			want: "what is in this image?https://example.com/a.jpg",
 		},
 		{
 			name: "input array with image object",
-			raw: `{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_image","image_url":{"url":"https://example.com/b.jpg","detail":"high"}}]}]}`,
+			raw:  `{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_image","image_url":{"url":"https://example.com/b.jpg","detail":"high"}}]}]}`,
 			want: "https://example.com/b.jpg",
 		},
 		{
@@ -143,7 +143,7 @@ func TestResponsesInputItem_MarshalJSON_ArrayContent(t *testing.T) {
 		Role: "user",
 		Content: ResponsesInputContentArray([]*ResponsesInputContentItem{
 			{Type: "input_text", Text: "Hello"},
-			{Type: "input_image", ImageURL: ImageURLString("https://example.com/a.png")},
+			{Type: "input_image", ImageURL: MessageContentItemImageURLString("https://example.com/a.png")},
 		}),
 	}
 

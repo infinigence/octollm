@@ -15,6 +15,139 @@ func mustUnmarshalChatReq(t *testing.T, jsonStr string) ChatCompletionRequest {
 	return req
 }
 
+func TestToolChoiceString_String(t *testing.T) {
+	tests := []struct {
+		name     string
+		tc       ToolChoiceString
+		expected string
+	}{
+		{name: "auto", tc: ToolChoiceString("auto"), expected: "auto"},
+		{name: "none", tc: ToolChoiceString("none"), expected: "none"},
+		{name: "required", tc: ToolChoiceString("required"), expected: "required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.tc.String())
+		})
+	}
+}
+
+func TestToolChoiceObject_String(t *testing.T) {
+	tests := []struct {
+		name     string
+		tc       ToolChoiceObject
+		expected string
+	}{
+		{
+			name:     "function",
+			tc:       ToolChoiceObject{Type: "function", Function: &ToolChoiceFunction{Name: "get_weather"}},
+			expected: "function(get_weather)",
+		},
+		{
+			name:     "function without param",
+			tc:       ToolChoiceObject{Type: "function"},
+			expected: "function",
+		},
+		{
+			name:     "allowed_tools",
+			tc:       ToolChoiceObject{Type: "allowed_tools", AllowedTools: &ToolChoiceAllowedTools{Mode: "auto"}},
+			expected: "allowed_tools",
+		},
+		{
+			name:     "custom",
+			tc:       ToolChoiceObject{Type: "custom", Custom: &ToolChoiceCustom{Name: "my_tool"}},
+			expected: "custom(my_tool)",
+		},
+		{
+			name:     "custom without param",
+			tc:       ToolChoiceObject{Type: "custom"},
+			expected: "custom",
+		},
+		{
+			name:     "unknown type",
+			tc:       ToolChoiceObject{Type: "other"},
+			expected: "other",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, tt.tc.String())
+		})
+	}
+}
+
+func TestChatCompletionRequest_String_ToolChoice(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		expected string
+	}{
+		{
+			name: "tool_choice string auto",
+			json: `{
+				"model": "gpt-4",
+				"messages": [{"role": "user", "content": "hi"}],
+				"tool_choice": "auto"
+			}`,
+			expected: `(ChatCompletionRequest) {
+  Model: "gpt-4"
+  Messages: len(1)
+    (Message) {Role: "user", Content: len(2), }
+  ToolChoice: auto
+}`,
+		},
+		{
+			name: "tool_choice object function",
+			json: `{
+				"model": "gpt-4",
+				"messages": [{"role": "user", "content": "hi"}],
+				"tool_choice": {"type": "function", "function": {"name": "get_weather"}}
+			}`,
+			expected: `(ChatCompletionRequest) {
+  Model: "gpt-4"
+  Messages: len(1)
+    (Message) {Role: "user", Content: len(2), }
+  ToolChoice: function(get_weather)
+}`,
+		},
+		{
+			name: "tool_choice object allowed_tools",
+			json: `{
+				"model": "gpt-4",
+				"messages": [{"role": "user", "content": "hi"}],
+				"tool_choice": {"type": "allowed_tools", "allowed_tools": {"mode": "auto", "tools": []}}
+			}`,
+			expected: `(ChatCompletionRequest) {
+  Model: "gpt-4"
+  Messages: len(1)
+    (Message) {Role: "user", Content: len(2), }
+  ToolChoice: allowed_tools
+}`,
+		},
+		{
+			name: "tool_choice object custom",
+			json: `{
+				"model": "gpt-4",
+				"messages": [{"role": "user", "content": "hi"}],
+				"tool_choice": {"type": "custom", "custom": {"name": "my_tool"}}
+			}`,
+			expected: `(ChatCompletionRequest) {
+  Model: "gpt-4"
+  Messages: len(1)
+    (Message) {Role: "user", Content: len(2), }
+  ToolChoice: custom(my_tool)
+}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := mustUnmarshalChatReq(t, tt.json)
+			assert.Equal(t, tt.expected, req.String())
+		})
+	}
+}
+
 func mustUnmarshalCompletionReq(t *testing.T, jsonStr string) CompletionRequest {
 	t.Helper()
 	var req CompletionRequest

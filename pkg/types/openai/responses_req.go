@@ -141,9 +141,9 @@ type ResponsesInputContentItem struct {
 
 func (i *ResponsesInputContentItem) UnmarshalJSON(data []byte) error {
 	type Alias struct {
-		Type     string          `json:"type"`
-		Text     string          `json:"text,omitempty"`
-		ImageURL json.RawMessage `json:"image_url,omitempty"`
+		Type     string        `json:"type"`
+		Text     string        `json:"text,omitempty"`
+		ImageURL imageURLField `json:"image_url,omitempty"`
 	}
 
 	var alias Alias
@@ -153,14 +153,7 @@ func (i *ResponsesInputContentItem) UnmarshalJSON(data []byte) error {
 
 	i.Type = alias.Type
 	i.Text = alias.Text
-
-	if len(alias.ImageURL) > 0 {
-		imageURL, err := unmarshalImageURLContent(alias.ImageURL)
-		if err != nil {
-			return err
-		}
-		i.ImageURL = imageURL
-	}
+	i.ImageURL = alias.ImageURL.Value
 
 	return nil
 }
@@ -169,20 +162,13 @@ func (i ResponsesInputContentItem) MarshalJSON() ([]byte, error) {
 	type Alias struct {
 		Type     string          `json:"type"`
 		Text     string          `json:"text,omitempty"`
-		ImageURL json.RawMessage `json:"image_url,omitempty"`
+		ImageURL ImageURLContent `json:"image_url,omitempty"`
 	}
 
 	alias := Alias{
-		Type: i.Type,
-		Text: i.Text,
-	}
-
-	if i.ImageURL != nil {
-		imageURLBytes, err := json.Marshal(i.ImageURL)
-		if err != nil {
-			return nil, err
-		}
-		alias.ImageURL = imageURLBytes
+		Type:     i.Type,
+		Text:     i.Text,
+		ImageURL: i.ImageURL,
 	}
 
 	return json.Marshal(alias)

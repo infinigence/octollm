@@ -96,7 +96,7 @@ func TestOpenAIAdapter_ExtractTextFromRequest(t *testing.T) {
 					{
 						Role:    "assistant",
 						Content: openai.MessageContentString("I'll use a tool"),
-						ToolCalls: []*openai.ToolCall{
+						ToolCalls: []*openai.MessageToolCall{
 							{
 								ID:   "call_123",
 								Type: "function",
@@ -212,7 +212,7 @@ func TestOpenAIAdapter_ExtractTextFromResponse_WithToolCalls(t *testing.T) {
 				Message: &openai.Message{
 					Role:    "assistant",
 					Content: openai.MessageContentString("I'll search for that."),
-					ToolCalls: []*openai.ToolCall{
+					ToolCalls: []*openai.MessageToolCall{
 						{
 							ID:   "call_456",
 							Type: "function",
@@ -444,7 +444,7 @@ func TestOpenAIAdapter_ExtractTextFromMessage(t *testing.T) {
 			msg: &openai.Message{
 				Role:    "assistant",
 				Content: openai.MessageContentString("Using tool"),
-				ToolCalls: []*openai.ToolCall{
+				ToolCalls: []*openai.MessageToolCall{
 					{
 						ID:   "call_1",
 						Type: "function",

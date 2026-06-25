@@ -21,3 +21,7 @@ type CompletionRequest struct {
 	Temperature      *float64           `json:"temperature,omitempty"`
 	TopP             *float64           `json:"top_p,omitempty"`
 }
+
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"` // 是否在流式响应中包含 usage 信息
+}

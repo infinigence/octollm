@@ -91,7 +91,7 @@ func TestMessage5Hash_Features(t *testing.T) {
 					},
 					{
 						Role: "assistant",
-						ToolCalls: []*openai.ToolCall{
+						ToolCalls: []*openai.MessageToolCall{
 							{
 								ID:    "call_123",
 								Index: 0,

@@ -28,7 +28,7 @@ func TestCollectFromOpenAIMessageContent(t *testing.T) {
 	t.Run("array with image_url string and struct", func(t *testing.T) {
 		var c openai.MessageContent = openai.MessageContentArray([]*openai.MessageContentItem{
 			{Type: "text", Text: "x"},
-			{Type: "image_url", ImageURL: openai.ImageURLString("https://a.example/1.png")},
+			{Type: "image_url", ImageURL: openai.MessageContentItemImageURLString("https://a.example/1.png")},
 			{Type: "image_url", ImageURL: &openai.MessageContentItemImageURL{URL: "https://b.example/2.png", Detail: "high"}},
 		})
 		got := collectFromOpenAIMessageContent(3, "content", c)

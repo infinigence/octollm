@@ -76,23 +76,22 @@ func (m Message) String() string {
 	return fmt.Sprintf("(Message) {%s}", w.String())
 }
 
-func toolChoiceString(tc *ToolChoice) string {
-	if tc == nil {
-		return ""
-	}
-	if tc.String != nil {
-		return *tc.String
-	}
-	if tc.Function != nil && tc.Function.Function != nil {
-		return fmt.Sprintf("function(%s)", tc.Function.Function.Name)
-	}
-	if tc.AllowedTools != nil {
+func (t ToolChoiceString) String() string { return string(t) }
+
+func (t ToolChoiceObject) String() string {
+	switch t.Type {
+	case "function":
+		if t.Function != nil {
+			return fmt.Sprintf("function(%s)", t.Function.Name)
+		}
+	case "allowed_tools":
 		return "allowed_tools"
+	case "custom":
+		if t.Custom != nil {
+			return fmt.Sprintf("custom(%s)", t.Custom.Name)
+		}
 	}
-	if tc.Custom != nil && tc.Custom.Custom != nil {
-		return fmt.Sprintf("custom(%s)", tc.Custom.Custom.Name)
-	}
-	return ""
+	return t.Type
 }
 
 // String formats the struct safely for logging (no sensitive data).
@@ -176,7 +175,7 @@ func (r ChatCompletionRequest) String() string {
 		fmt.Fprintf(w, "  TopK: %d\n", *r.TopK)
 	}
 	if r.Stop != nil {
-		fmt.Fprintf(w, "  Stop: %v\n", r.Stop)
+		fmt.Fprintf(w, "  Stop: %s\n", r.Stop)
 	}
 	if r.Stream != nil {
 		fmt.Fprintf(w, "  Stream: %t\n", *r.Stream)
@@ -195,7 +194,7 @@ func (r ChatCompletionRequest) String() string {
 		}
 	}
 	if r.ToolChoice != nil {
-		fmt.Fprintf(w, "  ToolChoice: %s\n", toolChoiceString(r.ToolChoice))
+		fmt.Fprintf(w, "  ToolChoice: %s\n", r.ToolChoice)
 	}
 	if r.Thinking != nil {
 		fmt.Fprintf(w, "  Thinking: type=%s\n", r.Thinking.Type)
@@ -218,13 +217,6 @@ func (r EmbeddingRequest) String() string {
 		fmt.Fprintf(w, "  NormalizeEmbeddings: %t\n", *r.NormalizeEmbeddings)
 	}
 	return fmt.Sprintf("(EmbeddingRequest) {\n%s}", w.String())
-}
-
-func (s StopUnion) String() string {
-	if s.Str != nil {
-		return *s.Str
-	}
-	return fmt.Sprintf("%v", s.Array)
 }
 
 // usageString formats a Usage safely for logging.

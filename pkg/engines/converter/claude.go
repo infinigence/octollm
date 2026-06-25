@@ -116,7 +116,7 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 
 	// Stop Sequences
 	if len(src.StopSequences) > 0 {
-		dst.Stop = &openai.StopUnion{Array: src.StopSequences}
+		dst.Stop = openai.StopArray(src.StopSequences)
 	}
 
 	// Convert System Prompt to Messages
@@ -216,7 +216,7 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 
 		} else if role == anthropic.MessageParamRoleAssistant {
 			var contentParts []*openai.MessageContentItem
-			var toolCalls []*openai.ToolCall
+			var toolCalls []*openai.MessageToolCall
 			toolCallIndex := 0
 
 			for _, block := range msg.Content {
@@ -242,7 +242,7 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 					if err != nil {
 						return nil, fmt.Errorf("failed to marshal tool use input: %w", err)
 					}
-					toolCalls = append(toolCalls, &openai.ToolCall{
+					toolCalls = append(toolCalls, &openai.MessageToolCall{
 						ID:    contentBlock.MessageContentToolUse.ID,
 						Index: toolCallIndex,
 						Type:  "function",
@@ -276,7 +276,7 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 		}
 		dst.Tools = append(dst.Tools, &openai.Tool{
 			Type: "function",
-			Function: openai.ToolFunction{
+			Function: &openai.ToolFunction{
 				Name:        &tool.Name,
 				Description: &tool.Description,
 				Parameters:  tool.InputSchema,
@@ -288,22 +288,17 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 	if src.ToolChoice != nil {
 		switch src.ToolChoice.Type {
 		case "none":
-			none := "none"
-			dst.ToolChoice = &openai.ToolChoice{String: &none}
+			dst.ToolChoice = openai.ToolChoiceString("none")
 		case "auto":
-			auto := "auto"
-			dst.ToolChoice = &openai.ToolChoice{String: &auto}
+			dst.ToolChoice = openai.ToolChoiceString("auto")
 		case "any":
-			required := "required"
-			dst.ToolChoice = &openai.ToolChoice{String: &required}
+			dst.ToolChoice = openai.ToolChoiceString("required")
 		case "tool":
 			if src.ToolChoice.Name != nil {
-				dst.ToolChoice = &openai.ToolChoice{
+				dst.ToolChoice = openai.ToolChoiceObject{
+					Type: "function",
 					Function: &openai.ToolChoiceFunction{
-						Type: "function",
-						Function: &openai.ToolChoiceFunctionParam{
-							Name: *src.ToolChoice.Name,
-						},
+						Name: *src.ToolChoice.Name,
 					},
 				}
 			}
@@ -546,7 +541,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 			// Extract Delta
 			var deltaContent string
 			var reasoningContent string
-			var toolCalls []*openai.ToolCall
+			var toolCalls []*openai.MessageToolCall
 
 			if len(openaiChunk.Choices) > 0 {
 				choice := openaiChunk.Choices[0]
