@@ -258,35 +258,6 @@ type RuleComposerEngine struct {
 	OrgName string
 }
 
-func checkIsStream(req *octollm.Request) (bool, error) {
-	if action, ok := octollm.GetCtxValue[string](req, octollm.ContextKeyAction); ok {
-		return octollm.IsStreamAction(action), nil
-	}
-
-	parsed, err := req.Body.Parsed()
-	if err != nil {
-		return false, err
-	}
-
-	switch body := parsed.(type) {
-	case *openai.ChatCompletionRequest:
-		if body.Stream != nil && *body.Stream {
-			return true, nil
-		}
-	case *openai.CompletionRequest:
-		return body.Stream, nil
-	case *openai.ResponsesRequest:
-		if body.Stream != nil && *body.Stream {
-			return true, nil
-		}
-	case *anthropic.ClaudeMessagesRequest:
-		if body.Stream != nil && *body.Stream {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 var _ octollm.Engine = (*RuleComposerEngine)(nil)
 
 func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, error) {
@@ -325,7 +296,7 @@ func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, e
 	}
 
 	if signalIsStream, ok := octollm.GetCtxValue[func(bool)](req, octollm.ContextKeyStreamSignaler); ok && signalIsStream != nil {
-		isStream, err := checkIsStream(req)
+		isStream, err := octollm.IsStreamRequest(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to check if request is stream: %w", err)
 		}

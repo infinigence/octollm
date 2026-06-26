@@ -306,6 +306,45 @@ func IsStreamAction(action string) bool {
 	return strings.HasPrefix(strings.ToLower(action), "stream")
 }
 
+// IsStreamRequest reports whether req asks for a streaming response, using
+// whichever signal the protocol carries. It returns an error only when a
+// body-based protocol's body cannot be parsed.
+//
+// Detection order:
+//  1. ContextKeyIsStream, the resolved flag set once the request is classified
+//     — authoritative when present.
+//  2. ContextKeyAction, for URL-action protocols (e.g. Vertex
+//     streamGenerateContent) where streaming is not a body field.
+//  3. the typed request body's stream flag, for body-based protocols
+//     (OpenAI chat/completions & completions, Responses, Claude messages).
+func IsStreamRequest(req *Request) (bool, error) {
+	if v, ok := GetCtxValue[bool](req, ContextKeyIsStream); ok {
+		return v, nil
+	}
+	if action, ok := GetCtxValue[string](req, ContextKeyAction); ok {
+		return IsStreamAction(action), nil
+	}
+	if req == nil || req.Body == nil {
+		return false, nil
+	}
+
+	parsed, err := req.Body.Parsed()
+	if err != nil {
+		return false, err
+	}
+	switch body := parsed.(type) {
+	case *openai.ChatCompletionRequest:
+		return body.Stream != nil && *body.Stream, nil
+	case *openai.CompletionRequest:
+		return body.Stream, nil
+	case *openai.ResponsesRequest:
+		return body.Stream != nil && *body.Stream, nil
+	case *anthropic.ClaudeMessagesRequest:
+		return body.Stream != nil && *body.Stream, nil
+	}
+	return false, nil
+}
+
 // VertexAIHandler handles Google VertexAI/Gemini generateContent requests
 func VertexAIHandler(engine Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
