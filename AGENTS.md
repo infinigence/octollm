@@ -58,8 +58,10 @@ Engines can be arbitrarily nested, each handling specific concerns (client commu
 - **`/pkg/exprenv`** - expr-lang environment for rule/rewrite expressions; exposes `req.Header()`, `req.Feature()`, `req.Context()`, `req.RawReq()`; `exprenv.Get(req)` retrieves or creates the env from request context, `exprenv.Sentinel` is a zero-value env used for compile-time type checking
 - **`/pkg/composer`** - YAML config parsing, model-to-engine mapping, orchestration
 - **`/pkg/errutils`** - Custom error types (`UpstreamHTTPError` vs handler errors)
-- **`/pkg/types/anthropic`** - Claude message request/response types
+- **`/pkg/types/anthropic`** - Claude message request/response types; `docs/api-create-snap*.md` is a dated snapshot of Anthropic's official Create Message API spec — the source-of-truth to model these types against (consult the latest snapshot when adding/editing fields)
 - **`/pkg/types/openai`** - OpenAI ChatCompletion types
+- **`/pkg/types/UNION_TYPES.md`** - READ before adding/editing any `/pkg/types` type: the polymorphic-JSON convention (Interface + `xxxField` pattern, dispatch, marshaling)
+- **`/pkg/types/TESTING_GUIDE.md`** - READ before testing those types: table-driven Marshal/Unmarshal conventions
 - **`/cmd/octollm-server`** - Standalone server entry point with Gin routes and auth middleware
 
 ### Request Flow
