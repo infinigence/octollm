@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
@@ -164,6 +166,16 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 	if httpReq.Header.Get("Content-Type") == "" {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
+	// Mark the request replayable so net/http's Transport will transparently retry
+	// it on a fresh connection when a pooled keep-alive conn is closed by the server
+	// at the same moment we write the request (errServerClosedIdle / nothingWrittenError).
+	// Without an Idempotency-Key header, Request.isReplayable() returns false for POST
+	// and shouldRetryRequest gives up, surfacing the race as a spurious request error.
+	// See net/http transport.go (shouldRetryRequest) and request.go (isReplayable).
+	// The value only needs to be present, not stable: the Transport reuses the same
+	// *Request for its one-shot replay, while load-balancer-level retries are new
+	// logical attempts that legitimately get a new key.
+	httpReq.Header.Set("X-Idempotency-Key", uuid.New().String())
 
 	dumpReq := httpReq.Clone(httpReq.Context())
 	redactSensitiveHeaders(dumpReq.Header)
