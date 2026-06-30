@@ -73,9 +73,11 @@ func (m *chatCompletionMerger) Merge(chunk *octollm.StreamChunk) error {
 	if resp.Created != 0 {
 		m.result.Created = resp.Created
 	}
-	// Usage only appears on the final chunk (stream_options.include_usage).
+	// Usage only appears on the final chunk (stream_options.include_usage),
+	// but merge field-by-field so multiple usage-bearing chunks accumulate
+	// instead of the later one clobbering the earlier.
 	if resp.Usage != nil {
-		m.result.Usage = resp.Usage
+		m.result.Usage = mergeChatCompletionUsage(m.result.Usage, resp.Usage)
 	}
 
 	for _, sc := range resp.Choices {
@@ -112,6 +114,72 @@ func (m *chatCompletionMerger) Merge(chunk *octollm.StreamChunk) error {
 		}
 	}
 	return nil
+}
+
+// mergeChatCompletionUsage folds a usage object from a chunk into the running
+// total field-by-field, so token counts spread across multiple usage-bearing
+// chunks accumulate rather than a later chunk clobbering the earlier one. A
+// non-zero src field overrides dst; zero fields are left untouched.
+func mergeChatCompletionUsage(dst, src *openai.Usage) *openai.Usage {
+	if src == nil {
+		return dst
+	}
+	if dst == nil {
+		cp := *src
+		return &cp
+	}
+	if src.CompletionTokens != 0 {
+		dst.CompletionTokens = src.CompletionTokens
+	}
+	if src.PromptTokens != 0 {
+		dst.PromptTokens = src.PromptTokens
+	}
+	if src.TotalTokens != 0 {
+		dst.TotalTokens = src.TotalTokens
+	}
+	dst.CompletionTokensDetails = mergeCompletionTokensDetails(dst.CompletionTokensDetails, src.CompletionTokensDetails)
+	dst.PromptTokensDetails = mergePromptTokensDetails(dst.PromptTokensDetails, src.PromptTokensDetails)
+	return dst
+}
+
+// mergeCompletionTokensDetails folds completion-token detail fields into the
+// running total, so a non-zero src field overrides dst and zero fields are left
+// untouched (rather than the whole pointer being replaced).
+func mergeCompletionTokensDetails(dst, src *openai.CompletionTokensDetails) *openai.CompletionTokensDetails {
+	if src == nil {
+		return dst
+	}
+	if dst == nil {
+		cp := *src
+		return &cp
+	}
+	if src.ReasoningTokens != 0 {
+		dst.ReasoningTokens = src.ReasoningTokens
+	}
+	if src.AudioTokens != 0 {
+		dst.AudioTokens = src.AudioTokens
+	}
+	return dst
+}
+
+// mergePromptTokensDetails folds prompt-token detail fields into the running
+// total, so a non-zero src field overrides dst and zero fields are left
+// untouched (rather than the whole pointer being replaced).
+func mergePromptTokensDetails(dst, src *openai.PromptTokensDetails) *openai.PromptTokensDetails {
+	if src == nil {
+		return dst
+	}
+	if dst == nil {
+		cp := *src
+		return &cp
+	}
+	if src.CachedTokens != 0 {
+		dst.CachedTokens = src.CachedTokens
+	}
+	if src.AudioTokens != 0 {
+		dst.AudioTokens = src.AudioTokens
+	}
+	return dst
 }
 
 // mergeToolCall folds a streamed tool-call delta into the choice, accumulating

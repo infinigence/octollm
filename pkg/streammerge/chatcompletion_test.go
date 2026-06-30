@@ -98,6 +98,21 @@ func TestChatCompletionMerger_Reasoning(t *testing.T) {
 	}, `{"id":"2026021010253871cb1b6ec9e54d6b","created":1770690338,"object":"chat.completion","model":"glm-4.6","usage":{"completion_tokens":1024,"prompt_tokens":9,"total_tokens":1033,"prompt_tokens_details":{"cached_tokens":7}},"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"\n你好！\n\n我是一个大型语言模型","reasoning_content":"\n1.  **分析用户的查询："}}]}`)
 }
 
+// TestChatCompletionMerger_UsageSplitAcrossChunks covers the corner case where
+// usage is dribbled out across chunks instead of arriving whole in the final
+// one: prompt_tokens_details (cached_tokens) shows up in the very first chunk,
+// while the closing usage chunk carries only the token totals and a nil
+// prompt_tokens_details. A whole-pointer assignment would let the final chunk
+// clobber the early cached_tokens; the field-by-field merge must preserve it.
+func TestChatCompletionMerger_UsageSplitAcrossChunks(t *testing.T) {
+	runChatMerge(t, []string{
+		`{"id":"u","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}],"usage":{"prompt_tokens":0,"total_tokens":0,"completion_tokens":0,"prompt_tokens_details":{"cached_tokens":7}}}`,
+		`{"id":"u","model":"m","choices":[{"index":0,"finish_reason":"stop","delta":{"content":""}}]}`,
+		`{"id":"u","model":"m","choices":[],"usage":{"prompt_tokens":31,"total_tokens":46,"completion_tokens":15,"prompt_tokens_details":null}}`,
+		`[DONE]`,
+	}, `{"id":"u","created":0,"object":"chat.completion","model":"m","usage":{"completion_tokens":15,"prompt_tokens":31,"total_tokens":46,"prompt_tokens_details":{"cached_tokens":7}},"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]}`)
+}
+
 // TestChatCompletionMerger_MultipleChoices checks out-of-order choice indexes
 // are accumulated independently and emitted sorted by index.
 func TestChatCompletionMerger_MultipleChoices(t *testing.T) {
