@@ -1,3 +1,9 @@
+// Structs in this file have AI-generated jlexer parsers in:
+//   messages_request_jlexer.go
+// If you modify any struct definition below, regenerate the jlexer file
+// following the guide at pkg/types/JLEXER_PARSER_GUIDE.md.
+// See the header comment of messages_request_jlexer.go for the source hash.
+
 package anthropic
 
 import (

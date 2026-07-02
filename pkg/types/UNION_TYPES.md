@@ -2,7 +2,7 @@
 
 When a JSON field can legally hold values of different types (e.g. a string _or_ an array, a string _or_ an object), Go's `json.Unmarshal` cannot directly populate an interface variable—it doesn't know which concrete type to instantiate. This document describes the pattern used in this project to handle such fields.
 
-## Two Kinds of Polymorphism
+## Three Kinds of Polymorphism
 
 ### Kind 1: Discriminated by a `type` field
 
@@ -21,7 +21,7 @@ type ContentItem struct {
 }
 ```
 
-> **Limitation:** This only works when all variants can share one struct without conflicts. If two variants define the same JSON key with incompatible Go types (e.g. `citations` as `[]*Citation` in one variant but `*DocumentCitations` in another), or a field needs `omitempty` in one variant but not another (e.g. `signature` is required for `thinking` blocks but absent for `text` blocks), a single struct is impossible. You must use Kind 2 even though a `type` field exists—see [Type-discriminated with field conflicts](#type-discriminated-with-field-conflicts) below.
+> **Limitation:** This only works when all variants can share one struct without conflicts. If two variants define the same JSON key with incompatible Go types (e.g. `citations` as `[]*Citation` in one variant but `*DocumentCitations` in another), or a field needs `omitempty` in one variant but not another (e.g. `signature` is required for `thinking` blocks but absent for `text` blocks), a single struct is impossible. In that case, even though a `type` field exists, you must use [Kind 3](#kind-3-type-discriminated-with-field-conflicts).
 
 ### Kind 2: No `type` field—same field, fundamentally different JSON types
 
@@ -40,13 +40,13 @@ The same JSON key can be a string, an array, or an object with no common discrim
 
 **This is the case that requires the Interface + Field pattern described below.**
 
-A field can mix both kinds: the top-level split is Kind 2 (string vs. object), while the object's internal variants are distinguished by their `type` field (Kind 1). See the `ToolChoice` example below.
+A field can mix kinds: the top-level split is Kind 2 (string vs. object), while the object's internal variants are distinguished by their `type` field. If those variants have no field conflicts, they're Kind 1; if they do, they're Kind 3. See the `ToolChoice` example below (Kind 1 internally) and `MessageContentBlockParam` in [Kind 3](#kind-3-type-discriminated-with-field-conflicts) (Kind 3 internally).
 
-<a id="type-discriminated-with-field-conflicts"></a>
+<a id="kind-3-type-discriminated-with-field-conflicts"></a>
 
-#### Type-discriminated with field conflicts
+### Kind 3: Type-discriminated with field conflicts
 
-A subtler case: the JSON object has a `type` field (looking like Kind 1), but the variants have field conflicts that make a single struct impossible. The solution is still the Interface + Field pattern, but the Field helper dispatches by peeking at `type` rather than trying each concrete type sequentially.
+The JSON object has a `type` field (looking like Kind 1), but the variants have field conflicts that make a single struct impossible. The solution is still the Interface + Field pattern, but the Field helper dispatches by peeking at `type` rather than trying each concrete type sequentially.
 
 Consider `MessageContentBlockParam` from the Anthropic Messages API. All variants carry a `type` field, but:
 
@@ -108,7 +108,7 @@ type ToolChoiceObject struct {
 func (ToolChoiceObject) isToolChoiceValue() {}
 ```
 
-Type-discriminated concrete types (when `type` exists but field conflicts prevent Kind 1):
+Kind 3 concrete types (when `type` exists but field conflicts prevent Kind 1):
 
 ```go
 type MessageContentBlockParam interface {
@@ -225,11 +225,11 @@ func (f *messageContentBlockParamField) UnmarshalJSON(data []byte) error {
 
 The `GeneralBlockParam` fallback ensures forward compatibility: new `type` values from the API don't break unmarshaling.
 
-**Two dispatch strategies:**
+**Two dispatch strategies for the Field helper:**
 
-| | Try-each-type | Type-switch |
+| | Try-each-type (Kind 2) | Type-switch (Kind 3) |
 |---|---|---|
-| When | No `type` field; variants are different JSON types | `type` exists but field conflicts |
+| When | No `type` field; variants are different JSON types | `type` exists but field conflicts prevent single struct |
 | How | `json.Unmarshal` into each candidate; first success wins | Peek `type`, `switch` to pick type, then `json.Unmarshal` |
 | Fallback | Last attempt's error | `GeneralBlockParam` catch-all |
 

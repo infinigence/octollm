@@ -1,3 +1,9 @@
+// Structs in this file have AI-generated jlexer parsers in:
+//   chatcompletion_resp_jlexer.go
+// If you modify any struct definition below, regenerate the jlexer file
+// following the guide at pkg/types/JLEXER_PARSER_GUIDE.md.
+// See the header comment of chatcompletion_resp_jlexer.go for the source hash.
+
 package openai
 
 // ChatCompletionResponse represents a non-streaming chat completion response
@@ -37,23 +43,6 @@ type ChatCompletionStreamChoice struct {
 	FinishReason string   `json:"finish_reason,omitempty"` // Only present when stream ends
 	Index        int      `json:"index"`
 	Delta        *Message `json:"delta"`
-}
-
-type Logprobs struct {
-	Content []TokenLogprob `json:"content,omitempty"` // Token 级别的概率信息
-}
-
-type TokenLogprob struct {
-	Token       string       `json:"token"`                  // Token 文本
-	Logprob     float64      `json:"logprob"`                // 对数概率
-	Bytes       []int        `json:"bytes,omitempty"`        // UTF-8 字节序列
-	TopLogprobs []TopLogprob `json:"top_logprobs,omitempty"` // 前 N 个候选 token
-}
-
-type TopLogprob struct {
-	Token   string  `json:"token"`           // 候选 Token 文本
-	Logprob float64 `json:"logprob"`         // 对数概率
-	Bytes   []int   `json:"bytes,omitempty"` // UTF-8 字节序列
 }
 
 type Usage struct {
