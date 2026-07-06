@@ -124,7 +124,7 @@ func NewRewriteEngine(next octollm.Engine, requestRewrite, nonstreamResponseRewr
 }
 
 func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error) {
-	shouldRevertRewrite := false
+	newReq := req
 	if e.RequestRewrite != nil {
 		exprEnv := exprenv.Get(req)
 
@@ -137,26 +137,17 @@ func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error)
 		if err != nil {
 			return nil, fmt.Errorf("get request body bytes error: %w", err)
 		}
-		originalBody := req.Body
-		req.Body = octollm.NewBodyFromBytes(reqRewriter.RewriteJSON(b), req.Body.Parser())
-		shouldRevertRewrite = true
-		defer func() {
-			if shouldRevertRewrite {
-				// revert the rewrite to make sure the original request body is not changed for other engines in the chain
-				req.Body = originalBody
-				slog.DebugContext(req.Context(), "[RewriteEngine.Process] revert request body rewrite")
-			}
-		}()
+		newBody := octollm.NewBodyFromBytes(reqRewriter.RewriteJSON(b), req.Body.Parser())
+		newReq = req.WithBody(newBody)
 		slog.DebugContext(req.Context(), "[RewriteEngine.Run] request body rewritten")
 	}
 	if e.Next == nil {
 		return nil, fmt.Errorf("next engine is nil")
 	}
-	resp, err := e.Next.Process(req)
+	resp, err := e.Next.Process(newReq)
 	if err != nil {
 		return nil, fmt.Errorf("underlying engine run error: %w", err)
 	}
-	shouldRevertRewrite = false
 
 	if resp.Stream != nil {
 		if e.StreamChunkRewrite == nil {
@@ -207,7 +198,9 @@ func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error)
 			resp.Body.Close()
 			return nil, fmt.Errorf("read response body error: %w", err)
 		}
-		resp.Body = octollm.NewBodyFromBytes(respRewriter.RewriteJSON(b), resp.Body.Parser())
+		newBody := octollm.NewBodyFromBytes(respRewriter.RewriteJSON(b), resp.Body.Parser())
+		resp.Body.Close()
+		resp.Body = newBody
 		slog.DebugContext(req.Context(), "[RewriteEngine.Run] non-stream response body rewritten")
 	}
 
