@@ -137,12 +137,13 @@ func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error)
 		if err != nil {
 			return nil, fmt.Errorf("get request body bytes error: %w", err)
 		}
-		req.Body.SetBytes(reqRewriter.RewriteJSON(b))
+		originalBody := req.Body
+		req.Body = octollm.NewBodyFromBytes(reqRewriter.RewriteJSON(b), req.Body.Parser())
 		shouldRevertRewrite = true
 		defer func() {
 			if shouldRevertRewrite {
 				// revert the rewrite to make sure the original request body is not changed for other engines in the chain
-				req.Body.SetBytes(b)
+				req.Body = originalBody
 				slog.DebugContext(req.Context(), "[RewriteEngine.Process] revert request body rewrite")
 			}
 		}()
@@ -178,7 +179,7 @@ func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error)
 					slog.WarnContext(ctx, fmt.Sprintf("read stream chunk error: %s", err))
 					continue
 				}
-				chunk.Body.SetBytes(chunkRewriter.RewriteJSON(b))
+				chunk.Body = octollm.NewBodyFromBytes(chunkRewriter.RewriteJSON(b), chunk.Body.Parser())
 				select {
 				case rewritenChunk <- chunk:
 				case <-ctx.Done():
@@ -206,7 +207,7 @@ func (e *RewriteEngine) Process(req *octollm.Request) (*octollm.Response, error)
 			resp.Body.Close()
 			return nil, fmt.Errorf("read response body error: %w", err)
 		}
-		resp.Body.SetBytes(respRewriter.RewriteJSON(b))
+		resp.Body = octollm.NewBodyFromBytes(respRewriter.RewriteJSON(b), resp.Body.Parser())
 		slog.DebugContext(req.Context(), "[RewriteEngine.Run] non-stream response body rewritten")
 	}
 

@@ -54,9 +54,8 @@ func TestRepeatDetector_NonStream_WithRepetition(t *testing.T) {
 	}
 
 	mockResp := &octollm.Response{
-		Body: octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionResponse]{}),
+		Body: octollm.NewBodyFromParsed(resp, &octollm.JSONParser[openai.ChatCompletionResponse]{}),
 	}
-	mockResp.Body.SetParsed(resp)
 
 	mockEngine := &mockEngine{response: mockResp}
 
@@ -75,8 +74,7 @@ func TestRepeatDetector_NonStream_WithRepetition(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", "http://localhost/v1/chat/completions", nil)
 	httpReq.URL, _ = url.Parse("http://localhost/v1/chat/completions")
 	req := octollm.NewRequest(httpReq, octollm.APIFormatChatCompletions)
-	req.Body = octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
-	req.Body.SetParsed(&openai.ChatCompletionRequest{Model: "gpt-4"})
+	req.Body = octollm.NewBodyFromParsed(&openai.ChatCompletionRequest{Model: "gpt-4"}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
 
 	result, err := detector.Process(req)
 	require.NoError(t, err)
@@ -100,9 +98,8 @@ func TestRepeatDetector_NonStream_NoRepetition(t *testing.T) {
 	}
 
 	mockResp := &octollm.Response{
-		Body: octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionResponse]{}),
+		Body: octollm.NewBodyFromParsed(resp, &octollm.JSONParser[openai.ChatCompletionResponse]{}),
 	}
-	mockResp.Body.SetParsed(resp)
 
 	mockEngine := &mockEngine{response: mockResp}
 
@@ -121,8 +118,7 @@ func TestRepeatDetector_NonStream_NoRepetition(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", "http://localhost/v1/chat/completions", nil)
 	httpReq.URL, _ = url.Parse("http://localhost/v1/chat/completions")
 	req := octollm.NewRequest(httpReq, octollm.APIFormatChatCompletions)
-	req.Body = octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
-	req.Body.SetParsed(&openai.ChatCompletionRequest{Model: "gpt-4"})
+	req.Body = octollm.NewBodyFromParsed(&openai.ChatCompletionRequest{Model: "gpt-4"}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
 
 	result, err := detector.Process(req)
 	require.NoError(t, err)
@@ -150,8 +146,7 @@ func TestRepeatDetector_Stream_WithRepetition(t *testing.T) {
 					},
 				},
 			}
-			body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})
-			body.SetParsed(chunk)
+			body := octollm.NewBodyFromParsed(chunk, &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})
 			chunks <- &octollm.StreamChunk{Body: body}
 		}
 	}()
@@ -177,8 +172,7 @@ func TestRepeatDetector_Stream_WithRepetition(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", "http://localhost/v1/chat/completions", nil)
 	httpReq.URL, _ = url.Parse("http://localhost/v1/chat/completions")
 	req := octollm.NewRequest(httpReq, octollm.APIFormatChatCompletions)
-	req.Body = octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
-	req.Body.SetParsed(&openai.ChatCompletionRequest{Model: "gpt-4"})
+	req.Body = octollm.NewBodyFromParsed(&openai.ChatCompletionRequest{Model: "gpt-4"}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
 
 	result, err := detector.Process(req)
 	require.NoError(t, err)
@@ -213,8 +207,7 @@ func TestRepeatDetector_Stream_NoRepetition(t *testing.T) {
 					},
 				},
 			}
-			body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})
-			body.SetParsed(chunk)
+			body := octollm.NewBodyFromParsed(chunk, &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})
 			chunks <- &octollm.StreamChunk{Body: body}
 		}
 	}()
@@ -240,8 +233,7 @@ func TestRepeatDetector_Stream_NoRepetition(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", "http://localhost/v1/chat/completions", nil)
 	httpReq.URL, _ = url.Parse("http://localhost/v1/chat/completions")
 	req := octollm.NewRequest(httpReq, octollm.APIFormatChatCompletions)
-	req.Body = octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
-	req.Body.SetParsed(&openai.ChatCompletionRequest{Model: "gpt-4"})
+	req.Body = octollm.NewBodyFromParsed(&openai.ChatCompletionRequest{Model: "gpt-4"}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
 
 	result, err := detector.Process(req)
 	require.NoError(t, err)
@@ -270,9 +262,8 @@ func TestRepeatDetector_EmptyResponse(t *testing.T) {
 	}
 
 	mockResp := &octollm.Response{
-		Body: octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionResponse]{}),
+		Body: octollm.NewBodyFromParsed(resp, &octollm.JSONParser[openai.ChatCompletionResponse]{}),
 	}
-	mockResp.Body.SetParsed(resp)
 
 	mockEngine := &mockEngine{response: mockResp}
 
@@ -291,8 +282,7 @@ func TestRepeatDetector_EmptyResponse(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", "http://localhost/v1/chat/completions", nil)
 	httpReq.URL, _ = url.Parse("http://localhost/v1/chat/completions")
 	req := octollm.NewRequest(httpReq, octollm.APIFormatChatCompletions)
-	req.Body = octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
-	req.Body.SetParsed(&openai.ChatCompletionRequest{Model: "gpt-4"})
+	req.Body = octollm.NewBodyFromParsed(&openai.ChatCompletionRequest{Model: "gpt-4"}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
 
 	result, err := detector.Process(req)
 	require.NoError(t, err)
@@ -316,9 +306,8 @@ func TestRepeatDetector_BlockOnDetect(t *testing.T) {
 	}
 
 	mockResp := &octollm.Response{
-		Body: octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionResponse]{}),
+		Body: octollm.NewBodyFromParsed(resp, &octollm.JSONParser[openai.ChatCompletionResponse]{}),
 	}
-	mockResp.Body.SetParsed(resp)
 
 	mockEngine := &mockEngine{response: mockResp}
 
@@ -350,8 +339,7 @@ func TestRepeatDetector_BlockOnDetect(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", "http://localhost/v1/chat/completions", nil)
 	httpReq.URL, _ = url.Parse("http://localhost/v1/chat/completions")
 	req := octollm.NewRequest(httpReq, octollm.APIFormatChatCompletions)
-	req.Body = octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
-	req.Body.SetParsed(&openai.ChatCompletionRequest{Model: "gpt-4"})
+	req.Body = octollm.NewBodyFromParsed(&openai.ChatCompletionRequest{Model: "gpt-4"}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
 
 	result, err := detector.Process(req)
 	// 应该返回成功，但内容被替换为拦截消息
@@ -390,8 +378,7 @@ func TestRepeatDetector_BlockOnDetect_Stream(t *testing.T) {
 					},
 				},
 			}
-			body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})
-			body.SetParsed(chunk)
+			body := octollm.NewBodyFromParsed(chunk, &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})
 			chunks <- &octollm.StreamChunk{Body: body}
 		}
 	}()
@@ -429,9 +416,8 @@ func TestRepeatDetector_BlockOnDetect_Stream(t *testing.T) {
 	httpReq, _ := http.NewRequestWithContext(context.Background(), "POST", "http://localhost/v1/chat/completions", nil)
 	httpReq.URL, _ = url.Parse("http://localhost/v1/chat/completions")
 	req := octollm.NewRequest(httpReq, octollm.APIFormatChatCompletions)
-	req.Body = octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
 	streamTrue := true
-	req.Body.SetParsed(&openai.ChatCompletionRequest{Model: "gpt-4", Stream: &streamTrue})
+	req.Body = octollm.NewBodyFromParsed(&openai.ChatCompletionRequest{Model: "gpt-4", Stream: &streamTrue}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
 
 	result, err := detector.Process(req)
 	require.NoError(t, err)

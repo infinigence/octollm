@@ -31,8 +31,7 @@ func TestClaudeAdapter_ExtractTextFromRequest(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[anthropic.ClaudeMessagesRequest]{})
-	body.SetParsed(req)
+	body := octollm.NewBodyFromParsed(req, &octollm.JSONParser[anthropic.ClaudeMessagesRequest]{})
 
 	text, err := adapter.ExtractTextFromBody(context.Background(), body)
 	require.NoError(t, err)
@@ -95,8 +94,7 @@ func TestClaudeAdapter_ExtractTextFromNonStreamResponse(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[anthropic.ClaudeMessagesResponse]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[anthropic.ClaudeMessagesResponse]{})
 
 	extractedText, err := adapter.ExtractTextFromBody(context.Background(), body)
 	require.NoError(t, err)
@@ -156,8 +154,7 @@ func TestClaudeAdapter_ExtractTextFromStreamResponse(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{})
-	body.SetParsed(event)
+	body := octollm.NewBodyFromParsed(event, &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{})
 
 	text, err := adapter.ExtractTextFromBody(context.Background(), body)
 	require.NoError(t, err)
@@ -183,8 +180,7 @@ func TestClaudeAdapter_ExtractTextWithRepetition(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[anthropic.ClaudeMessagesResponse]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[anthropic.ClaudeMessagesResponse]{})
 
 	extractedText, err := adapter.ExtractTextFromBody(context.Background(), body)
 	require.NoError(t, err)
@@ -212,8 +208,7 @@ func TestClaudeAdapter_GetReplacementNonStreamResponse(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[anthropic.ClaudeMessagesResponse]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[anthropic.ClaudeMessagesResponse]{})
 
 	replacementBody := adapter.GetReplacementBody(context.Background(), body)
 	require.NotNil(t, replacementBody)
@@ -248,8 +243,7 @@ func TestClaudeAdapter_GetReplacementStreamResponse(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{})
-	body.SetParsed(event)
+	body := octollm.NewBodyFromParsed(event, &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{})
 
 	replacementBody := adapter.GetReplacementBody(context.Background(), body)
 	require.NotNil(t, replacementBody)
@@ -287,8 +281,7 @@ func TestUniversalAdapter_ClaudeFormat(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[anthropic.ClaudeMessagesResponse]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[anthropic.ClaudeMessagesResponse]{})
 
 	extractedText, err := adapter.ExtractTextFromBody(context.Background(), body)
 	require.NoError(t, err)
@@ -314,8 +307,7 @@ func TestUniversalAdapter_ClaudeStreamWithRepetition(t *testing.T) {
 			},
 		}
 
-		body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{})
-		body.SetParsed(event)
+		body := octollm.NewBodyFromParsed(event, &octollm.JSONParser[anthropic.ClaudeMessagesStreamEvent]{})
 
 		text, err := adapter.ExtractTextFromBody(context.Background(), body)
 		require.NoError(t, err)

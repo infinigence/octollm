@@ -223,7 +223,7 @@ func (e *ImageURLFetchEngine) Process(req *octollm.Request) (*octollm.Response, 
 	}
 	if len(unique) == 0 {
 		if modified {
-			req.Body.SetBytes(out)
+			req.Body = octollm.NewBodyFromBytes(out, req.Body.Parser())
 		}
 		return e.Next.Process(req)
 	}
@@ -326,7 +326,8 @@ func (e *ImageURLFetchEngine) Process(req *octollm.Request) (*octollm.Response, 
 		}
 	}
 
-	req.Body.SetBytes(out)
+	req.Body = octollm.NewBodyFromBytes(out, req.Body.Parser())
+	slog.DebugContext(req.Context(), "[ImageURLFetchEngine] inlined remote image parts")
 
 	resp, err := e.Next.Process(req)
 	if err != nil {
