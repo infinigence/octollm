@@ -30,11 +30,11 @@ func (e *ChatCompletionToClaudeMessages) Process(req *octollm.Request) (*octollm
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert request body: %w", err)
 	}
-	req.Format = octollm.APIFormatChatCompletions
-	req.Body = newBody
+	newReq := req.WithBody(newBody)
+	newReq.Format = octollm.APIFormatChatCompletions
 
 	// Call Next Engine
-	resp, err := e.next.Process(req)
+	resp, err := e.next.Process(newReq)
 	if err != nil {
 		return nil, err
 	}
