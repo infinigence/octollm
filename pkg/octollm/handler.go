@@ -142,6 +142,10 @@ func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.Handler
 				*r = *errutils.WithHandlerError(r, handlerErr)
 				return
 			}
+			if errors.Is(err, context.Canceled) {
+				*r = *errutils.WithError(r, err, 499, "Client Closed Request")
+				return
+			}
 			*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error")
 			return
 		}

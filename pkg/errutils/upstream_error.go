@@ -29,6 +29,11 @@ func (e *UpstreamHTTPError) Error() string {
 	return fmt.Sprintf("upstream http error: status code %d, err %s", e.StatusCode, e.Err.Error())
 }
 
+// Unwrap returns the underlying error.
+func (e *UpstreamHTTPError) Unwrap() error {
+	return e.Err
+}
+
 // type UpstreamGeneralError struct {
 // 	Err error
 // }
