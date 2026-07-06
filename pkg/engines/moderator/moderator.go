@@ -149,11 +149,13 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 				// sees resp, so we Close to release closeFunc ourselves.
 				replacement := e.TextModeratorAdapter.GetReplacementBody(req.Context(), resp.Body)
 				req.SetMetadataValue(isSpamKey, true)
+				// Whether or not there is a replacement, the original body will not be used again.
+				// Non-stream response body must be closed after use.
+				resp.Body.Close()
 				if replacement != nil {
 					resp.Body = replacement
 					return resp, nil
 				}
-				resp.Body.Close()
 				return nil, fmt.Errorf("%w: %w", ErrOutputNotAllowed, err)
 			}
 		}

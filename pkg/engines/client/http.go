@@ -235,8 +235,7 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 	if !isStream {
 		// non-stream
 		slog.DebugContext(req.Context(), "[http-endpoint] returning non-stream response")
-		body := octollm.NewBodyFromReader(resp.Body, nil)
-		body.SetParser(e.nonstreamParser(req))
+		body := octollm.NewBodyFromReader(resp.Body, e.nonstreamParser(req))
 		llmresp := octollm.NewNonStreamResponse(resp.StatusCode, resp.Header, body)
 		return llmresp, nil
 	}

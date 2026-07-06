@@ -75,8 +75,7 @@ func CreateTestRequest(opts ...reqOptFunc) *octollm.Request {
 	}
 
 	parser := o.ReqParser
-	req := octollm.NewRequest(r, o.Format)
-	req.Body.SetParser(parser)
+	req := octollm.NewRequestWithBodyParser(r, o.Format, parser)
 
 	// When custom features are set, register them so Get(req) will include them (no context storage).
 	if o.features != nil {

@@ -294,8 +294,7 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 	}
 
 	// Convert to UnifiedBody
-	newBody := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
-	newBody.SetParsed(dst)
+	newBody := octollm.NewBodyFromParsed(dst, &octollm.JSONParser[openai.ChatCompletionRequest]{})
 
 	return newBody, nil
 }

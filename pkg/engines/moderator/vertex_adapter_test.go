@@ -73,8 +73,7 @@ func TestVertexAdapter_ExtractTextFromRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[vertex.GenerateContentRequest]{})
-			body.SetParsed(tt.req)
+			body := octollm.NewBodyFromParsed(tt.req, &octollm.JSONParser[vertex.GenerateContentRequest]{})
 
 			got, err := adapter.ExtractTextFromBody(context.Background(), body)
 			require.NoError(t, err)
@@ -98,8 +97,7 @@ func TestVertexAdapter_ExtractTextFromResponse_NonStreaming(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[vertex.GenerateContentResponse]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[vertex.GenerateContentResponse]{})
 
 	got, err := adapter.ExtractTextFromBody(context.Background(), body)
 	require.NoError(t, err)
@@ -120,8 +118,7 @@ func TestVertexAdapter_ExtractTextFromResponse_Streaming(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[vertex.StreamGenerateContentResponse]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[vertex.StreamGenerateContentResponse]{})
 
 	got, err := adapter.ExtractTextFromBody(context.Background(), body)
 	require.NoError(t, err)
@@ -138,8 +135,7 @@ func TestVertexAdapter_ExtractTextFromResponse_NilContent(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[vertex.GenerateContentResponse]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[vertex.GenerateContentResponse]{})
 
 	got, err := adapter.ExtractTextFromBody(context.Background(), body)
 	require.NoError(t, err)
@@ -163,8 +159,7 @@ func TestVertexAdapter_GetReplacementBody_NonStreaming(t *testing.T) {
 		UsageMetadata: &vertex.UsageMetadata{TotalTokenCount: 42},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[vertex.GenerateContentResponse]{})
-	body.SetParsed(original)
+	body := octollm.NewBodyFromParsed(original, &octollm.JSONParser[vertex.GenerateContentResponse]{})
 
 	replacementBody := adapter.GetReplacementBody(context.Background(), body)
 	require.NotNil(t, replacementBody)
@@ -185,7 +180,7 @@ func TestVertexAdapter_GetReplacementBody_NonStreaming(t *testing.T) {
 func TestVertexAdapter_GetReplacementBody_Streaming(t *testing.T) {
 	adapter := &VertexAdapter{
 		ReplacementTextForStreaming: "[Blocked]",
-		ReplacementFinishReason:    "SAFETY",
+		ReplacementFinishReason:     "SAFETY",
 	}
 
 	original := &vertex.StreamGenerateContentResponse{
@@ -198,8 +193,7 @@ func TestVertexAdapter_GetReplacementBody_Streaming(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[vertex.StreamGenerateContentResponse]{})
-	body.SetParsed(original)
+	body := octollm.NewBodyFromParsed(original, &octollm.JSONParser[vertex.StreamGenerateContentResponse]{})
 
 	replacementBody := adapter.GetReplacementBody(context.Background(), body)
 	require.NotNil(t, replacementBody)
@@ -224,8 +218,7 @@ func TestVertexAdapter_GetReplacementBody_NoReplacementText(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[vertex.GenerateContentResponse]{})
-	body.SetParsed(original)
+	body := octollm.NewBodyFromParsed(original, &octollm.JSONParser[vertex.GenerateContentResponse]{})
 
 	assert.Nil(t, adapter.GetReplacementBody(context.Background(), body))
 }
@@ -242,8 +235,7 @@ func TestVertexAdapter_GetReplacementBody_DefaultFinishReason(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[vertex.GenerateContentResponse]{})
-	body.SetParsed(original)
+	body := octollm.NewBodyFromParsed(original, &octollm.JSONParser[vertex.GenerateContentResponse]{})
 
 	replacementBody := adapter.GetReplacementBody(context.Background(), body)
 	require.NotNil(t, replacementBody)
@@ -269,8 +261,7 @@ func TestUniversalAdapter_VertexFormat(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[vertex.GenerateContentResponse]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[vertex.GenerateContentResponse]{})
 
 	got, err := adapter.ExtractTextFromBody(context.Background(), body)
 	require.NoError(t, err)

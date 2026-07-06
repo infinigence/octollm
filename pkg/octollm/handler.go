@@ -74,8 +74,7 @@ func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.Handler
 		ctx := context.WithValue(r.Context(), ContextKeyReceivedHeader, r.Header)
 		ctx = context.WithValue(ctx, ContextKeyStreamSignaler, signalStream)
 		*r = *r.WithContext(ctx)
-		u := NewRequest(r, format)
-		u.Body.SetParser(parser)
+		u := NewRequestWithBodyParser(r, format, parser)
 
 		keepAliveCtx, cancelKeepAlive := context.WithCancel(r.Context())
 		// there is no guarantee that the goroutine exits immediately after cancelKeepAlive is called
@@ -253,8 +252,7 @@ func httpJSONArrayHandler(engine Engine, format APIFormat, parser Parser) http.H
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// store received headers in context
 		*r = *r.WithContext(context.WithValue(r.Context(), ContextKeyReceivedHeader, r.Header))
-		u := NewRequest(r, format)
-		u.Body.SetParser(parser)
+		u := NewRequestWithBodyParser(r, format, parser)
 		resp, err := engine.Process(u)
 		if err != nil {
 			slog.ErrorContext(r.Context(), fmt.Sprintf("Do error: %v", err))

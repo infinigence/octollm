@@ -116,8 +116,7 @@ func TestOpenAIAdapter_ExtractTextFromRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionRequest]{})
-			body.SetParsed(tt.req)
+			body := octollm.NewBodyFromParsed(tt.req, &octollm.JSONParser[openai.ChatCompletionRequest]{})
 
 			got, err := adapter.ExtractTextFromBody(context.Background(), body)
 			if (err != nil) != tt.wantErr {
@@ -151,8 +150,7 @@ func TestOpenAIAdapter_ExtractTextFromResponse_NonStreaming(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionResponse]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[openai.ChatCompletionResponse]{})
 
 	got, err := adapter.ExtractTextFromBody(context.Background(), body)
 	if err != nil {
@@ -184,8 +182,7 @@ func TestOpenAIAdapter_ExtractTextFromResponse_Streaming(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})
 
 	got, err := adapter.ExtractTextFromBody(context.Background(), body)
 	if err != nil {
@@ -228,8 +225,7 @@ func TestOpenAIAdapter_ExtractTextFromResponse_WithToolCalls(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionResponse]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[openai.ChatCompletionResponse]{})
 
 	got, err := adapter.ExtractTextFromBody(context.Background(), body)
 	if err != nil {
@@ -270,8 +266,7 @@ func TestOpenAIAdapter_GetReplacementBody_NonStreaming(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionResponse]{})
-	body.SetParsed(originalResp)
+	body := octollm.NewBodyFromParsed(originalResp, &octollm.JSONParser[openai.ChatCompletionResponse]{})
 
 	replacementBody := adapter.GetReplacementBody(context.Background(), body)
 	if replacementBody == nil {
@@ -342,8 +337,7 @@ func TestOpenAIAdapter_GetReplacementBody_Streaming(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})
-	body.SetParsed(originalResp)
+	body := octollm.NewBodyFromParsed(originalResp, &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})
 
 	replacementBody := adapter.GetReplacementBody(context.Background(), body)
 	if replacementBody == nil {
@@ -394,8 +388,7 @@ func TestOpenAIAdapter_GetReplacementBody_NoReplacement(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ChatCompletionResponse]{})
-	body.SetParsed(originalResp)
+	body := octollm.NewBodyFromParsed(originalResp, &octollm.JSONParser[openai.ChatCompletionResponse]{})
 
 	replacementBody := adapter.GetReplacementBody(context.Background(), body)
 	if replacementBody != nil {
@@ -491,8 +484,7 @@ func TestUniversalAdapter_ResponsesFormat(t *testing.T) {
 				},
 			},
 		}
-		body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ResponsesRequest]{})
-		body.SetParsed(req)
+		body := octollm.NewBodyFromParsed(req, &octollm.JSONParser[openai.ResponsesRequest]{})
 
 		got, err := adapter.ExtractTextFromBody(context.Background(), body)
 		if err != nil {
@@ -516,8 +508,7 @@ func TestUniversalAdapter_ResponsesFormat(t *testing.T) {
 				},
 			},
 		}
-		body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ResponsesResponse]{})
-		body.SetParsed(resp)
+		body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[openai.ResponsesResponse]{})
 
 		replaced := adapter.GetReplacementBody(context.Background(), body)
 		if replaced == nil {
