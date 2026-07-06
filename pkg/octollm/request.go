@@ -244,23 +244,6 @@ func (sc *StreamChan) OnClose(closeFunc func()) {
 	}
 }
 
-func NewRequest(r *http.Request, format APIFormat) *Request {
-	ctx := context.WithValue(r.Context(), ContextKeyOriginalFormat, format)
-	u := &Request{
-		Method:   r.Method,
-		Format:   format,
-		URL:      r.URL,
-		Query:    r.URL.Query(),
-		Header:   make(http.Header),
-		ctx:      ctx,
-		metadata: &sync.Map{},
-		Body: &UnifiedBody{
-			reader: r.Body,
-		},
-	}
-	return u
-}
-
 // NewEmptyRequest returns a request with ctx and a new empty metadata map.
 // All other fields are zero: Method and Format are "", URL/Query/Header/Body are nil.
 // Callers that fork an existing request (e.g. traffic replication) should set Method, Format,
@@ -273,6 +256,10 @@ func NewEmptyRequest(ctx context.Context) *Request {
 		ctx:      ctx,
 		metadata: &sync.Map{},
 	}
+}
+
+func NewRequest(r *http.Request, format APIFormat) *Request {
+	return NewRequestWithBodyParser(r, format, nil)
 }
 
 func NewRequestWithBodyParser(r *http.Request, format APIFormat, parser Parser) *Request {
@@ -380,6 +367,15 @@ func (u *Request) detectIsStream() (bool, error) {
 		return body.Stream != nil && *body.Stream, nil
 	}
 	return false, nil
+}
+
+// WithBody returns a shallow copy of u with its body changed to body.
+// This is useful for setting the body of a request while keeping the original request.
+func (u *Request) WithBody(body *UnifiedBody) *Request {
+	u2 := new(Request)
+	*u2 = *u
+	u2.Body = body
+	return u2
 }
 
 func GetCtxValue[T any](req *Request, key any) (T, bool) {
