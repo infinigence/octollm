@@ -33,6 +33,7 @@ type Parser interface {
 // UnifiedBody is the body of requests or responses.
 // It supports lazy parsing and caching.
 type UnifiedBody struct {
+	mu     sync.Mutex    // protects all mutable fields below
 	reader io.ReadCloser // original reader
 	bytes  []byte        // cached bytes (filled after reading)
 
@@ -69,6 +70,9 @@ func NewBodyFromParsed(parsed any, parser Parser) *UnifiedBody {
 // Parsed lazily parses the body and returns the parsed data.
 // It caches the parsed data and error for future calls.
 func (b *UnifiedBody) Parsed() (any, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.parsed != nil {
 		return b.parsed, b.parseErr
 	}
@@ -90,6 +94,12 @@ func (b *UnifiedBody) Parsed() (any, error) {
 // Bytes returns the serialized bytes of the parsed data.
 // If the parsed data is dirty (isDirty=true), it will be serialized again.
 func (b *UnifiedBody) Bytes() ([]byte, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.bytesLocked()
+}
+
+func (b *UnifiedBody) bytesLocked() ([]byte, error) {
 	if !b.isDirty && b.bytes != nil {
 		return b.bytes, nil
 	}
@@ -108,7 +118,6 @@ func (b *UnifiedBody) Bytes() ([]byte, error) {
 		return b.bytes, nil
 	}
 
-	// read from reader
 	if b.reader == nil {
 		return nil, fmt.Errorf("reader must not be nil")
 	}
@@ -125,11 +134,14 @@ func (b *UnifiedBody) Bytes() ([]byte, error) {
 }
 
 func (b *UnifiedBody) Reader() (io.ReadCloser, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.reader != nil {
 		return b.reader, nil
 	}
 
-	data, err := b.Bytes()
+	data, err := b.bytesLocked()
 	if err != nil {
 		return nil, fmt.Errorf("get bytes error: %w", err)
 	}
@@ -142,6 +154,9 @@ func (b *UnifiedBody) Parser() Parser {
 }
 
 func (b *UnifiedBody) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.closeFunc != nil {
 		b.closeFunc()
 	}
@@ -152,6 +167,9 @@ func (b *UnifiedBody) Close() error {
 }
 
 func (b *UnifiedBody) OnClose(closeFunc func()) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.closeFunc == nil {
 		b.closeFunc = closeFunc
 	} else {
