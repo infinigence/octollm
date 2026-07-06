@@ -124,19 +124,6 @@ func (b *UnifiedBody) Bytes() ([]byte, error) {
 	return b.bytes, nil
 }
 
-// SetBytes sets the raw bytes and resets the cached state.
-// It also clears the reader to ensure the bytes are not read twice.
-func (b *UnifiedBody) SetBytes(bytes []byte) {
-	b.bytes = bytes
-	b.parsed = nil
-	b.parseErr = nil
-	b.isDirty = false
-	if b.reader != nil {
-		b.reader.Close()
-		b.reader = nil
-	}
-}
-
 func (b *UnifiedBody) Reader() (io.ReadCloser, error) {
 	if b.reader != nil {
 		return b.reader, nil
@@ -152,25 +139,6 @@ func (b *UnifiedBody) Reader() (io.ReadCloser, error) {
 // Parser returns the parser associated with this body.
 func (b *UnifiedBody) Parser() Parser {
 	return b.parser
-}
-
-// SetParser set the parser and reset the cached state
-func (b *UnifiedBody) SetParser(p Parser) {
-	b.parser = p
-	b.parsed = nil
-	b.parseErr = nil
-	b.isDirty = false
-}
-
-// SetParsed set the parsed data and mark it as dirty
-// Scene: protocol conversion, request rewriting
-func (b *UnifiedBody) SetParsed(v any) {
-	b.parsed = v
-	b.isDirty = true // mark the content as dirty, will be serialized again in Bytes()
-	if b.reader != nil {
-		b.reader.Close()
-		b.reader = nil
-	}
 }
 
 func (b *UnifiedBody) Close() error {
@@ -301,6 +269,23 @@ func NewEmptyRequest(ctx context.Context) *Request {
 		ctx:      ctx,
 		metadata: &sync.Map{},
 	}
+}
+
+func NewRequestWithBodyParser(r *http.Request, format APIFormat, parser Parser) *Request {
+	u := &Request{
+		Method:   r.Method,
+		Format:   format,
+		URL:      r.URL,
+		Query:    r.URL.Query(),
+		Header:   make(http.Header),
+		ctx:      r.Context(),
+		metadata: &sync.Map{},
+		Body: &UnifiedBody{
+			reader: r.Body,
+			parser: parser,
+		},
+	}
+	return u
 }
 
 func (u *Request) Context() context.Context {

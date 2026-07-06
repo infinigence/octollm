@@ -123,15 +123,13 @@ func (a *ClaudeAdapter) GetReplacementBody(ctx context.Context, body *octollm.Un
 		if r == nil {
 			return nil
 		}
-		body.SetParsed(r)
-		return body
+		return octollm.NewBodyFromParsed(r, body.Parser())
 	case *anthropic.ClaudeMessagesStreamEvent:
 		r := a.getReplacementStreamResponse(ctx, parsed)
 		if r == nil {
 			return nil
 		}
-		body.SetParsed(r)
-		return body
+		return octollm.NewBodyFromParsed(r, body.Parser())
 	default:
 		return nil
 	}

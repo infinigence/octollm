@@ -47,15 +47,13 @@ func (a *OpenAIResponseAdapter) GetReplacementBody(ctx context.Context, body *oc
 		if r == nil {
 			return nil
 		}
-		body.SetParsed(r)
-		return body
+		return octollm.NewBodyFromParsed(r, body.Parser())
 	case *openai.ResponseStreamChunk:
 		r := a.getReplacementResponsesStreamResponse(ctx, parsed)
 		if r == nil {
 			return nil
 		}
-		body.SetParsed(r)
-		return body
+		return octollm.NewBodyFromParsed(r, body.Parser())
 	default:
 		return nil
 	}

@@ -56,8 +56,7 @@ func TestOpenAIResponseAdapter_ExtractTextFromResponsesRequest(t *testing.T) {
 				t.Fatalf("unmarshal responses request: %v", err)
 			}
 
-			body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ResponsesRequest]{})
-			body.SetParsed(&req)
+			body := octollm.NewBodyFromParsed(&req, &octollm.JSONParser[openai.ResponsesRequest]{})
 
 			got, err := adapter.ExtractTextFromBody(context.Background(), body)
 			if (err != nil) != tt.wantErr {
@@ -89,8 +88,7 @@ func TestOpenAIResponseAdapter_ExtractTextFromResponsesResponse(t *testing.T) {
 		},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ResponsesResponse]{})
-	body.SetParsed(resp)
+	body := octollm.NewBodyFromParsed(resp, &octollm.JSONParser[openai.ResponsesResponse]{})
 
 	got, err := adapter.ExtractTextFromBody(context.Background(), body)
 	if err != nil {
@@ -179,8 +177,7 @@ func TestOpenAIResponseAdapter_ExtractTextFromResponseStreamChunk(t *testing.T) 
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ResponseStreamChunk]{})
-			body.SetParsed(tt.chunk)
+			body := octollm.NewBodyFromParsed(tt.chunk, &octollm.JSONParser[openai.ResponseStreamChunk]{})
 
 			got, err := adapter.ExtractTextFromBody(context.Background(), body)
 			if err != nil {
@@ -212,8 +209,7 @@ func TestOpenAIResponseAdapter_GetReplacementBody_ResponsesNonStreaming(t *testi
 		Usage: &openai.ResponsesUsage{TotalTokens: 10},
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ResponsesResponse]{})
-	body.SetParsed(originalResp)
+	body := octollm.NewBodyFromParsed(originalResp, &octollm.JSONParser[openai.ResponsesResponse]{})
 
 	replacementBody := adapter.GetReplacementBody(context.Background(), body)
 	if replacementBody == nil {
@@ -253,8 +249,7 @@ func TestOpenAIResponseAdapter_GetReplacementBody_ResponsesStreaming(t *testing.
 		Text: "Original stream text",
 	}
 
-	body := octollm.NewBodyFromBytes([]byte{}, &octollm.JSONParser[openai.ResponseStreamChunk]{})
-	body.SetParsed(originalChunk)
+	body := octollm.NewBodyFromParsed(originalChunk, &octollm.JSONParser[openai.ResponseStreamChunk]{})
 
 	replacementBody := adapter.GetReplacementBody(context.Background(), body)
 	if replacementBody == nil {

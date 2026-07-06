@@ -94,15 +94,13 @@ func (a *VertexAdapter) GetReplacementBody(ctx context.Context, body *octollm.Un
 		if r == nil {
 			return nil
 		}
-		body.SetParsed(r)
-		return body
+		return octollm.NewBodyFromParsed(r, body.Parser())
 	case *vertex.StreamGenerateContentResponse:
 		r := a.getReplacementStreamResponse(parsed)
 		if r == nil {
 			return nil
 		}
-		body.SetParsed(r)
-		return body
+		return octollm.NewBodyFromParsed(r, body.Parser())
 	default:
 		return nil
 	}
@@ -117,7 +115,7 @@ func (a *VertexAdapter) getReplacementNonStreamResponse(resp *vertex.GenerateCon
 		finishReason = "SAFETY"
 	}
 	r := &vertex.GenerateContentResponse{
-		ModelVersion: resp.ModelVersion,
+		ModelVersion:  resp.ModelVersion,
 		UsageMetadata: resp.UsageMetadata,
 		Candidates: []vertex.Candidate{
 			{

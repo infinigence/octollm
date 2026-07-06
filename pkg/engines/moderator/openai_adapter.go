@@ -124,15 +124,13 @@ func (a *OpenAIAdapter) GetReplacementBody(ctx context.Context, body *octollm.Un
 		if r == nil {
 			return nil
 		}
-		body.SetParsed(r)
-		return body
+		return octollm.NewBodyFromParsed(r, body.Parser())
 	case *openai.ChatCompletionStreamChunk:
 		r := a.getReplacementStreamResponse(ctx, parsed)
 		if r == nil {
 			return nil
 		}
-		body.SetParsed(r)
-		return body
+		return octollm.NewBodyFromParsed(r, body.Parser())
 	default:
 		return nil
 	}
