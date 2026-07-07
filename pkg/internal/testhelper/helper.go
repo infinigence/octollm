@@ -15,12 +15,14 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
+	"github.com/infinigence/octollm/pkg/types/vertex"
 )
 
 type reqOptions struct {
 	ctx        context.Context
 	HttpMethod string
 	URL        string
+	Format     octollm.APIFormat
 	Body       io.Reader
 	ReqParser  octollm.Parser
 
@@ -46,6 +48,7 @@ func defaultReqOpts() *reqOptions {
 	return &reqOptions{
 		HttpMethod: http.MethodPost,
 		URL:        "http://localhost:8000/v1/chat/completions",
+		Format:     octollm.APIFormatChatCompletions,
 		ReqParser:  &octollm.JSONParser[openai.ChatCompletionRequest]{},
 		Body:       bytes.NewReader(bodyJSON),
 	}
@@ -72,7 +75,7 @@ func CreateTestRequest(opts ...reqOptFunc) *octollm.Request {
 	}
 
 	parser := o.ReqParser
-	req := octollm.NewRequest(r, octollm.APIFormatChatCompletions)
+	req := octollm.NewRequest(r, o.Format)
 	req.Body.SetParser(parser)
 
 	// When custom features are set, register them so Get(req) will include them (no context storage).
@@ -101,6 +104,11 @@ func WithBody(body any) reqOptFunc {
 			opts.Body = bytes.NewReader(v)
 		case anthropic.ClaudeMessagesRequest:
 			opts.ReqParser = &octollm.JSONParser[anthropic.ClaudeMessagesRequest]{}
+			buffer, _ := json.Marshal(v)
+			opts.Body = bytes.NewReader(buffer)
+		case vertex.GenerateContentRequest:
+			opts.ReqParser = &octollm.JSONParser[vertex.GenerateContentRequest]{}
+			opts.Format = octollm.APIFormatGoogleGenerateContent
 			buffer, _ := json.Marshal(v)
 			opts.Body = bytes.NewReader(buffer)
 		default:

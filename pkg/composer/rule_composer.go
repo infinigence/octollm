@@ -296,7 +296,9 @@ func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, e
 	}
 
 	if signalIsStream, ok := octollm.GetCtxValue[func(bool)](req, octollm.ContextKeyStreamSignaler); ok && signalIsStream != nil {
-		isStream, err := octollm.IsStreamRequest(req)
+		// IsStream caches the classification into req's context, so downstream
+		// engines see it without re-parsing the body.
+		isStream, err := req.IsStream()
 		if err != nil {
 			return nil, fmt.Errorf("failed to check if request is stream: %w", err)
 		}
@@ -304,8 +306,6 @@ func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, e
 		if isStream {
 			slog.InfoContext(req.Context(), "[RuleComposerEngine] Detected stream request")
 		}
-		ctx := context.WithValue(req.Context(), octollm.ContextKeyIsStream, isStream)
-		req = req.WithContext(ctx)
 	}
 
 	engine, err := r.getEngine(r.OrgName, r.Model)

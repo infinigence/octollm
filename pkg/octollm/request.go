@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+
+	"github.com/infinigence/octollm/pkg/types/anthropic"
+	"github.com/infinigence/octollm/pkg/types/openai"
 )
 
 type APIFormat string
@@ -318,6 +321,78 @@ func (u *Request) WithContext(ctx context.Context) *Request {
 	*u2 = *u
 	u2.ctx = ctx
 	return u2
+}
+
+// IsStream reports whether the request asks for a streaming response, using
+// whichever signal the protocol carries. It returns an error only when a
+// body-based protocol's body cannot be parsed.
+//
+// Detection order:
+//  1. ContextKeyIsStream — the cached (or deliberately overridden) flag,
+//     authoritative when present.
+//  2. ContextKeyAction, for URL-action protocols (e.g. Vertex
+//     streamGenerateContent) where streaming is not a body field.
+//  3. the typed request body's stream flag, for body-based protocols
+//     (OpenAI chat/completions & completions, Responses, Claude messages).
+//
+// On a successful classification the result is cached by replacing u's context
+// with one carrying ContextKeyIsStream, so later calls (including on engines
+// downstream of the same *Request) skip re-parsing. Two consequences:
+//
+//   - A successful call changes what u.Context() returns. Do not assume the
+//     context is stable across a call, and do not install a context derived
+//     from a pre-call u.Context() snapshot afterwards — that silently drops
+//     the cached flag (harmless, it is recomputed, but wasteful).
+//   - The ctx swap is not synchronized; like Body, a Request must not be
+//     accessed concurrently.
+//
+// Because of this caching, engines never need to set ContextKeyIsStream
+// themselves. The one exception is an engine that changes the streamness of a
+// request (e.g. NonStreamToStreamEngine): it must set the key on the derived
+// request's context to override the possibly-cached stale value.
+func (u *Request) IsStream() (bool, error) {
+	if u == nil {
+		return false, nil
+	}
+	if v, ok := GetCtxValue[bool](u, ContextKeyIsStream); ok {
+		return v, nil
+	}
+	isStream, err := u.detectIsStream()
+	if err != nil {
+		return false, err
+	}
+	if u.ctx != nil {
+		u.ctx = context.WithValue(u.ctx, ContextKeyIsStream, isStream)
+	}
+	return isStream, nil
+}
+
+// detectIsStream computes the stream flag from the action or the parsed body,
+// ignoring any cached value. Formats without a stream signal (embeddings,
+// rerank, unknown bodies) are non-stream.
+func (u *Request) detectIsStream() (bool, error) {
+	if action, ok := GetCtxValue[string](u, ContextKeyAction); ok {
+		return IsStreamAction(action), nil
+	}
+	if u.Body == nil {
+		return false, nil
+	}
+
+	parsed, err := u.Body.Parsed()
+	if err != nil {
+		return false, err
+	}
+	switch body := parsed.(type) {
+	case *openai.ChatCompletionRequest:
+		return body.Stream != nil && *body.Stream, nil
+	case *openai.CompletionRequest:
+		return body.Stream, nil
+	case *openai.ResponsesRequest:
+		return body.Stream != nil && *body.Stream, nil
+	case *anthropic.ClaudeMessagesRequest:
+		return body.Stream != nil && *body.Stream, nil
+	}
+	return false, nil
 }
 
 func GetCtxValue[T any](req *Request, key any) (T, bool) {

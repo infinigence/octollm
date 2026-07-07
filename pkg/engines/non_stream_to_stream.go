@@ -21,11 +21,13 @@ import (
 // to restrict it to an allowlist; any other format then passes straight through.
 //
 // Placement matters: it must wrap (sit outside) the request-rewrite engine so
-// the downstream rewrite sees a stream request. It marks the request as streaming
-// in a format-specific way (a body `stream` flag for most formats, or the
-// streamGenerateContent action + ?alt=sse for Gemini) and sets
-// octollm.ContextKeyIsStream in the context, which the rewrite engine keys off of
-// so stream-specific rewrites (e.g. stream_options.include_usage) are applied.
+// the downstream rewrite sees a stream request — stream-conditional rewrites
+// (e.g. stream_options.include_usage) match on the body's `stream` field. It
+// marks the request as streaming in a format-specific way (a body `stream` flag
+// for most formats, or the streamGenerateContent action + ?alt=sse for Gemini)
+// and overrides octollm.ContextKeyIsStream on the derived request's context so
+// downstream Request.IsStream calls report streaming despite the `false` this
+// engine's own check just cached.
 type NonStreamToStreamEngine struct {
 	Next octollm.Engine
 
@@ -84,7 +86,7 @@ func (e *NonStreamToStreamEngine) Process(req *octollm.Request) (*octollm.Respon
 	// Already streaming, or no merger for this format: pass through untouched.
 	// A body that cannot be parsed is treated as non-stream; the downstream
 	// engine will surface the real error.
-	if isStream, _ := octollm.IsStreamRequest(req); isStream {
+	if isStream, _ := req.IsStream(); isStream {
 		return e.Next.Process(req)
 	}
 	merger, err := streammerge.For(req.Format)
@@ -166,6 +168,8 @@ func bodyStreamRequest(req *octollm.Request) (*octollm.Request, error) {
 		return nil, fmt.Errorf("set stream flag: %w", err)
 	}
 
+	// Setting the key by hand is the streamness-change exception documented on
+	// Request.IsStream: it overrides the false this engine's check just cached.
 	ctx := context.WithValue(req.Context(), octollm.ContextKeyIsStream, true)
 	streamReq := req.WithContext(ctx)
 	// WithContext shallow-copies the Request, so it shares the Body pointer with
