@@ -44,7 +44,7 @@ type GeneralEndpointConfig struct {
 var DefaultURLPathChatCompletions = "/v1/chat/completions"
 var DefaultURLPathCompletions = "/v1/completions"
 var DefaultURLPathClaudeMessages = "/v1/messages"
-var DefaultURLPathVertex = "v1/models/{modelNameWithAction}" // Path for Vertex AI, {modelNameWithAction} includes action (e.g., "gemini-2.0-flash:generateContent")
+var DefaultURLPathVertex = "/v1beta/models/{modelNameWithAction}" // Path for Vertex AI, {modelNameWithAction} includes action (e.g., "gemini-2.0-flash:generateContent")
 var DefaultURLPathEmbeddings = "/v1/embeddings"
 var DefaultURLPathRerank = "/v1/rerank"
 var DefaultURLPathResponses = "/v1/responses"
