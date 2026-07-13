@@ -43,6 +43,8 @@ type ImageURLFetchEngine struct {
 
 	store   cache.Store
 	metrics *metrics.M
+
+	cacheKeyRules []compiledCacheKeyRule
 }
 
 // CacheMode selects how remote image bytes are cached when Cache is nil.
@@ -80,6 +82,9 @@ type ImageURLFetchConfig struct {
 
 	// Metrics is optional Prometheus instrumentation; nil disables.
 	Metrics *metrics.M
+
+	// CacheKeyRules optionally canonicalize cache keys for whitelisted URL patterns.
+	CacheKeyRules []CacheKeyRule
 }
 
 // NewImageURLFetchEngine wraps cfg.Next. Applies defaults: HTTPClient -> DefaultClient, Timeout -> 10s, RetryCount >= 0.
@@ -123,6 +128,11 @@ func NewImageURLFetchEngine(cfg ImageURLFetchConfig) (*ImageURLFetchEngine, erro
 		store = fs
 	}
 
+	compiledRules, err := compileCacheKeyRules(cfg.CacheKeyRules)
+	if err != nil {
+		return nil, err
+	}
+
 	return &ImageURLFetchEngine{
 		Next:               cfg.Next,
 		HTTPClient:         client,
@@ -133,6 +143,7 @@ func NewImageURLFetchEngine(cfg ImageURLFetchConfig) (*ImageURLFetchEngine, erro
 		notifier:           cfg.Limits.Notifier,
 		store:              store,
 		metrics:            cfg.Metrics,
+		cacheKeyRules:      compiledRules,
 	}, nil
 }
 
@@ -327,7 +338,7 @@ func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url stri
 	defer cancel()
 
 	if e.store != nil {
-		key := cache.KeyForURL(url)
+		key := e.cacheKeyForURL(url)
 		if data, meta, ok, gerr := e.store.Get(reqCtx, key); gerr != nil {
 			return "", "", 0, gerr
 		} else if ok {
@@ -392,7 +403,7 @@ func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url stri
 		e.metrics.ObserveDecodedBytes(int64(len(data)))
 		e.metrics.IncHTTPFetches()
 	}
-	k := cache.KeyForURL(url)
+	k := e.cacheKeyForURL(url)
 	if e.store != nil {
 		if putErr := e.store.Put(reqCtx, k, data, cache.Meta{ContentType: contentType, SourceURL: url}); putErr != nil {
 			slog.WarnContext(ctx, "[ImageURLFetchEngine] cache Put failed; continuing without persisting this image",
