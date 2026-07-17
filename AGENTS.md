@@ -47,7 +47,7 @@ Engines can be arbitrarily nested, each handling specific concerns (client commu
 - **`/pkg/octollm`** - Core interfaces: Engine, Request, Response, UnifiedBody, Stream, HTTP handlers
 - **`/pkg/engines/client`** - Upstream provider clients (HTTPEndpoint, ClaudeMessagesEndpoint, OpenAI)
 - **`/pkg/engines/converter`** - Protocol converters (OpenAI ↔ Claude messages)
-- **`/pkg/engines/load-balancer`** - Weighted round-robin load balancing with retry logic
+- **`/pkg/engines/load-balancer`** - WRR / shard-key concurrency LBs with retry; optional `AffinityProvider` resolves Redis shard-key affinity (primary read+write, shadow write-only) and deferred commit on success. Built-in provider soft-fails Redis miss/unavailable (empty prioritized, `err == nil`) so LB falls back to WRR/concurrency selection. `nil` provider disables affinity. Concurrency LB supports `MaxConcurrencyFn` and per-backend `CacheMissMaxUtilization` headroom (`ErrCacheMissHeadroom`); strong cache hits (last two shard keys) may bypass the ceiling.
 - **`/pkg/engines/limiter`** - Concurrency limiting (Lua/Redis-backed); "color" variants reserve cache-hit headroom via per-priority tier bands
 - **`/pkg/engines/rule-engine`** - Matcher-based rule chains using expr-lang expressions
 - **`/pkg/engines/moderator`** - Text content moderation around the next engine (Ali/Netease services, OpenAI/Claude adapters); probabilistic gating on input/output paths

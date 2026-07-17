@@ -17,6 +17,9 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
+// Tests with a non-nil affinityProvider exercise shard-key prioritized routing.
+// nil affinityProvider skips that path and tests fallback selection only (weighted round-robin).
+
 type stubEngine struct {
 	resp         *octollm.Response
 	err          error
@@ -54,7 +57,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 	backendEngine := &stubEngine{}
 
 	// empty backends
-	_, err := NewShardKeyWeightedRoundRobin(nil, time.Second, 1, time.Minute, nil, nil, "")
+	_, err := NewShardKeyWeightedRoundRobin(nil, time.Second, 1, nil)
 	assert.Error(t, err)
 
 	// negative weight
@@ -62,7 +65,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 		[]BackendItem{
 			{Name: "b1", Weight: -1, Engine: backendEngine},
 		},
-		time.Second, 1, time.Minute, nil, nil, "",
+		time.Second, 1, nil,
 	)
 	assert.Error(t, err)
 
@@ -72,9 +75,11 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 			{Name: "b1", Weight: 0, Engine: backendEngine},
 			{Name: "b2", Weight: 0, Engine: backendEngine},
 		},
-		time.Second, 1, time.Minute, nil, nil, "",
+		time.Second,
+		1,
+		nil,
 	)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	if assert.Len(t, lb.backends, 2) {
 		for i, b := range lb.backends {
 			assert.Equalf(t, 100, b.weight, "backend %d weight", i)
@@ -84,15 +89,15 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 	}
 }
 
-func TestResolvePrioritizedBackends_NoRedisOrEmpty(t *testing.T) {
+func TestResolveAffinity_NilProvider(t *testing.T) {
 	lb := &ShardKeyWeightedRoundRobin{}
-	assert.Nil(t, lb.resolvePrioritizedBackends(context.Background(), nil))
-
-	lb.redisClient = nil
-	assert.Nil(t, lb.resolvePrioritizedBackends(context.Background(), []string{"k1"}))
+	prioritized, commit, err := lb.resolveAffinity(context.Background(), testhelper.CreateTestRequest())
+	require.NoError(t, err)
+	assert.Nil(t, prioritized)
+	assert.Nil(t, commit)
 }
 
-func TestResolvePrioritizedBackends_WithRedisAndTrim(t *testing.T) {
+func TestResolveAffinity_WithRedisAndTrim(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 
@@ -105,35 +110,39 @@ func TestResolvePrioritizedBackends_WithRedisAndTrim(t *testing.T) {
 		{Name: "b4"},
 		{Name: "b5"},
 	}
-	lb, err := NewShardKeyWeightedRoundRobin(
-		backends, 5*time.Second, 5, 5*time.Minute, nil, client, "",
+	provider := newPrimaryShardKeyProvider(
+		t,
+		func(_ *octollm.Request) []string { return []string{"k1", "k2"} },
+		client,
+		"",
+		5*time.Minute,
+		backends,
 	)
+	lb, err := NewShardKeyWeightedRoundRobin(backends, 5*time.Second, 5, provider)
 	require.NoError(t, err)
 
 	ctx := context.Background()
 	now := time.Now().Unix()
 
-	// k1 has 2 members
-	_, err = client.ZAdd(ctx, "k1",
+	var zerr error
+	_, zerr = client.ZAdd(ctx, "k1",
 		redis.Z{Score: float64(now - 10), Member: "b1"},
 		redis.Z{Score: float64(now - 5), Member: "b2"},
 	).Result()
-	assert.NoError(t, err)
+	assert.NoError(t, zerr)
 
-	// k2 has 5 members, should be trimmed to 3 most recent
-	_, err = client.ZAdd(ctx, "k2",
+	_, zerr = client.ZAdd(ctx, "k2",
 		redis.Z{Score: float64(now - 50), Member: "b1"},
 		redis.Z{Score: float64(now - 40), Member: "b2"},
 		redis.Z{Score: float64(now - 30), Member: "b3"},
 		redis.Z{Score: float64(now - 20), Member: "b4"},
 		redis.Z{Score: float64(now - 10), Member: "b5"},
 	).Result()
-	assert.NoError(t, err)
+	assert.NoError(t, zerr)
 
-	// Later shard key ("k2") should have higher priority than "k1"
-	prioritized := lb.resolvePrioritizedBackends(ctx, []string{"k1", "k2"})
+	prioritized, _, err := lb.resolveAffinity(ctx, testhelper.CreateTestRequest())
+	require.NoError(t, err)
 	if assert.NotEmpty(t, prioritized) {
-		// First few should come from k2, most recent first: b5, b4, b3
 		wantOrderPrefix := []string{"b5", "b4", "b3"}
 		for i, name := range wantOrderPrefix {
 			if assert.Less(t, i, len(prioritized)) {
@@ -142,7 +151,6 @@ func TestResolvePrioritizedBackends_WithRedisAndTrim(t *testing.T) {
 		}
 	}
 
-	// ZSET for k2 should be trimmed to at most 3 members
 	card, err := client.ZCard(ctx, "k2").Result()
 	assert.NoError(t, err)
 	assert.LessOrEqual(t, card, int64(3))
@@ -223,18 +231,16 @@ func TestShardKeyWeightedRoundRobin_Process_SuccessAndRedisUpdate(t *testing.T) 
 		{Name: "backend1", Weight: 1, Engine: successEngine},
 	}
 
-	lb, err := NewShardKeyWeightedRoundRobin(
-		backends,
-		time.Second,
-		3,
-		time.Minute,
-		func(req *octollm.Request) []string {
-			return []string{"shard-key-1"}
-		},
+	provider := newPrimaryShardKeyProvider(
+		t,
+		func(req *octollm.Request) []string { return []string{"shard-key-1"} },
 		client,
 		"model-prefix",
+		time.Minute,
+		backends,
 	)
-	assert.NoError(t, err)
+	lb, err := NewShardKeyWeightedRoundRobin(backends, time.Second, 3, provider)
+	require.NoError(t, err)
 
 	req := newTestRequest(t)
 	resp, err := lb.Process(req)
@@ -367,7 +373,8 @@ func TestShardKeyWeightedRoundRobin_Process_AllBackendExhausted(t *testing.T) {
 	shardKeyListFunc := func(req *octollm.Request) []string {
 		return []string{"shard-key-1"}
 	}
-	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, time.Minute, shardKeyListFunc, rd, "shard-key:all-backend-exhausted")
+	provider := newPrimaryShardKeyProvider(t, shardKeyListFunc, rd, "shard-key:all-backend-exhausted", time.Minute, lbItems)
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, provider)
 	require.NoError(t, err)
 
 	t.Run("all backends exhausted without shard key prioritization", func(t *testing.T) {
@@ -388,7 +395,7 @@ func TestShardKeyWeightedRoundRobin_Process_AllBackendExhausted(t *testing.T) {
 
 	t.Run("all backends exhausted with shard key prioritization", func(t *testing.T) {
 		ctx := context.Background()
-		_, err = rd.ZAdd(ctx, "shard-key:all-backend-exhausted:shard-key-1",
+		_, err := rd.ZAdd(ctx, "shard-key:all-backend-exhausted:shard-key-1",
 			redis.Z{Score: float64(time.Now().Unix() - 2), Member: "A"},
 			redis.Z{Score: float64(time.Now().Unix() - 1), Member: "B"},
 			redis.Z{Score: float64(time.Now().Unix()), Member: "C"},
@@ -426,7 +433,8 @@ func TestShardKeyWeightedRoundRobin_Process_FailoverToZeroWeightedBackend(t *tes
 	shardKeyListFunc := func(req *octollm.Request) []string {
 		return []string{"shard-key-1"}
 	}
-	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, time.Minute, shardKeyListFunc, rd, "shard-key:failover-zero-weight")
+	provider := newPrimaryShardKeyProvider(t, shardKeyListFunc, rd, "shard-key:failover-zero-weight", time.Minute, lbItems)
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, provider)
 	require.NoError(t, err)
 
 	t.Run("weighted backends fail, zero-weight backend succeeds", func(t *testing.T) {
@@ -448,7 +456,7 @@ func TestShardKeyWeightedRoundRobin_Process_FailoverToZeroWeightedBackend(t *tes
 	t.Run("shard-key prioritizes weighted backends, zero-weight backend succeeds as last resort", func(t *testing.T) {
 		ctx := context.Background()
 		// b -> a -> c
-		_, err = rd.ZAdd(ctx, "shard-key:failover-zero-weight:shard-key-1",
+		_, err := rd.ZAdd(ctx, "shard-key:failover-zero-weight:shard-key-1",
 			redis.Z{Score: float64(time.Now().Unix() - 2), Member: "A"},
 			redis.Z{Score: float64(time.Now().Unix() - 1), Member: "B"},
 			redis.Z{Score: float64(time.Now().Unix()), Member: "C"},
@@ -480,10 +488,10 @@ func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineNotFirstChoice(t *t
 		{Name: "C", Weight: 0, Engine: stubC},
 	}
 
-	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, time.Minute, nil, nil, "")
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, nil) // skip shard-key prioritized routing
 	require.NoError(t, err)
 
-	t.Run("shard-key prioritizes weighted backends, zero-weight backend succeeds as last resort", func(t *testing.T) {
+	t.Run("WRR prefers weighted backends; zero-weight not called when healthy alternatives exist", func(t *testing.T) {
 		for range 5 {
 			req := testhelper.CreateTestRequest()
 			resp, err := lb.Process(req)
@@ -508,10 +516,10 @@ func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineCanBeLoadBalanced(t
 		{Name: "D", Weight: 0, Engine: stubD},
 	}
 
-	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, time.Minute, nil, nil, "")
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, nil) // skip shard-key prioritized routing
 	require.NoError(t, err)
 
-	t.Run("shard-key prioritizes weighted backends, zero-weight backend succeeds as last resort", func(t *testing.T) {
+	t.Run("WRR failover to zero-weight backends load-balanced when all weighted backends fail", func(t *testing.T) {
 		for range 1000 {
 			req := testhelper.CreateTestRequest()
 			resp, err := lb.Process(req)
@@ -548,7 +556,8 @@ func TestShardKeyWeightedRoundRobin_Process_Priority(t *testing.T) {
 	ctxA := context.WithValue(context.Background(), "selected-backend", "A")
 	ctxC := context.WithValue(context.Background(), "selected-backend", "C")
 
-	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, time.Minute, shardKeyListFunc, rd, "shard-key:select-by-ctx")
+	provider := newPrimaryShardKeyProvider(t, shardKeyListFunc, rd, "shard-key:select-by-ctx", time.Minute, lbItems)
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, provider)
 	require.NoError(t, err)
 
 	ctx := context.Background()
