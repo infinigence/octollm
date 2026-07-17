@@ -23,24 +23,18 @@ func TestCompileCacheKeyRules_invalidPattern(t *testing.T) {
 	require.ErrorIs(t, err, ErrImageInternal)
 }
 
-func TestNewImageURLFetchEngine_invalidCacheKeyRule(t *testing.T) {
+func TestNewRegexKeyDeriver_invalidCacheKeyRule(t *testing.T) {
 	t.Parallel()
-	next := octollm.EngineFunc(func(req *octollm.Request) (*octollm.Response, error) {
-		return octollm.NewNonStreamResponse(200, nil, octollm.NewBodyFromBytes([]byte(`{}`), nil)), nil
-	})
-	_, err := NewImageURLFetchEngine(ImageURLFetchConfig{
-		Next: next,
-		CacheKeyRules: []CacheKeyRule{{
-			Name:        "bad",
-			Pattern:     "(",
-			KeyTemplate: "x",
-		}},
-	})
+	_, err := NewRegexKeyDeriver([]CacheKeyRule{{
+		Name:        "bad",
+		Pattern:     "(",
+		KeyTemplate: "x",
+	}})
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrImageInternal)
 }
 
-func TestImageURLFetchEngine_cacheKeyForURL(t *testing.T) {
+func TestRegexKeyDeriver_Key(t *testing.T) {
 	t.Parallel()
 
 	moonshotRule := CacheKeyRule{
@@ -48,10 +42,8 @@ func TestImageURLFetchEngine_cacheKeyForURL(t *testing.T) {
 		Pattern:     `^https://blobproxy\.moonshot\.cn/blobs/([^/?#]+)(?:[?#].*)?$`,
 		KeyTemplate: `moonshot_blobproxy:$1`,
 	}
-	rules, err := compileCacheKeyRules([]CacheKeyRule{moonshotRule})
+	d, err := NewRegexKeyDeriver([]CacheKeyRule{moonshotRule})
 	require.NoError(t, err)
-
-	eng := &ImageURLFetchEngine{cacheKeyRules: rules}
 
 	urlA := "https://blobproxy.moonshot.cn/blobs/k3.FlYqzKjeGN0Eh1bfo14_4zUceppK?sig=pGj&exp=1783500617&data=Tpq"
 	urlB := "https://blobproxy.moonshot.cn/blobs/k3.FlYqzKjeGN0Eh1bfo14_4zUceppK?sig=PQP&exp=1783498614&data=QD9"
@@ -59,27 +51,25 @@ func TestImageURLFetchEngine_cacheKeyForURL(t *testing.T) {
 	urlOtherBlob := "https://blobproxy.moonshot.cn/blobs/other_blob_id?sig=xxx"
 	nonWhitelist := "https://example.com/img.png?token=1"
 
-	require.Equal(t, eng.cacheKeyForURL(urlA), eng.cacheKeyForURL(urlB))
-	require.Equal(t, eng.cacheKeyForURL(urlA), eng.cacheKeyForURL(urlC), "query param order should not affect cache key")
-	require.NotEqual(t, eng.cacheKeyForURL(urlA), eng.cacheKeyForURL(urlOtherBlob))
-	require.Equal(t, cache.KeyForURL(nonWhitelist), eng.cacheKeyForURL(nonWhitelist))
+	require.Equal(t, d.Key(urlA), d.Key(urlB))
+	require.Equal(t, d.Key(urlA), d.Key(urlC), "query param order should not affect cache key")
+	require.NotEqual(t, d.Key(urlA), d.Key(urlOtherBlob))
+	require.Equal(t, cache.KeyForURL(nonWhitelist), d.Key(nonWhitelist))
 
 	expected := cache.KeyForURL("moonshot_blobproxy:k3.FlYqzKjeGN0Eh1bfo14_4zUceppK")
-	require.Equal(t, expected, eng.cacheKeyForURL(urlA))
+	require.Equal(t, expected, d.Key(urlA))
 }
 
-func TestImageURLFetchEngine_cacheKeyRules_firstMatchWins(t *testing.T) {
+func TestRegexKeyDeriver_firstMatchWins(t *testing.T) {
 	t.Parallel()
 
-	rules, err := compileCacheKeyRules([]CacheKeyRule{
+	d, err := NewRegexKeyDeriver([]CacheKeyRule{
 		{Name: "first", Pattern: `^https://example\.com/(.+)$`, KeyTemplate: "first:$1"},
 		{Name: "second", Pattern: `^https://example\.com/(.+)$`, KeyTemplate: "second:$1"},
 	})
 	require.NoError(t, err)
-
-	eng := &ImageURLFetchEngine{cacheKeyRules: rules}
 	raw := "https://example.com/path/to/img.png"
-	require.Equal(t, cache.KeyForURL("first:path/to/img.png"), eng.cacheKeyForURL(raw))
+	require.Equal(t, cache.KeyForURL("first:path/to/img.png"), d.Key(raw))
 }
 
 func TestImageURLFetchEngine_cacheKeyRules_signedURLsShareFileCache(t *testing.T) {
@@ -104,16 +94,19 @@ func TestImageURLFetchEngine_cacheKeyRules_signedURLsShareFileCache(t *testing.T
 		return octollm.NewNonStreamResponse(200, nil, octollm.NewBodyFromBytes([]byte(`{}`), nil)), nil
 	})
 
+	deriver, err := NewRegexKeyDeriver([]CacheKeyRule{{
+		Name:        "test_blobproxy",
+		Pattern:     pattern,
+		KeyTemplate: "test_blobproxy:$1",
+	}})
+	require.NoError(t, err)
+
 	eng, err := NewImageURLFetchEngine(ImageURLFetchConfig{
 		Next:          next,
 		HTTPClient:    srv.Client(),
 		CacheMode:     CacheModeFile,
 		CacheFileRoot: root,
-		CacheKeyRules: []CacheKeyRule{{
-			Name:        "test_blobproxy",
-			Pattern:     pattern,
-			KeyTemplate: "test_blobproxy:$1",
-		}},
+		Deriver:       deriver,
 	})
 	require.NoError(t, err)
 

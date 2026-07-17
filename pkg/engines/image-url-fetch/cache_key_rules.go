@@ -40,9 +40,28 @@ func compileCacheKeyRules(rules []CacheKeyRule) ([]compiledCacheKeyRule, error) 
 	return out, nil
 }
 
-func (e *ImageURLFetchEngine) cacheKeyForURL(rawURL string) string {
+// RegexKeyDeriver implements cache.KeyDeriver by canonicalizing URLs with an ordered
+// table of RE2 regex rules before hashing. First matching rule wins; URLs matching no
+// rule fall back to hashing the raw URL. Callers (e.g. the router) can build one and pass
+// it as ImageURLFetchConfig.Deriver so key derivation is shared, not locked inside the engine.
+type RegexKeyDeriver struct {
+	rules []compiledCacheKeyRule
+}
+
+// NewRegexKeyDeriver compiles regex rules into a deriver. Returns an error on invalid regex.
+func NewRegexKeyDeriver(rules []CacheKeyRule) (*RegexKeyDeriver, error) {
+	compiled, err := compileCacheKeyRules(rules)
+	if err != nil {
+		return nil, err
+	}
+	return &RegexKeyDeriver{rules: compiled}, nil
+}
+
+var _ cache.KeyDeriver = (*RegexKeyDeriver)(nil)
+
+func (d *RegexKeyDeriver) Key(rawURL string) string {
 	keySource := rawURL
-	for _, rule := range e.cacheKeyRules {
+	for _, rule := range d.rules {
 		if rule.pattern.MatchString(rawURL) {
 			keySource = rule.pattern.ReplaceAllString(rawURL, rule.keyTemplate)
 			break

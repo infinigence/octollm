@@ -41,7 +41,7 @@ type ImageURLFetchEngine struct {
 	store   cache.Store
 	metrics *metrics.M
 
-	cacheKeyRules []compiledCacheKeyRule
+	deriver cache.KeyDeriver
 }
 
 // CacheMode selects how remote image bytes are cached when Cache is nil.
@@ -80,8 +80,9 @@ type ImageURLFetchConfig struct {
 	// Metrics is optional Prometheus instrumentation; nil disables.
 	Metrics *metrics.M
 
-	// CacheKeyRules optionally canonicalize cache keys for whitelisted URL patterns.
-	CacheKeyRules []CacheKeyRule
+	// Deriver maps remote URLs to cache keys; nil uses cache.URLKeyDeriver (plain SHA-256).
+	// Pass a *RegexKeyDeriver (see NewRegexKeyDeriver) to canonicalize whitelisted URL patterns via regex.
+	Deriver cache.KeyDeriver
 }
 
 // NewImageURLFetchEngine wraps cfg.Next. Applies defaults: HTTPClient -> DefaultClient, Timeout -> 10s, RetryCount >= 0.
@@ -125,9 +126,9 @@ func NewImageURLFetchEngine(cfg ImageURLFetchConfig) (*ImageURLFetchEngine, erro
 		store = fs
 	}
 
-	compiledRules, err := compileCacheKeyRules(cfg.CacheKeyRules)
-	if err != nil {
-		return nil, err
+	deriver := cfg.Deriver
+	if deriver == nil {
+		deriver = cache.URLKeyDeriver{}
 	}
 
 	return &ImageURLFetchEngine{
@@ -140,7 +141,7 @@ func NewImageURLFetchEngine(cfg ImageURLFetchConfig) (*ImageURLFetchEngine, erro
 		notifier:           cfg.Limits.Notifier,
 		store:              store,
 		metrics:            cfg.Metrics,
-		cacheKeyRules:      compiledRules,
+		deriver:            deriver,
 	}, nil
 }
 
@@ -372,7 +373,7 @@ func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url stri
 	defer cancel()
 
 	if e.store != nil {
-		key := e.cacheKeyForURL(url)
+		key := e.deriver.Key(url)
 		if data, meta, ok, gerr := e.store.Get(reqCtx, key); gerr != nil {
 			return "", "", 0, false, fmt.Errorf("%w: key %q: %w", ErrImageInternal, key, gerr)
 		} else if ok {
@@ -437,7 +438,7 @@ func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url stri
 		e.metrics.ObserveDecodedBytes(int64(len(data)))
 		e.metrics.IncHTTPFetches()
 	}
-	k := e.cacheKeyForURL(url)
+	k := e.deriver.Key(url)
 	if e.store != nil {
 		if putErr := e.store.Put(reqCtx, k, data, cache.Meta{ContentType: contentType, SourceURL: url}); putErr != nil {
 			slog.WarnContext(ctx, "[ImageURLFetchEngine] cache Put failed; continuing without persisting this image",
