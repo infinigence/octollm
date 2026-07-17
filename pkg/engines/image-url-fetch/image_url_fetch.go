@@ -229,22 +229,56 @@ func (e *ImageURLFetchEngine) Process(req *octollm.Request) (*octollm.Response, 
 		}
 		return e.Next.Process(req)
 	}
-
 	result := make(map[string]fetchImageResult, len(unique))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	ctx := req.Context()
+	fetchStart := time.Now()
 	for u := range unique {
 		wg.Add(1)
 		go func(imageURL string) {
 			defer wg.Done()
-			mediaType, rawB64, n, ferr := e.fetchRemoteImage(ctx, imageURL)
+			mediaType, rawB64, n, fromCache, ferr := e.fetchRemoteImage(ctx, imageURL)
 			mu.Lock()
-			result[imageURL] = fetchImageResult{mediaType: mediaType, rawBase64: rawB64, decodedBytes: n, err: ferr}
+			result[imageURL] = fetchImageResult{
+				mediaType:    mediaType,
+				rawBase64:    rawB64,
+				decodedBytes: n,
+				fromCache:    fromCache,
+				err:          ferr,
+			}
 			mu.Unlock()
 		}(u)
 	}
 	wg.Wait()
+	fetchDuration := time.Since(fetchStart)
+	if e.metrics != nil {
+		e.metrics.ObserveRequestFetchDuration(fetchDuration)
+	}
+
+	cacheHits := 0
+	remoteImageCount := 0
+	for _, j := range jobs {
+		u := j.remoteURL()
+		if u == "" || isDataURL(u) {
+			continue
+		}
+		remoteImageCount++
+		if r, ok := result[u]; ok && r.err == nil && r.fromCache {
+			cacheHits++
+		}
+	}
+	cacheHitRatio := float64(cacheHits) / float64(remoteImageCount)
+	if e.metrics != nil {
+		e.metrics.ObserveRequestCacheHitRatio(cacheHitRatio)
+	}
+	slog.InfoContext(ctx, "[ImageURLFetchEngine] image fetch summary",
+		slog.Int("total_images", len(jobs)),
+		slog.Int("remote_images", remoteImageCount),
+		slog.Int("cache_hits", cacheHits),
+		slog.Float64("cache_hit_ratio", cacheHitRatio),
+		slog.Int64("fetch_duration_ms", fetchDuration.Milliseconds()),
+	)
 
 	for u, r := range result {
 		if r.err != nil {
@@ -266,6 +300,9 @@ func (e *ImageURLFetchEngine) Process(req *octollm.Request) (*octollm.Response, 
 			ActualBytes: sumDecoded,
 		})
 		return nil, fmt.Errorf("%w: total image bytes %d exceeds limit %d: %w", ErrImageURLFetch, sumDecoded, maxReq, limits.ErrTotalImageSizeExceeded)
+	}
+	if e.metrics != nil && cacheHits == remoteImageCount {
+		e.metrics.IncFullCacheHitRequests()
 	}
 	if e.metrics != nil {
 		e.metrics.ObserveRequestSumBytes(sumDecoded)
@@ -292,7 +329,6 @@ func (e *ImageURLFetchEngine) Process(req *octollm.Request) (*octollm.Response, 
 	}
 
 	req.Body.SetBytes(out)
-	slog.DebugContext(req.Context(), "[ImageURLFetchEngine] inlined remote image parts")
 
 	resp, err := e.Next.Process(req)
 	if err != nil {
@@ -306,6 +342,7 @@ type fetchImageResult struct {
 	mediaType    string
 	rawBase64    string
 	decodedBytes int64
+	fromCache    bool
 	err          error
 }
 
@@ -313,23 +350,23 @@ func isDataURL(u string) bool {
 	return strings.HasPrefix(strings.ToLower(u), "data:")
 }
 
-func (e *ImageURLFetchEngine) fetchRemoteImage(ctx context.Context, url string) (mediaType string, rawBase64 string, decodedBytes int64, err error) {
+func (e *ImageURLFetchEngine) fetchRemoteImage(ctx context.Context, url string) (mediaType string, rawBase64 string, decodedBytes int64, fromCache bool, err error) {
 	maxAttempts := e.retryCount + 1
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		mt, b64, n, err := e.fetchRemoteImageOnce(ctx, url)
-		if err == nil {
-			return mt, b64, n, nil
+		mt, b64, n, cached, ferr := e.fetchRemoteImageOnce(ctx, url)
+		if ferr == nil {
+			return mt, b64, n, cached, nil
 		}
-		lastErr = err
+		lastErr = ferr
 	}
-	return "", "", 0, lastErr
+	return "", "", 0, false, lastErr
 }
 
-func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url string) (mediaType string, rawBase64 string, decodedBytes int64, err error) {
+func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url string) (mediaType string, rawBase64 string, decodedBytes int64, fromCache bool, err error) {
 	attemptTimeout := e.timeout
 	if attemptTimeout <= 0 {
 		attemptTimeout = 10 * time.Second
@@ -340,7 +377,7 @@ func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url stri
 	if e.store != nil {
 		key := e.cacheKeyForURL(url)
 		if data, meta, ok, gerr := e.store.Get(reqCtx, key); gerr != nil {
-			return "", "", 0, gerr
+			return "", "", 0, false, gerr
 		} else if ok {
 			// Cache/index hit: do not ObserveDecodedBytes/IncHTTPFetches here to avoid double-counting size
 			// and to keep http_fetches_total as engine-origin HTTP only (see metrics package comment).
@@ -349,23 +386,23 @@ func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url stri
 			}
 			ct := readbody.NormalizeImageContentType(meta.ContentType)
 			b64 := base64.StdEncoding.EncodeToString(data)
-			return ct, b64, int64(len(data)), nil
+			return ct, b64, int64(len(data)), true, nil
 		}
 	}
 
 	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", 0, false, err
 	}
 
 	httpStart := time.Now()
 	resp, err := e.HTTPClient.Do(httpReq)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", 0, false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", 0, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return "", "", 0, false, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	maxBytesPerURL := e.maxBytesPerURL
@@ -377,7 +414,7 @@ func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url stri
 				LimitBytes:  maxBytesPerURL,
 				ActualBytes: cl,
 			})
-			return "", "", 0, fmt.Errorf("Content-Length %d exceeds limit %d: %w", cl, maxBytesPerURL, limits.ErrPerImageSizeExceeded)
+			return "", "", 0, false, fmt.Errorf("Content-Length %d exceeds limit %d: %w", cl, maxBytesPerURL, limits.ErrPerImageSizeExceeded)
 		}
 	}
 
@@ -385,7 +422,7 @@ func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url stri
 
 	data, err := readbody.ReadLimited(resp.Body, maxBytesPerURL)
 	if err != nil {
-		return "", "", 0, err
+		return "", "", 0, false, err
 	}
 	if maxBytesPerURL > 0 && int64(len(data)) > maxBytesPerURL {
 		n := int64(len(data))
@@ -395,7 +432,7 @@ func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url stri
 			LimitBytes:  maxBytesPerURL,
 			ActualBytes: n,
 		})
-		return "", "", 0, fmt.Errorf("body size %d exceeds limit %d: %w", len(data), maxBytesPerURL, limits.ErrPerImageSizeExceeded)
+		return "", "", 0, false, fmt.Errorf("body size %d exceeds limit %d: %w", len(data), maxBytesPerURL, limits.ErrPerImageSizeExceeded)
 	}
 
 	if e.metrics != nil {
@@ -414,5 +451,5 @@ func (e *ImageURLFetchEngine) fetchRemoteImageOnce(ctx context.Context, url stri
 	}
 
 	b64 := base64.StdEncoding.EncodeToString(data)
-	return contentType, b64, int64(len(data)), nil
+	return contentType, b64, int64(len(data)), false, nil
 }

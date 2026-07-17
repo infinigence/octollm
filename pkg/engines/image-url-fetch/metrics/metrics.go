@@ -11,6 +11,9 @@
 //     IndexHTTPStore may still perform HTTP GET inside Get for telemetry/refetch; that is not counted on
 //     image_url_fetch_http_fetches_total. Use IndexHTTPStore’s own metrics (duration/decoded bytes there) if you need
 //     origin HTTP volume for that mode.
+//   - ObserveHTTPFetchDuration records per-URL cold HTTP GET wall time (store miss path only).
+//   - ObserveRequestFetchDuration records request-level wall time from starting concurrent fetches
+//     until all complete (matches Process fetch_duration log; includes cache hits and HTTP).
 //   - IncRejectedDueToImageDownload is incremented when Process returns an error after at least one
 //     remote image URL failed to load (HTTP error, timeout, per-URL cap, read error, etc.).
 package metrics
@@ -27,11 +30,14 @@ import (
 type M struct {
 	disabled bool
 
-	decodedBytes          prometheus.Histogram
-	requestSumBytes       prometheus.Histogram
-	httpFetchMilliseconds prometheus.Histogram
-	httpFetchesTotal      prometheus.Counter
-	cacheHitsTotal        prometheus.Counter
+	decodedBytes              prometheus.Histogram
+	requestSumBytes           prometheus.Histogram
+	httpFetchMilliseconds     prometheus.Histogram
+	requestFetchMilliseconds  prometheus.Histogram
+	requestCacheHitRatio      prometheus.Histogram
+	httpFetchesTotal          prometheus.Counter
+	cacheHitsTotal            prometheus.Counter
+	fullCacheHitRequestsTotal prometheus.Counter
 	// Requests that stop at this engine because a remote image could not be fetched (not size-sum policy after success).
 	rejectedDueToImageDownload prometheus.Counter
 }
@@ -60,6 +66,17 @@ func New(reg prometheus.Registerer) (*M, error) {
 		// Same shape as DefBuckets (0.005s..10s) expressed in ms.
 		Buckets: []float64{5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000},
 	})
+	requestFetchMs := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "image_url_fetch_request_fetch_duration_milliseconds",
+		Help: "Wall time in milliseconds to complete all remote image fetches in one request " +
+			"(concurrent; includes cache hits and HTTP misses).",
+		Buckets: []float64{5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000},
+	})
+	requestCacheHitRatio := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "image_url_fetch_request_cache_hit_ratio",
+		Help:    "Fraction of remote, non-data image URLs served from cache in one request; 0 means no image hit and 1 means every remote image hit.",
+		Buckets: []float64{0, 0.25, 0.5, 0.75, 0.99, 1},
+	})
 	httpFetches := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "image_url_fetch_http_fetches_total",
 		Help: "Successful remote HTTP GETs issued by the engine after a store miss (not counting HTTP inside IndexHTTPStore.Get).",
@@ -68,6 +85,10 @@ func New(reg prometheus.Registerer) (*M, error) {
 		Name: "image_url_fetch_cache_hits_total",
 		Help: "Successful Store.Get from the engine (disk hit, or IndexHTTPStore index hit; latter may still refetch via HTTP inside the store).",
 	})
+	fullCacheHitRequests := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "image_url_fetch_full_cache_hit_requests_total",
+		Help: "Remote-image requests whose every remote image was served from cache and passed request image-size validation.",
+	})
 	rejectedDownload := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "image_url_fetch_download_failed_rejects_total",
 		Help: "Requests not forwarded to the next engine because loading at least one remote image failed " +
@@ -75,7 +96,7 @@ func New(reg prometheus.Registerer) (*M, error) {
 	})
 
 	for _, c := range []prometheus.Collector{
-		decodedBytes, requestSum, httpMs, httpFetches, cacheHits, rejectedDownload,
+		decodedBytes, requestSum, httpMs, requestFetchMs, requestCacheHitRatio, httpFetches, cacheHits, fullCacheHitRequests, rejectedDownload,
 	} {
 		if err := reg.Register(c); err != nil {
 			return nil, err
@@ -86,8 +107,11 @@ func New(reg prometheus.Registerer) (*M, error) {
 		decodedBytes:               decodedBytes,
 		requestSumBytes:            requestSum,
 		httpFetchMilliseconds:      httpMs,
+		requestFetchMilliseconds:   requestFetchMs,
+		requestCacheHitRatio:       requestCacheHitRatio,
 		httpFetchesTotal:           httpFetches,
 		cacheHitsTotal:             cacheHits,
+		fullCacheHitRequestsTotal:  fullCacheHitRequests,
 		rejectedDueToImageDownload: rejectedDownload,
 	}, nil
 }
@@ -116,6 +140,22 @@ func (m *M) ObserveHTTPFetchDuration(d time.Duration) {
 	m.httpFetchMilliseconds.Observe(d.Seconds() * 1000)
 }
 
+// ObserveRequestFetchDuration records wall time to finish all concurrent remote image fetches in one request.
+func (m *M) ObserveRequestFetchDuration(d time.Duration) {
+	if m == nil || m.disabled {
+		return
+	}
+	m.requestFetchMilliseconds.Observe(d.Seconds() * 1000)
+}
+
+// ObserveRequestCacheHitRatio records the cache-hit fraction across remote, non-data images in one request.
+func (m *M) ObserveRequestCacheHitRatio(ratio float64) {
+	if m == nil || m.disabled {
+		return
+	}
+	m.requestCacheHitRatio.Observe(ratio)
+}
+
 // IncHTTPFetches increments successful remote fetches performed by the engine HTTPClient (cold path after store miss).
 func (m *M) IncHTTPFetches() {
 	if m == nil || m.disabled {
@@ -130,6 +170,14 @@ func (m *M) IncCacheHits() {
 		return
 	}
 	m.cacheHitsTotal.Inc()
+}
+
+// IncFullCacheHitRequests increments once when every remote image in the request was served from cache.
+func (m *M) IncFullCacheHitRequests() {
+	if m == nil || m.disabled {
+		return
+	}
+	m.fullCacheHitRequestsTotal.Inc()
 }
 
 // IncRejectedDueToImageDownload records one request that failed before Next because a remote image could not be fetched.

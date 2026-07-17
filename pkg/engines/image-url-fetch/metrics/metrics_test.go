@@ -15,8 +15,11 @@ func TestNew_nilRegisterer(t *testing.T) {
 		m.ObserveDecodedBytes(100)
 		m.ObserveRequestSumBytes(200)
 		m.ObserveHTTPFetchDuration(0)
+		m.ObserveRequestFetchDuration(0)
+		m.ObserveRequestCacheHitRatio(1)
 		m.IncHTTPFetches()
 		m.IncCacheHits()
+		m.IncFullCacheHitRequests()
 		m.IncRejectedDueToImageDownload()
 	})
 }
@@ -29,8 +32,10 @@ func TestNew_registers(t *testing.T) {
 
 	m.ObserveDecodedBytes(5000)
 	m.ObserveRequestSumBytes(8000)
+	m.ObserveRequestCacheHitRatio(0.5)
 	m.IncHTTPFetches()
 	m.IncCacheHits()
+	m.IncFullCacheHitRequests()
 
 	families, err := reg.Gather()
 	require.NoError(t, err)

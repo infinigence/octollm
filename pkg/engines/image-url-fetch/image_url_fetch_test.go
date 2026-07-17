@@ -296,7 +296,8 @@ func TestImageURLFetchEngine_fileCache_avoidsSecondHTTP(t *testing.T) {
 
 	families, err := reg.Gather()
 	require.NoError(t, err)
-	var hits, fetches float64
+	var hits, fetches, fullCacheHitRequests, requestCacheHitRatioSum float64
+	var requestCacheHitRatioCount uint64
 	for _, fam := range families {
 		switch fam.GetName() {
 		case "image_url_fetch_cache_hits_total":
@@ -307,10 +308,22 @@ func TestImageURLFetchEngine_fileCache_avoidsSecondHTTP(t *testing.T) {
 			for _, m := range fam.GetMetric() {
 				fetches += m.GetCounter().GetValue()
 			}
+		case "image_url_fetch_request_cache_hit_ratio":
+			for _, m := range fam.GetMetric() {
+				requestCacheHitRatioCount += m.GetHistogram().GetSampleCount()
+				requestCacheHitRatioSum += m.GetHistogram().GetSampleSum()
+			}
+		case "image_url_fetch_full_cache_hit_requests_total":
+			for _, m := range fam.GetMetric() {
+				fullCacheHitRequests += m.GetCounter().GetValue()
+			}
 		}
 	}
 	require.Equal(t, 1.0, fetches)
 	require.Equal(t, 1.0, hits)
+	require.Equal(t, uint64(2), requestCacheHitRatioCount)
+	require.Equal(t, 1.0, requestCacheHitRatioSum)
+	require.Equal(t, 1.0, fullCacheHitRequests)
 }
 
 func TestExtractImageReplaceJobsFromBody_embeddingTypeNoJobs(t *testing.T) {
