@@ -195,7 +195,7 @@ func (e *ImageURLFetchEngine) Process(req *octollm.Request) (*octollm.Response, 
 
 	body, err := req.Body.Bytes()
 	if err != nil {
-		return nil, fmt.Errorf("%w: get request body bytes error: %w", ErrImageURLFetch, err)
+		return nil, fmt.Errorf("get request body bytes error: %w", err)
 	}
 
 	unique := make(map[string]struct{})

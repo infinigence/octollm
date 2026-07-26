@@ -61,7 +61,7 @@ func (r *RuleComposerFileBased) getEngine(orgName, modelName string) (octollm.En
 	if !ok {
 		return nil, errutils.NewHandlerError(
 			fmt.Errorf("model %s not found", modelName),
-			http.StatusNotFound, "Model Not Found")
+			http.StatusNotFound, "Model Not Found", "not_found_error", "model_not_found")
 	}
 
 	var orgModelConf *UserOrgModelConfig
@@ -82,13 +82,13 @@ func (r *RuleComposerFileBased) getEngine(orgName, modelName string) (octollm.En
 		if orgName == "" {
 			return nil, errutils.NewHandlerError(
 				fmt.Errorf("org name is required for internal model %s", modelName),
-				http.StatusUnauthorized, "Unauthorized")
+				http.StatusUnauthorized, "Unauthorized", "authentication_error", "authentication_required")
 		}
 	case ModelAccessPrivate:
 		if !hasOrgModelConf {
 			return nil, errutils.NewHandlerError(
 				fmt.Errorf("org %s has no access to model %s", orgName, modelName),
-				http.StatusUnauthorized, "Unauthorized")
+				http.StatusUnauthorized, "Unauthorized", "authentication_error", "model_access_denied")
 		}
 	}
 

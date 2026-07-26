@@ -32,7 +32,7 @@ const (
 	// by Request.IsStream and should not be set by hand except to override the
 	// streamness of a derived request (see NonStreamToStreamEngine).
 	ContextKeyIsStream contextKey = "is_stream"
-	ContextKeyIsSSE          contextKey = "is_sse"
+	ContextKeyIsSSE    contextKey = "is_sse"
 )
 
 type Server struct {
@@ -55,7 +55,7 @@ func (s *Server) SetEngine(ep Engine) {
 // For the response, if the engine returns a stream channel, it will write the response as an event stream.
 // Otherwise, it will write the response as a plain text.
 func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.HandlerFunc {
-	return errutils.ErrorHandlingMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		isReqStreamCh := make(chan bool, 1)
 		signalStream := func(isStream bool) {
 			select {
@@ -146,10 +146,10 @@ func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.Handler
 				return
 			}
 			if errors.Is(err, context.Canceled) {
-				*r = *errutils.WithError(r, err, 499, "Client Closed Request")
+				*r = *errutils.WithError(r, err, 499, "Client Closed Request", "client_closed_request", "client_closed_request")
 				return
 			}
-			*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error")
+			*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error", "server_error", "gateway_internal_error")
 			return
 		}
 
@@ -167,7 +167,7 @@ func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.Handler
 				b, err := chunk.Body.Bytes()
 				if err != nil {
 					slog.ErrorContext(r.Context(), fmt.Sprintf("[httpHandler] Read chunk error: %v", err))
-					*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error")
+					*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error", "server_error", "gateway_internal_error")
 					return
 				}
 
@@ -190,7 +190,7 @@ func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.Handler
 			rd, err := resp.Body.Reader()
 			if err != nil {
 				slog.ErrorContext(r.Context(), fmt.Sprintf("[httpHandler] Read body error: %v", err))
-				*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error")
+				*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error", "server_error", "gateway_internal_error")
 				return
 			}
 			io.Copy(w, rd)
@@ -198,41 +198,71 @@ func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.Handler
 	})
 }
 
-// ChatCompletionsHandler handles OpenAI /v1/chat/completions requests
+// ChatCompletionsHandler handles OpenAI /v1/chat/completions requests.
 func ChatCompletionsHandler(engine Engine) http.HandlerFunc {
-	return httpSSEHandler(engine, APIFormatChatCompletions, &JSONParser[openai.ChatCompletionRequest]{})
+	return ErrorHandlingMiddleware(
+		APIFormatChatCompletions,
+		httpSSEHandler(engine, APIFormatChatCompletions, &JSONParser[openai.ChatCompletionRequest]{}),
+	)
 }
 
-// CompletionsHandler handles OpenAI /v1/completions requests (legacy)
+// CompletionsHandler handles OpenAI /v1/completions requests (legacy).
 func CompletionsHandler(engine Engine) http.HandlerFunc {
-	return httpSSEHandler(engine, APIFormatCompletions, &JSONParser[openai.CompletionRequest]{})
+	return ErrorHandlingMiddleware(
+		APIFormatCompletions,
+		httpSSEHandler(engine, APIFormatCompletions, &JSONParser[openai.CompletionRequest]{}),
+	)
 }
 
-// MessagesHandler handles Anthropic /v1/messages requests
+// MessagesHandler handles Anthropic /v1/messages requests.
 func MessagesHandler(engine Engine) http.HandlerFunc {
-	return httpSSEHandler(engine, APIFormatClaudeMessages, &JSONParser[anthropic.ClaudeMessagesRequest]{})
+	return ErrorHandlingMiddleware(
+		APIFormatClaudeMessages,
+		httpSSEHandler(engine, APIFormatClaudeMessages, &JSONParser[anthropic.ClaudeMessagesRequest]{}),
+	)
 }
 
-// EmbeddingsHandler handles OpenAI /v1/embeddings requests
+// EmbeddingsHandler handles OpenAI /v1/embeddings requests.
 func EmbeddingsHandler(engine Engine) http.HandlerFunc {
-	return httpSSEHandler(engine, APIFormatEmbeddings, &JSONParser[openai.EmbeddingRequest]{})
+	return ErrorHandlingMiddleware(
+		APIFormatEmbeddings,
+		httpSSEHandler(engine, APIFormatEmbeddings, &JSONParser[openai.EmbeddingRequest]{}),
+	)
 }
 
-// RerankHandler handles rerank requests
+// RerankHandler handles rerank requests.
 func RerankHandler(engine Engine) http.HandlerFunc {
-	return httpSSEHandler(engine, APIFormatRerank, &JSONParser[rerank.RerankRequest]{})
+	return ErrorHandlingMiddleware(
+		APIFormatRerank,
+		httpSSEHandler(engine, APIFormatRerank, &JSONParser[rerank.RerankRequest]{}),
+	)
 }
 
 // ResponsesHandler handles OpenAI /v1/responses (Responses API) requests.
 func ResponsesHandler(engine Engine) http.HandlerFunc {
-	return httpSSEHandler(engine, APIFormatResponses, &JSONParser[openai.ResponsesRequest]{})
+	return ErrorHandlingMiddleware(
+		APIFormatResponses,
+		httpSSEHandler(engine, APIFormatResponses, &JSONParser[openai.ResponsesRequest]{}),
+	)
+}
+
+// ErrorHandlingMiddleware selects the wire error format for an API format.
+func ErrorHandlingMiddleware(format APIFormat, next http.HandlerFunc) http.HandlerFunc {
+	switch format {
+	case APIFormatChatCompletions, APIFormatCompletions, APIFormatEmbeddings, APIFormatResponses:
+		return errutils.OpenAIErrorMiddleware(next)
+	case APIFormatClaudeMessages:
+		return errutils.ClaudeErrorMiddleware(next)
+	default:
+		return errutils.DefaultErrorMiddleware(next)
+	}
 }
 
 // httpJSONArrayHandler handles HTTP requests with given engine.
 // It is like httpSSEHandler, but if the engine returns a stream channel, it will write the response as a streamed JSON array.
 // This is the format used by Google Vertex AI API.
 func httpJSONArrayHandler(engine Engine, format APIFormat, parser Parser) http.HandlerFunc {
-	return errutils.ErrorHandlingMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// store received headers in context
 		*r = *r.WithContext(context.WithValue(r.Context(), ContextKeyReceivedHeader, r.Header))
 		u := NewRequest(r, format)
@@ -257,7 +287,7 @@ func httpJSONArrayHandler(engine Engine, format APIFormat, parser Parser) http.H
 				*r = *errutils.WithHandlerError(r, handlerErr)
 				return
 			}
-			*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error")
+			*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error", "server_error", "gateway_internal_error")
 			return
 		}
 
@@ -277,7 +307,7 @@ func httpJSONArrayHandler(engine Engine, format APIFormat, parser Parser) http.H
 				b, err := chunk.Body.Bytes()
 				if err != nil {
 					slog.ErrorContext(r.Context(), fmt.Sprintf("[httpHandler] Read chunk error: %v", err))
-					*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error")
+					*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error", "server_error", "gateway_internal_error")
 					return
 				}
 
@@ -297,7 +327,7 @@ func httpJSONArrayHandler(engine Engine, format APIFormat, parser Parser) http.H
 			rd, err := resp.Body.Reader()
 			if err != nil {
 				slog.ErrorContext(r.Context(), fmt.Sprintf("[httpHandler] Read body error: %v", err))
-				*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error")
+				*r = *errutils.WithError(r, err, http.StatusInternalServerError, "Internal Server Error", "server_error", "gateway_internal_error")
 				return
 			}
 			io.Copy(w, rd)
@@ -327,9 +357,15 @@ func VertexAIHandler(engine Engine) http.HandlerFunc {
 		r = r.WithContext(ctx)
 		// legacy json array format
 		if IsStreamAction(action) && !isSSE {
-			httpJSONArrayHandler(engine, APIFormatGoogleGenerateContent, &JSONParser[vertex.GenerateContentRequest]{})(w, r)
+			ErrorHandlingMiddleware(
+				APIFormatGoogleGenerateContent,
+				httpJSONArrayHandler(engine, APIFormatGoogleGenerateContent, &JSONParser[vertex.GenerateContentRequest]{}),
+			)(w, r)
 		} else {
-			httpSSEHandler(engine, APIFormatGoogleGenerateContent, &JSONParser[vertex.GenerateContentRequest]{})(w, r)
+			ErrorHandlingMiddleware(
+				APIFormatGoogleGenerateContent,
+				httpSSEHandler(engine, APIFormatGoogleGenerateContent, &JSONParser[vertex.GenerateContentRequest]{}),
+			)(w, r)
 		}
 	}
 }

@@ -121,7 +121,10 @@ Rules are defined as an ordered list. They are executed sequentially. **Once a r
     *   You can access the raw request body fields via `req.RawReq()` (e.g., `req.RawReq().messages[0].role == 'system'`). See the [Expr Guide](expr-guide.md) for the full list of available methods.
 *   **`deny`**: Configuration to reject the request if matched.
     *   `reason_text`: The error message returned to the client.
-    *   `http_status_code`: The HTTP status code to return.
+    *   `http_status_code`: The HTTP status code to return. Defaults to `400`.
+    *   `type`: Optional protocol error type. When omitted, the selected HTTP middleware derives it from `http_status_code`.
+    *   `param`: Optional request parameter associated with the error. Included only in OpenAI-compatible responses.
+    *   `code`: Optional machine-readable error code. When omitted, OpenAI-compatible middleware derives it from `http_status_code`.
 *   **`forward_weights`**: Redefine the load balancing weights for the model's backends.
     *   Map of `backend_name: weight`.
     *   Example:
