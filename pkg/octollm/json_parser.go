@@ -2,6 +2,7 @@ package octollm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -29,6 +30,12 @@ func (p *JSONParser[T]) Parse(data []byte) (any, error) {
 		in := jlexer.Lexer{Data: data}
 		jlparser.ParseJLexer(&in)
 		if err := in.Error(); err != nil {
+			// LexerError.Error() embeds a raw snippet of the input body; strip it
+			// before the error propagates to logs.
+			var lexErr *jlexer.LexerError
+			if errors.As(err, &lexErr) {
+				return nil, fmt.Errorf("json parse error: %s near offset %d", lexErr.Reason, lexErr.Offset)
+			}
 			return nil, err
 		}
 		return v, nil
