@@ -29,7 +29,7 @@ func TestNewHandlerError_PreservesEmptyCodeForProtocolMiddleware(t *testing.T) {
 }
 
 func TestNewHandlerError_OmittedCodeRemainsEmpty(t *testing.T) {
-	he := NewHandlerError(errors.New("x"), http.StatusBadRequest, "bad", "invalid_request_error")
+	he := NewHandlerError(errors.New("x"), http.StatusBadRequest, "bad", "invalid_request_error", "")
 	if he.Code != "" {
 		t.Fatalf("Code = %q, want empty", he.Code)
 	}
@@ -141,7 +141,7 @@ func TestOpenAIErrorMiddleware_NilParamIsJSONNull(t *testing.T) {
 
 func TestOpenAIErrorMiddleware_DerivesMissingMetadata(t *testing.T) {
 	h := OpenAIErrorMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		*r = *WithError(r, errors.New("boom"), http.StatusTooManyRequests, "limited", "")
+		*r = *WithError(r, errors.New("boom"), http.StatusTooManyRequests, "limited", "", "")
 	})
 
 	rec := httptest.NewRecorder()
@@ -155,7 +155,7 @@ func TestOpenAIErrorMiddleware_DerivesMissingMetadata(t *testing.T) {
 
 func TestOpenAIErrorMiddleware_NormalizesInvalidErrorStatus(t *testing.T) {
 	h := OpenAIErrorMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		*r = *WithError(r, errors.New("boom"), http.StatusOK, "", "")
+		*r = *WithError(r, errors.New("boom"), http.StatusOK, "", "", "")
 	})
 
 	rec := httptest.NewRecorder()
@@ -195,7 +195,7 @@ func TestClaudeErrorMiddleware_WrapsHandlerError(t *testing.T) {
 
 func TestClaudeErrorMiddleware_DerivesProtocolType(t *testing.T) {
 	h := ClaudeErrorMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		*r = *WithError(r, errors.New("boom"), http.StatusForbidden, "forbidden", "")
+		*r = *WithError(r, errors.New("boom"), http.StatusForbidden, "forbidden", "", "")
 	})
 
 	rec := httptest.NewRecorder()

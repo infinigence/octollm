@@ -9,11 +9,10 @@ import (
 )
 
 type DenyEngine struct {
-	ReasonText     string  `json:"reason_text" yaml:"reason_text"`
-	HTTPStatusCode int     `json:"http_status_code" yaml:"http_status_code"`
-	Type           string  `json:"type,omitempty" yaml:"type,omitempty"`
-	Param          *string `json:"param,omitempty" yaml:"param,omitempty"`
-	Code           string  `json:"code,omitempty" yaml:"code,omitempty"`
+	ReasonText     string `json:"reason_text" yaml:"reason_text"`
+	HTTPStatusCode int    `json:"http_status_code" yaml:"http_status_code"`
+	Type           string `json:"type,omitempty" yaml:"type,omitempty"`
+	Code           string `json:"code,omitempty" yaml:"code,omitempty"`
 }
 
 var ErrRequestDenied = errors.New("request denied")
@@ -25,13 +24,11 @@ func (e *DenyEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	if status == 0 {
 		status = http.StatusBadRequest
 	}
-	handlerErr := errutils.NewHandlerError(
+	return nil, errutils.NewHandlerError(
 		ErrRequestDenied,
 		status,
 		e.ReasonText,
 		e.Type,
 		e.Code,
 	)
-	handlerErr.Param = e.Param
-	return nil, handlerErr
 }

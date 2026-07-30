@@ -76,17 +76,13 @@ func WithHandlerError(r *http.Request, err *HandlerError) *http.Request {
 	return r.WithContext(ctx)
 }
 
-func WithError(r *http.Request, err error, status int, msg, errorType string, codes ...string) *http.Request {
-	return WithHandlerError(r, NewHandlerError(err, status, msg, errorType, codes...))
+func WithError(r *http.Request, err error, status int, msg, errorType, code string) *http.Request {
+	return WithHandlerError(r, NewHandlerError(err, status, msg, errorType, code))
 }
 
 // NewHandlerError builds a protocol-neutral error for ErrorHandlingMiddleware.
 // Protocol-specific defaults are applied by the selected middleware.
-func NewHandlerError(err error, status int, msg, errorType string, codes ...string) *HandlerError {
-	code := ""
-	if len(codes) > 0 {
-		code = codes[0]
-	}
+func NewHandlerError(err error, status int, msg, errorType, code string) *HandlerError {
 	return &HandlerError{
 		Err:        err,
 		StatusCode: status,

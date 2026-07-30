@@ -11,12 +11,10 @@ import (
 )
 
 func TestDenyEngineProcess_UsesConfiguredErrorMetadata(t *testing.T) {
-	param := "n"
 	engine := &DenyEngine{
 		ReasonText:     "only n=1 is allowed for this model",
 		HTTPStatusCode: http.StatusBadRequest,
 		Type:           "invalid_request_error",
-		Param:          &param,
 		Code:           "invalid_request",
 	}
 
@@ -33,9 +31,6 @@ func TestDenyEngineProcess_UsesConfiguredErrorMetadata(t *testing.T) {
 	}
 	if handlerErr.Type != engine.Type {
 		t.Fatalf("Type = %q, want %q", handlerErr.Type, engine.Type)
-	}
-	if handlerErr.Param == nil || *handlerErr.Param != param {
-		t.Fatalf("Param = %v, want %q", handlerErr.Param, param)
 	}
 	if handlerErr.Code != engine.Code {
 		t.Fatalf("Code = %q, want %q", handlerErr.Code, engine.Code)
@@ -62,7 +57,6 @@ func TestDenyEngineProcess_LeavesProtocolMetadataForMiddleware(t *testing.T) {
 }
 
 func TestDenyEngineProcess_RendersConfiguredErrorByAPIFormat(t *testing.T) {
-	param := "n"
 	tests := []struct {
 		name       string
 		engine     *DenyEngine
@@ -88,21 +82,19 @@ func TestDenyEngineProcess_RendersConfiguredErrorByAPIFormat(t *testing.T) {
 				ReasonText:     "only n=1 is allowed",
 				HTTPStatusCode: http.StatusUnprocessableEntity,
 				Type:           "custom_request_error",
-				Param:          &param,
 				Code:           "only_n_1",
 			},
 			handler:    octollm.ChatCompletionsHandler,
 			wantStatus: http.StatusUnprocessableEntity,
 			wantType:   "application/json",
-			wantBody:   `{"error":{"message":"only n=1 is allowed","type":"custom_request_error","param":"n","code":"only_n_1"}}`,
+			wantBody:   `{"error":{"message":"only n=1 is allowed","type":"custom_request_error","param":null,"code":"only_n_1"}}`,
 		},
 		{
-			name: "Claude preserves type and omits param and code",
+			name: "Claude preserves type and omits code",
 			engine: &DenyEngine{
 				ReasonText:     "denied",
 				HTTPStatusCode: http.StatusForbidden,
 				Type:           "permission_error",
-				Param:          &param,
 				Code:           "ignored_by_claude",
 			},
 			handler:    octollm.MessagesHandler,
@@ -116,7 +108,6 @@ func TestDenyEngineProcess_RendersConfiguredErrorByAPIFormat(t *testing.T) {
 				ReasonText:     "denied",
 				HTTPStatusCode: http.StatusTeapot,
 				Type:           "ignored_by_default",
-				Param:          &param,
 				Code:           "ignored_by_default",
 			},
 			handler:    octollm.RerankHandler,
