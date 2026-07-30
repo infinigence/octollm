@@ -3,9 +3,11 @@ package engines
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/infinigence/octollm/pkg/errutils"
+	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 func TestDenyEngineProcess_UsesConfiguredErrorMetadata(t *testing.T) {
@@ -56,5 +58,90 @@ func TestDenyEngineProcess_LeavesProtocolMetadataForMiddleware(t *testing.T) {
 	}
 	if handlerErr.Code != "" {
 		t.Fatalf("Code = %q, want empty", handlerErr.Code)
+	}
+}
+
+func TestDenyEngineProcess_RendersConfiguredErrorByAPIFormat(t *testing.T) {
+	param := "n"
+	tests := []struct {
+		name       string
+		engine     *DenyEngine
+		handler    func(octollm.Engine) http.HandlerFunc
+		wantStatus int
+		wantType   string
+		wantBody   string
+	}{
+		{
+			name: "OpenAI derives missing metadata",
+			engine: &DenyEngine{
+				ReasonText:     "limited",
+				HTTPStatusCode: http.StatusTooManyRequests,
+			},
+			handler:    octollm.ChatCompletionsHandler,
+			wantStatus: http.StatusTooManyRequests,
+			wantType:   "application/json",
+			wantBody:   `{"error":{"message":"limited","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}`,
+		},
+		{
+			name: "OpenAI preserves custom metadata",
+			engine: &DenyEngine{
+				ReasonText:     "only n=1 is allowed",
+				HTTPStatusCode: http.StatusUnprocessableEntity,
+				Type:           "custom_request_error",
+				Param:          &param,
+				Code:           "only_n_1",
+			},
+			handler:    octollm.ChatCompletionsHandler,
+			wantStatus: http.StatusUnprocessableEntity,
+			wantType:   "application/json",
+			wantBody:   `{"error":{"message":"only n=1 is allowed","type":"custom_request_error","param":"n","code":"only_n_1"}}`,
+		},
+		{
+			name: "Claude preserves type and omits param and code",
+			engine: &DenyEngine{
+				ReasonText:     "denied",
+				HTTPStatusCode: http.StatusForbidden,
+				Type:           "permission_error",
+				Param:          &param,
+				Code:           "ignored_by_claude",
+			},
+			handler:    octollm.MessagesHandler,
+			wantStatus: http.StatusForbidden,
+			wantType:   "application/json",
+			wantBody:   `{"type":"error","error":{"type":"permission_error","message":"denied"}}`,
+		},
+		{
+			name: "default format returns message only",
+			engine: &DenyEngine{
+				ReasonText:     "denied",
+				HTTPStatusCode: http.StatusTeapot,
+				Type:           "ignored_by_default",
+				Param:          &param,
+				Code:           "ignored_by_default",
+			},
+			handler:    octollm.RerankHandler,
+			wantStatus: http.StatusTeapot,
+			wantType:   "text/plain",
+			wantBody:   "denied",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+
+			tt.handler(tt.engine).ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if got := rec.Header().Get("Content-Type"); got != tt.wantType {
+				t.Fatalf("Content-Type = %q, want %q", got, tt.wantType)
+			}
+			if got := rec.Body.String(); got != tt.wantBody {
+				t.Fatalf("body = %q, want %q", got, tt.wantBody)
+			}
+		})
 	}
 }

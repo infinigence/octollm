@@ -29,7 +29,7 @@ func compileCacheKeyRules(rules []CacheKeyRule) ([]compiledCacheKeyRule, error) 
 	for _, r := range rules {
 		re, err := regexp.Compile(r.Pattern)
 		if err != nil {
-			return nil, fmt.Errorf("%w: invalid cache key rule %q: %w", ErrImageURLFetch, r.Name, err)
+			return nil, fmt.Errorf("%w: invalid cache key rule %q: %w", ErrImageInternal, r.Name, err)
 		}
 		out = append(out, compiledCacheKeyRule{
 			name:        r.Name,

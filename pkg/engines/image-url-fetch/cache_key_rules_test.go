@@ -20,7 +20,7 @@ func TestCompileCacheKeyRules_invalidPattern(t *testing.T) {
 		KeyTemplate: "x",
 	}})
 	require.Error(t, err)
-	require.ErrorIs(t, err, ErrImageURLFetch)
+	require.ErrorIs(t, err, ErrImageInternal)
 }
 
 func TestNewImageURLFetchEngine_invalidCacheKeyRule(t *testing.T) {
@@ -37,7 +37,7 @@ func TestNewImageURLFetchEngine_invalidCacheKeyRule(t *testing.T) {
 		}},
 	})
 	require.Error(t, err)
-	require.ErrorIs(t, err, ErrImageURLFetch)
+	require.ErrorIs(t, err, ErrImageInternal)
 }
 
 func TestImageURLFetchEngine_cacheKeyForURL(t *testing.T) {
