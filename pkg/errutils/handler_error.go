@@ -80,8 +80,8 @@ func WithError(r *http.Request, err error, status int, msg, errorType, code stri
 	return WithHandlerError(r, NewHandlerError(err, status, msg, errorType, code))
 }
 
-// NewHandlerError builds a protocol-neutral error for ErrorHandlingMiddleware.
-// Protocol-specific defaults are applied by the selected middleware.
+// NewHandlerError builds a protocol-neutral error.
+// Protocol-specific defaults are applied by the middleware used by the handler.
 func NewHandlerError(err error, status int, msg, errorType, code string) *HandlerError {
 	return &HandlerError{
 		Err:        err,

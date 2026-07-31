@@ -200,62 +200,44 @@ func httpSSEHandler(engine Engine, format APIFormat, parser Parser) http.Handler
 
 // ChatCompletionsHandler handles OpenAI /v1/chat/completions requests.
 func ChatCompletionsHandler(engine Engine) http.HandlerFunc {
-	return ErrorHandlingMiddleware(
-		APIFormatChatCompletions,
+	return errutils.OpenAIErrorMiddleware(
 		httpSSEHandler(engine, APIFormatChatCompletions, &JSONParser[openai.ChatCompletionRequest]{}),
 	)
 }
 
 // CompletionsHandler handles OpenAI /v1/completions requests (legacy).
 func CompletionsHandler(engine Engine) http.HandlerFunc {
-	return ErrorHandlingMiddleware(
-		APIFormatCompletions,
+	return errutils.OpenAIErrorMiddleware(
 		httpSSEHandler(engine, APIFormatCompletions, &JSONParser[openai.CompletionRequest]{}),
 	)
 }
 
 // MessagesHandler handles Anthropic /v1/messages requests.
 func MessagesHandler(engine Engine) http.HandlerFunc {
-	return ErrorHandlingMiddleware(
-		APIFormatClaudeMessages,
+	return errutils.ClaudeErrorMiddleware(
 		httpSSEHandler(engine, APIFormatClaudeMessages, &JSONParser[anthropic.ClaudeMessagesRequest]{}),
 	)
 }
 
 // EmbeddingsHandler handles OpenAI /v1/embeddings requests.
 func EmbeddingsHandler(engine Engine) http.HandlerFunc {
-	return ErrorHandlingMiddleware(
-		APIFormatEmbeddings,
+	return errutils.OpenAIErrorMiddleware(
 		httpSSEHandler(engine, APIFormatEmbeddings, &JSONParser[openai.EmbeddingRequest]{}),
 	)
 }
 
 // RerankHandler handles rerank requests.
 func RerankHandler(engine Engine) http.HandlerFunc {
-	return ErrorHandlingMiddleware(
-		APIFormatRerank,
+	return errutils.DefaultErrorMiddleware(
 		httpSSEHandler(engine, APIFormatRerank, &JSONParser[rerank.RerankRequest]{}),
 	)
 }
 
 // ResponsesHandler handles OpenAI /v1/responses (Responses API) requests.
 func ResponsesHandler(engine Engine) http.HandlerFunc {
-	return ErrorHandlingMiddleware(
-		APIFormatResponses,
+	return errutils.OpenAIErrorMiddleware(
 		httpSSEHandler(engine, APIFormatResponses, &JSONParser[openai.ResponsesRequest]{}),
 	)
-}
-
-// ErrorHandlingMiddleware selects the wire error format for an API format.
-func ErrorHandlingMiddleware(format APIFormat, next http.HandlerFunc) http.HandlerFunc {
-	switch format {
-	case APIFormatChatCompletions, APIFormatCompletions, APIFormatEmbeddings, APIFormatResponses:
-		return errutils.OpenAIErrorMiddleware(next)
-	case APIFormatClaudeMessages:
-		return errutils.ClaudeErrorMiddleware(next)
-	default:
-		return errutils.DefaultErrorMiddleware(next)
-	}
 }
 
 // httpJSONArrayHandler handles HTTP requests with given engine.
@@ -357,13 +339,11 @@ func VertexAIHandler(engine Engine) http.HandlerFunc {
 		r = r.WithContext(ctx)
 		// legacy json array format
 		if IsStreamAction(action) && !isSSE {
-			ErrorHandlingMiddleware(
-				APIFormatGoogleGenerateContent,
+			errutils.DefaultErrorMiddleware(
 				httpJSONArrayHandler(engine, APIFormatGoogleGenerateContent, &JSONParser[vertex.GenerateContentRequest]{}),
 			)(w, r)
 		} else {
-			ErrorHandlingMiddleware(
-				APIFormatGoogleGenerateContent,
+			errutils.DefaultErrorMiddleware(
 				httpSSEHandler(engine, APIFormatGoogleGenerateContent, &JSONParser[vertex.GenerateContentRequest]{}),
 			)(w, r)
 		}
