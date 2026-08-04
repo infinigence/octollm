@@ -222,7 +222,7 @@ func TestChatCompletionsToClaudeMessages_convertRequestBody_SimpleTextWithMeta(t
 	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
 }
 
-func TestChatCompletionsToClaudeMessages_convertRequestBody_Thinking(t *testing.T) {
+func TestChatCompletionsToClaudeMessages_convertRequestBody_ThinkingAndEffort(t *testing.T) {
 	claudeReqJSON := `{
 		"model": "claude-3-5-haiku",
 		"max_tokens": 1024,
@@ -231,6 +231,9 @@ func TestChatCompletionsToClaudeMessages_convertRequestBody_Thinking(t *testing.
 		"top_p": 0.9,
 		"thinking": {
 			"type": "adaptive"
+		},
+		"output_config": {
+			"effort": "high"
 		},
 		"messages": [
 			{
@@ -249,6 +252,7 @@ func TestChatCompletionsToClaudeMessages_convertRequestBody_Thinking(t *testing.
 		"thinking": {
 			"type": "adaptive"
 		},
+		"reasoning_effort": "high",
 		"messages": [
 			{
 				"role": "user",

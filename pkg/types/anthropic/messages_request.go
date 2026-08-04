@@ -28,6 +28,7 @@ type ClaudeMessagesRequest struct {
 	Thinking      *ThinkingConfig   `json:"thinking,omitempty"`
 	Tools         []*ToolDefinition `json:"tools,omitempty"`
 	ToolChoice    *ToolChoice       `json:"tool_choice,omitempty"`
+	OutputConfig  *OutputConfig     `json:"output_config,omitempty"`
 	// ServiceTier   *string           `json:"service_tier,omitempty"`
 
 	// AnthropicBeta json.RawMessage `json:"anthropic_beta,omitempty"` // Bedrock 格式需要，直接透传
@@ -393,6 +394,11 @@ type ToolChoice struct {
 
 	// Disable parallel tool use
 	DisableParallelToolUse *bool `json:"disable_parallel_tool_use,omitempty"`
+}
+
+type OutputConfig struct {
+	Effort *string `json:"effort,omitempty"` // "none", "low", "medium", "high"
+	// Additional output configuration fields can be added here
 }
 
 func (r *ClaudeMessagesRequest) UnmarshalJSON(data []byte) error {

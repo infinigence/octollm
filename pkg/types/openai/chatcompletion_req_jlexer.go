@@ -3,7 +3,7 @@
 // This file contains jlexer streaming parsers for the structs defined in:
 //   pkg/types/openai/chatcompletion_req.go
 //
-// Source file SHA-256: f16ae6ea0c31b986b8c502692cf30c62cbd7e9414db5116d798f9b3e7b60b090
+// Source file SHA-256: bdbccb9ceaadd242aa22251684a10df4b5ca7ca763308b39cdb122b24c627e3a
 //
 // Generation guide: pkg/types/JLEXER_PARSER_GUIDE.md
 // Polymorphic field patterns: pkg/types/UNION_TYPES.md
@@ -67,6 +67,14 @@ func (r *ChatCompletionRequest) ParseJLexer(in *jlexer.Lexer) {
 			} else {
 				r.Thinking = &Thinking{}
 				r.Thinking.ParseJLexer(in)
+			}
+		case "reasoning_effort":
+			if in.IsNull() {
+				in.Skip()
+				r.ReasoningEffort = nil
+			} else {
+				v := in.String()
+				r.ReasoningEffort = &v
 			}
 		case "max_tokens":
 			if in.IsNull() {

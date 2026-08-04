@@ -84,6 +84,10 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 		}
 	}
 
+	if src.OutputConfig != nil && src.OutputConfig.Effort != nil {
+		dst.ReasoningEffort = src.OutputConfig.Effort
+	}
+
 	// Model
 	dst.Model = src.Model
 

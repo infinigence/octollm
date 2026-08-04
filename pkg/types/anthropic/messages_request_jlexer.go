@@ -3,7 +3,7 @@
 // This file contains jlexer streaming parsers for the structs defined in:
 //   pkg/types/anthropic/messages_request.go
 //
-// Source file SHA-256: 9da00f0c46e523df03e49f7a72205d86d209f0fa724b6fffa08f02e48e6de7af
+// Source file SHA-256: fd2dcd819288f6470bd5cce859d369b89a4422642001efa7fe2aca75001bf5ee
 //
 // Generation guide: pkg/types/JLEXER_PARSER_GUIDE.md
 // Polymorphic field patterns: pkg/types/UNION_TYPES.md
@@ -155,6 +155,14 @@ func (r *ClaudeMessagesRequest) ParseJLexer(in *jlexer.Lexer) {
 			} else {
 				r.ToolChoice = &ToolChoice{}
 				r.ToolChoice.ParseJLexer(in)
+			}
+		case "output_config":
+			if in.IsNull() {
+				in.Skip()
+				r.OutputConfig = nil
+			} else {
+				r.OutputConfig = &OutputConfig{}
+				r.OutputConfig.ParseJLexer(in)
 			}
 		default:
 			in.SkipRecursive()
@@ -565,6 +573,39 @@ func (t *ToolChoice) ParseJLexer(in *jlexer.Lexer) {
 			} else {
 				v := in.Bool()
 				t.DisableParallelToolUse = &v
+			}
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+
+func (o *OutputConfig) ParseJLexer(in *jlexer.Lexer) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		switch key {
+		case "effort":
+			if in.IsNull() {
+				in.Skip()
+				o.Effort = nil
+			} else {
+				v := in.String()
+				o.Effort = &v
 			}
 		default:
 			in.SkipRecursive()

@@ -15,6 +15,7 @@ type ChatCompletionRequest struct {
 	Model               string          `json:"model"`
 	Messages            []*Message      `json:"messages" binding:"required"`
 	Thinking            *Thinking       `json:"thinking,omitempty"`
+	ReasoningEffort     *string         `json:"reasoning_effort,omitempty"`
 	MaxTokens           *int            `json:"max_tokens,omitempty"`
 	MaxCompletionTokens *int            `json:"max_completion_tokens,omitempty"`
 	Temperature         *float64        `json:"temperature,omitempty"`
@@ -22,7 +23,7 @@ type ChatCompletionRequest struct {
 	TopK                *int            `json:"top_k,omitempty"`
 	Stop                StopValue       `json:"stop,omitempty"`
 	Stream              *bool           `json:"stream,omitempty"`
-	Tools               []*Tool         `json:"tools,omitempty"` // 可用函数工具列表
+	Tools               []*Tool         `json:"tools,omitempty"`       // 可用函数工具列表
 	ToolChoice          ToolChoiceValue `json:"tool_choice,omitempty"` // 指定强制调用的函数（可选）
 }
 
