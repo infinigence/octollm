@@ -222,6 +222,49 @@ func TestChatCompletionsToClaudeMessages_convertRequestBody_SimpleTextWithMeta(t
 	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
 }
 
+func TestChatCompletionsToClaudeMessages_convertRequestBody_Thinking(t *testing.T) {
+	claudeReqJSON := `{
+		"model": "claude-3-5-haiku",
+		"max_tokens": 1024,
+		"stream": true,
+		"temperature": 0.5,
+		"top_p": 0.9,
+		"thinking": {
+			"type": "adaptive"
+		},
+		"messages": [
+			{
+				"role": "user",
+				"content": "Hello, how are you?"
+			}
+		]
+	}`
+
+	expectedOpenaiReqJSON := `{
+		"model": "claude-3-5-haiku",
+		"max_tokens": 1024,
+		"stream": true,
+		"temperature": 0.5,
+		"top_p": 0.9,
+		"thinking": {
+			"type": "adaptive"
+		},
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "text",
+						"text": "Hello, how are you?"
+					}
+				]
+			}
+		]
+	}`
+
+	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
+}
+
 func TestChatCompletionsToClaudeMessages_convertRequestBody_MultipleSystem(t *testing.T) {
 	claudeReqJSON := `{
 		"model": "claude-3-5-haiku",

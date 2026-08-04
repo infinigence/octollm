@@ -78,15 +78,9 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 		dst.Stream = src.Stream
 	}
 
-	if src.Thinking != nil {
-		if src.Thinking.Type == "enabled" {
-			dst.Thinking = &openai.Thinking{
-				Type: "enabled",
-			}
-		} else {
-			dst.Thinking = &openai.Thinking{
-				Type: "disabled",
-			}
+	if src.Thinking != nil && src.Thinking.Type != "" {
+		dst.Thinking = &openai.Thinking{
+			Type: src.Thinking.Type,
 		}
 	}
 
