@@ -122,3 +122,41 @@ func TestChatCompletionMerger_MultipleChoices(t *testing.T) {
 		`[DONE]`,
 	}, `{"id":"x","created":0,"object":"chat.completion","model":"m","usage":null,"choices":[{"index":0,"finish_reason":"","message":{"role":"assistant","content":"first"}},{"index":1,"finish_reason":"","message":{"role":"assistant","content":"second"}}]}`)
 }
+
+// A delta that explicitly carries reasoning_content: null must not cause a
+// reasoning_content field to appear in the merged message: an explicit null means
+// the model produced no reasoning. Currently the null parses to a non-nil empty
+// MessageContentString, so the merger emits reasoning_content: "" in the assembled
+// response, which downstream converters then treat as a real empty thinking block.
+func TestChatCompletionMerger_ReasoningNull(t *testing.T) {
+	runChatMerge(t, []string{
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null,"tool_calls":null},"logprobs":null,"finish_reason":null}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"Hello","reasoning_content":null},"logprobs":null,"finish_reason":null}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":" world","reasoning_content":null},"logprobs":null,"finish_reason":null}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"logprobs":null,"finish_reason":"stop"}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":10,"total_tokens":18,"completion_tokens":8}}`,
+		`[DONE]`,
+	}, `{"id":"x","created":1,"object":"chat.completion","model":"m","usage":{"completion_tokens":8,"prompt_tokens":10,"total_tokens":18},"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Hello world"}}]}`)
+}
+
+// An explicit prompt_tokens_details: null in the usage chunk must not produce a
+// prompt_tokens_details field in the merged usage.
+func TestChatCompletionMerger_UsagePromptTokensDetailsNull(t *testing.T) {
+	runChatMerge(t, []string{
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"finish_reason":"stop","delta":{"content":""}}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":10,"total_tokens":18,"completion_tokens":8,"prompt_tokens_details":null}}`,
+		`[DONE]`,
+	}, `{"id":"x","created":1,"object":"chat.completion","model":"m","usage":{"completion_tokens":8,"prompt_tokens":10,"total_tokens":18},"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]}`)
+}
+
+// The same boundary when the usage chunk omits prompt_tokens_details entirely
+// (no key at all): the merged usage must not carry the field.
+func TestChatCompletionMerger_UsagePromptTokensDetailsAbsent(t *testing.T) {
+	runChatMerge(t, []string{
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"finish_reason":"stop","delta":{"content":""}}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":10,"total_tokens":18,"completion_tokens":8}}`,
+		`[DONE]`,
+	}, `{"id":"x","created":1,"object":"chat.completion","model":"m","usage":{"completion_tokens":8,"prompt_tokens":10,"total_tokens":18},"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]}`)
+}

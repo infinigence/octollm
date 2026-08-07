@@ -1807,3 +1807,303 @@ func TestChatCompletionsToClaudeMessages_Close_Once_Stream(t *testing.T) {
 	}
 	resp.Stream.Close()
 }
+
+// A historical assistant message that carries an explicit empty content (the
+// Claude-format equivalent of content: "") together with a tool use must keep
+// text:"" in the converted OpenAI message. Currently the empty text is dropped
+// (MessageContentItem.Text is omitempty), so the converted assistant message lacks
+// the text field and the engine rejects it with 400 param_error.
+func TestChatCompletionsToClaudeMessages_convertRequestBody_ExplicitEmptyContent(t *testing.T) {
+	claudeReqJSON := `{
+		"model": "glm-5.2",
+		"stream": true,
+		"tool_choice": {"type": "auto"},
+		"tools": [
+			{
+				"name": "get_weather",
+				"description": "获取指定城市的当前天气信息",
+				"input_schema": {
+					"type": "object",
+					"properties": {
+						"city": {"type": "string"}
+					},
+					"required": ["city"]
+				}
+			}
+		],
+		"messages": [
+			{
+				"role": "user",
+				"content": "北京今天天气怎么样？"
+			},
+			{
+				"role": "assistant",
+				"content": [
+					{"type": "text", "text": ""},
+					{
+						"type": "tool_use",
+						"id": "toolu_d136fa1e9dac43c49bbf0559",
+						"name": "get_weather",
+						"input": {"city": "北京"}
+					}
+				]
+			},
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "tool_result",
+						"tool_use_id": "toolu_d136fa1e9dac43c49bbf0559",
+						"content": "{\"temp\": 22, \"condition\": \"晴\"}"
+					}
+				]
+			}
+		]
+	}`
+
+	expectedOpenaiReqJSON := `{
+		"model": "glm-5.2",
+		"stream": true,
+		"tool_choice": "auto",
+		"tools": [
+			{
+				"type": "function",
+				"function": {
+					"name": "get_weather",
+					"description": "获取指定城市的当前天气信息",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"city": {"type": "string"}
+						},
+						"required": ["city"]
+					}
+				}
+			}
+		],
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "text", "text": "北京今天天气怎么样？"}
+				]
+			},
+			{
+				"role": "assistant",
+				"content": [
+					{"type": "text", "text": ""}
+				],
+				"tool_calls": [
+					{
+						"id": "toolu_d136fa1e9dac43c49bbf0559",
+						"index": 0,
+						"type": "function",
+						"function": {
+							"name": "get_weather",
+							"arguments": "{\"city\":\"北京\"}"
+						}
+					}
+				]
+			},
+			{
+				"role": "tool",
+				"content": "{\"temp\": 22, \"condition\": \"晴\"}",
+				"tool_call_id": "toolu_d136fa1e9dac43c49bbf0559"
+			}
+		]
+	}`
+
+	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
+}
+
+// cache_read_input_tokens must be retained even when cached_tokens is 0. Currently
+// the field is only emitted when cached_tokens > 0, so a response with an explicit
+// cached_tokens: 0 loses usage.cache_read_input_tokens entirely.
+func TestChatCompletionsToClaudeMessages_convertNonStreamResponseBody_ZeroCachedTokens(t *testing.T) {
+
+	openaiRespJSON := `{
+		"id": "chatcmpl-123",
+		"object": "chat.completion",
+		"created": 1677652288,
+		"model": "gpt-4",
+		"choices": [{
+			"index": 0,
+			"message": {
+				"role": "assistant",
+				"content": "I'm doing well, thank you!"
+			},
+			"finish_reason": "stop"
+		}],
+		"usage": {
+			"prompt_tokens": 10,
+			"completion_tokens": 8,
+			"total_tokens": 18,
+			"prompt_tokens_details": {
+				"cached_tokens": 0
+			}
+		}
+	}`
+
+	expectedClaudeRespJSON := `{
+		"id": "chatcmpl-123",
+		"type": "message",
+		"role": "assistant",
+		"model": "gpt-4",
+		"content": [
+			{
+				"type": "text",
+				"text": "I'm doing well, thank you!"
+			}
+		],
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 10,
+			"output_tokens": 8,
+			"cache_read_input_tokens": 0
+		}
+	}`
+
+	testChatCompletionsToClaudeMessages_convertNonStreamResponseBody(t, openaiRespJSON, expectedClaudeRespJSON)
+}
+
+// Boundary of the cached-token handling: when the upstream response does not carry a
+// cached_tokens field at all (no prompt_tokens_details), the converted usage must not
+// include cache_read_input_tokens. This is distinct from the explicit cached_tokens: 0
+// case above, where the field must be preserved.
+func TestChatCompletionsToClaudeMessages_convertNonStreamResponseBody_NoCachedTokens(t *testing.T) {
+	openaiRespJSON := `{
+		"id": "chatcmpl-123",
+		"object": "chat.completion",
+		"created": 1677652288,
+		"model": "gpt-4",
+		"choices": [{
+			"index": 0,
+			"message": {
+				"role": "assistant",
+				"content": "I'm doing well, thank you!"
+			},
+			"finish_reason": "stop"
+		}],
+		"usage": {
+			"prompt_tokens": 10,
+			"completion_tokens": 8,
+			"total_tokens": 18
+		}
+	}`
+
+	expectedClaudeRespJSON := `{
+		"id": "chatcmpl-123",
+		"type": "message",
+		"role": "assistant",
+		"model": "gpt-4",
+		"content": [
+			{
+				"type": "text",
+				"text": "I'm doing well, thank you!"
+			}
+		],
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 10,
+			"output_tokens": 8
+		}
+	}`
+
+	testChatCompletionsToClaudeMessages_convertNonStreamResponseBody(t, openaiRespJSON, expectedClaudeRespJSON)
+}
+
+// Streaming variant: usage.cache_read_input_tokens must be retained even when
+// cached_tokens is 0. Currently the field is dropped from message_delta because it is
+// only emitted when cached_tokens > 0.
+func TestChatCompletionsToClaudeMessages_convertStreamResponse_ZeroCachedTokens(t *testing.T) {
+	openaiRespJSON := []string{
+		`{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1765734075,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"I'm","tool_calls":null},"logprobs":null,"finish_reason":null}]}`,
+		`{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1765734075,"model":"gpt-4","choices":[{"index":0,"delta":{"content":" fine","tool_calls":null},"logprobs":null,"finish_reason":"stop","matched_stop":null}]}`,
+		`{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1765734075,"model":"gpt-4","choices":[],"usage":{"prompt_tokens":10,"total_tokens":18,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":0}}}`,
+		`[DONE]`,
+	}
+
+	expectedClaudeRespJSON := []string{
+		`{"type":"message_start","message":{"id":"chatcmpl-123","type":"message","role":"assistant","content":[],"model":"gpt-4","usage":{"input_tokens":0,"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'm"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" fine"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":8,"cache_read_input_tokens":0}}`,
+		`{"type":"message_stop"}`,
+	}
+
+	testChatCompletionsToClaudeMessages_convertStreamResponse(t, openaiRespJSON, expectedClaudeRespJSON)
+}
+
+// Streaming boundary: when the usage chunk carries no cached_tokens field, the
+// message_delta must not include cache_read_input_tokens either.
+func TestChatCompletionsToClaudeMessages_convertStreamResponse_NoCachedTokens(t *testing.T) {
+	openaiRespJSON := []string{
+		`{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1765734075,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"I'm","tool_calls":null},"logprobs":null,"finish_reason":null}]}`,
+		`{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1765734075,"model":"gpt-4","choices":[{"index":0,"delta":{"content":" fine","tool_calls":null},"logprobs":null,"finish_reason":"stop","matched_stop":null}]}`,
+		`{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1765734075,"model":"gpt-4","choices":[],"usage":{"prompt_tokens":10,"total_tokens":18,"completion_tokens":8}}`,
+		`[DONE]`,
+	}
+
+	expectedClaudeRespJSON := []string{
+		`{"type":"message_start","message":{"id":"chatcmpl-123","type":"message","role":"assistant","content":[],"model":"gpt-4","usage":{"input_tokens":0,"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'm"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" fine"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":10,"output_tokens":8}}`,
+		`{"type":"message_stop"}`,
+	}
+
+	testChatCompletionsToClaudeMessages_convertStreamResponse(t, openaiRespJSON, expectedClaudeRespJSON)
+}
+
+// A non-thinking response that carries reasoning_content: null must not produce an
+// empty thinking block. Currently reasoning_content: null parses to a non-nil empty
+// MessageContentString, so the converter emits a thinking block with thinking: "";
+// the upstream response omits the thinking field/content entirely.
+func TestChatCompletionsToClaudeMessages_convertNonStreamResponse_NullReasoningContent(t *testing.T) {
+	openaiResp := `{
+		"id": "chatcmpl-123",
+		"object": "chat.completion",
+		"created": 1677652288,
+		"model": "glm-5.2",
+		"choices": [
+			{
+				"index": 0,
+				"message": {
+					"role": "assistant",
+					"content": "你好，我是智谱AI训练的GLM模型。",
+					"reasoning_content": null
+				},
+				"finish_reason": "stop"
+			}
+		],
+		"usage": {
+			"prompt_tokens": 10,
+			"completion_tokens": 8,
+			"total_tokens": 18
+		}
+	}`
+
+	exceptClaudeResp := `{
+		"id": "chatcmpl-123",
+		"type": "message",
+		"role": "assistant",
+		"model": "glm-5.2",
+		"content": [
+			{
+				"type": "text",
+				"text": "你好，我是智谱AI训练的GLM模型。"
+			}
+		],
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 10,
+			"output_tokens": 8
+		}
+	}`
+
+	testChatCompletionsToClaudeMessages_convertNonStreamResponseBody(t, openaiResp, exceptClaudeResp)
+}
