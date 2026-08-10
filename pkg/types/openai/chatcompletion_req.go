@@ -165,6 +165,24 @@ func (m *MessageContentItem) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON keeps the text field on text parts even when it is empty.
+//
+// Text is tagged omitempty so the other part types (image_url, file, ...) do not
+// carry a stray empty text key. But text is required on a text part: an assistant
+// message that explicitly sent content "" must round-trip as {"type":"text","text":""}.
+// Dropping the key yields a part upstreams reject as malformed.
+func (m MessageContentItem) MarshalJSON() ([]byte, error) {
+	type Alias MessageContentItem
+	if m.Type == "text" && m.Text == "" {
+		// The shallower Text field wins over the embedded omitempty one.
+		return json.Marshal(struct {
+			Text string `json:"text"`
+			Alias
+		}{Alias: Alias(m)})
+	}
+	return json.Marshal(Alias(m))
+}
+
 type ImageURLContent interface {
 	GetImageUrl() string
 }

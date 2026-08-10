@@ -322,22 +322,7 @@ func (e *ChatCompletionToClaudeMessages) convertNonStreamResponseBody(ctx contex
 	}
 
 	// Usage
-	if openaiResp.Usage != nil {
-		cached := int64(0)
-		// Handle cached tokens if available
-		if openaiResp.Usage.PromptTokensDetails != nil && openaiResp.Usage.PromptTokensDetails.CachedTokens > 0 {
-			cached = int64(openaiResp.Usage.PromptTokensDetails.CachedTokens)
-		}
-		inputTokens := int64(openaiResp.Usage.PromptTokens) - cached
-		outputTokens := int64(openaiResp.Usage.CompletionTokens)
-		claudeResp.Usage = &anthropic.Usage{
-			InputTokens:  &inputTokens,
-			OutputTokens: &outputTokens,
-		}
-		if cached > 0 {
-			claudeResp.Usage.CacheReadInputTokens = &cached
-		}
-	}
+	claudeResp.Usage = convertUsage(openaiResp.Usage)
 
 	// Choices
 	if len(openaiResp.Choices) > 0 {
@@ -347,12 +332,17 @@ func (e *ChatCompletionToClaudeMessages) convertNonStreamResponseBody(ctx contex
 
 		msg := choice.Message
 		if msg != nil {
+			// An explicit reasoning_content: null parses to an empty but non-nil
+			// content, so gate on the extracted text: a non-thinking response must
+			// not grow an empty thinking block.
 			if msg.ReasoningContent != nil {
-				claudeResp.Content = append(claudeResp.Content, &anthropic.ThinkingBlockParam{
-					Type:      "thinking",
-					Thinking:  msg.ReasoningContent.ExtractText(),
-					Signature: "",
-				})
+				if thinking := msg.ReasoningContent.ExtractText(); thinking != "" {
+					claudeResp.Content = append(claudeResp.Content, &anthropic.ThinkingBlockParam{
+						Type:      "thinking",
+						Thinking:  thinking,
+						Signature: "",
+					})
+				}
 			}
 			// Content
 			if msg.Content != nil {
@@ -462,21 +452,7 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 						},
 					}
 
-					if pendingUsage != nil {
-						cached := int64(0)
-						if pendingUsage.PromptTokensDetails != nil && pendingUsage.PromptTokensDetails.CachedTokens > 0 {
-							cached = int64(pendingUsage.PromptTokensDetails.CachedTokens)
-						}
-						inputTokens := int64(pendingUsage.PromptTokens) - cached
-						outputTokens := int64(pendingUsage.CompletionTokens)
-						msgDelta.Usage = &anthropic.Usage{
-							InputTokens:  &inputTokens,
-							OutputTokens: &outputTokens,
-						}
-						if cached > 0 {
-							msgDelta.Usage.CacheReadInputTokens = &cached
-						}
-					}
+					msgDelta.Usage = convertUsage(pendingUsage)
 					if err := e.sendEvent(ctx, outCh, msgDelta); err != nil {
 						slog.ErrorContext(ctx, fmt.Sprintf("failed to send message_delta event: %v", err))
 						break
@@ -768,6 +744,34 @@ func (e *ChatCompletionToClaudeMessages) sendEvent(ctx context.Context, ch chan<
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// convertUsage maps an OpenAI usage object onto Anthropic usage accounting.
+//
+// Anthropic reports cache reads separately from input tokens, so cached tokens are
+// subtracted out of prompt_tokens. cache_read_input_tokens is emitted whenever the
+// upstream reported prompt_tokens_details at all: an explicit zero is a real cache
+// accounting of "nothing hit the cache" and must survive the conversion, while an
+// absent prompt_tokens_details means the upstream reported no cache info to relay.
+func convertUsage(u *openai.Usage) *anthropic.Usage {
+	if u == nil {
+		return nil
+	}
+	details := u.PromptTokensDetails
+	cached := int64(0)
+	if details != nil && details.CachedTokens != nil {
+		cached = int64(*details.CachedTokens)
+	}
+	inputTokens := int64(u.PromptTokens) - cached
+	outputTokens := int64(u.CompletionTokens)
+	usage := &anthropic.Usage{
+		InputTokens:  &inputTokens,
+		OutputTokens: &outputTokens,
+	}
+	if details != nil {
+		usage.CacheReadInputTokens = &cached
+	}
+	return usage
 }
 
 func (e *ChatCompletionToClaudeMessages) mapFinishReason(fr string) string {

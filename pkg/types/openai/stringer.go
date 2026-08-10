@@ -228,19 +228,19 @@ func usageString(u *Usage) string {
 	w := &strings.Builder{}
 	fmt.Fprintf(w, "prompt=%d, completion=%d, total=%d", u.PromptTokens, u.CompletionTokens, u.TotalTokens)
 	if d := u.CompletionTokensDetails; d != nil {
-		if d.ReasoningTokens > 0 {
-			fmt.Fprintf(w, ", reasoning=%d", d.ReasoningTokens)
+		if d.ReasoningTokens != nil && *d.ReasoningTokens > 0 {
+			fmt.Fprintf(w, ", reasoning=%d", *d.ReasoningTokens)
 		}
-		if d.AudioTokens > 0 {
-			fmt.Fprintf(w, ", completion_audio=%d", d.AudioTokens)
+		if d.AudioTokens != nil && *d.AudioTokens > 0 {
+			fmt.Fprintf(w, ", completion_audio=%d", *d.AudioTokens)
 		}
 	}
 	if d := u.PromptTokensDetails; d != nil {
-		if d.CachedTokens > 0 {
-			fmt.Fprintf(w, ", cached=%d", d.CachedTokens)
+		if d.CachedTokens != nil && *d.CachedTokens > 0 {
+			fmt.Fprintf(w, ", cached=%d", *d.CachedTokens)
 		}
-		if d.AudioTokens > 0 {
-			fmt.Fprintf(w, ", prompt_audio=%d", d.AudioTokens)
+		if d.AudioTokens != nil && *d.AudioTokens > 0 {
+			fmt.Fprintf(w, ", prompt_audio=%d", *d.AudioTokens)
 		}
 	}
 	return w.String()
