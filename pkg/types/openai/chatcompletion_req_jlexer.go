@@ -3,7 +3,7 @@
 // This file contains jlexer streaming parsers for the structs defined in:
 //   pkg/types/openai/chatcompletion_req.go
 //
-// Source file SHA-256: bdbccb9ceaadd242aa22251684a10df4b5ca7ca763308b39cdb122b24c627e3a
+// Source file SHA-256: 8e524205801dba6b7ef79957c1e404bdff93e67403007ac956a737506a7be1e6
 //
 // Generation guide: pkg/types/JLEXER_PARSER_GUIDE.md
 // Polymorphic field patterns: pkg/types/UNION_TYPES.md

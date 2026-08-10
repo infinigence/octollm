@@ -169,7 +169,7 @@ func (e *MockEndpoint) newMockParams(v *openai.ChatCompletionRequest) *mockParam
 	}
 	if cachedLen > 0 {
 		p.usage.PromptTokensDetails = &openai.PromptTokensDetails{
-			CachedTokens: cachedLen,
+			CachedTokens: &cachedLen,
 		}
 	}
 

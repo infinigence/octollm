@@ -3,7 +3,7 @@
 // This file contains jlexer streaming parsers for the structs defined in:
 //   pkg/types/openai/chatcompletion_resp.go
 //
-// Source file SHA-256: 478ac2397f588761ee11dab540b87eac227282fd8356a7d2a99f9b2e7f65e2d5
+// Source file SHA-256: 0dbc868f1b484d4913987ce9e19575777063939d5df571b57bd940bcc0a57fb2
 //
 // Generation guide: pkg/types/JLEXER_PARSER_GUIDE.md
 // Polymorphic field patterns: pkg/types/UNION_TYPES.md
@@ -354,9 +354,21 @@ func (d *CompletionTokensDetails) ParseJLexer(in *jlexer.Lexer) {
 		in.WantColon()
 		switch key {
 		case "reasoning_tokens":
-			d.ReasoningTokens = in.Int()
+			if in.IsNull() {
+				in.Skip()
+				d.ReasoningTokens = nil
+			} else {
+				v := in.Int()
+				d.ReasoningTokens = &v
+			}
 		case "audio_tokens":
-			d.AudioTokens = in.Int()
+			if in.IsNull() {
+				in.Skip()
+				d.AudioTokens = nil
+			} else {
+				v := in.Int()
+				d.AudioTokens = &v
+			}
 		default:
 			in.SkipRecursive()
 		}
@@ -383,9 +395,21 @@ func (d *PromptTokensDetails) ParseJLexer(in *jlexer.Lexer) {
 		in.WantColon()
 		switch key {
 		case "cached_tokens":
-			d.CachedTokens = in.Int()
+			if in.IsNull() {
+				in.Skip()
+				d.CachedTokens = nil
+			} else {
+				v := in.Int()
+				d.CachedTokens = &v
+			}
 		case "audio_tokens":
-			d.AudioTokens = in.Int()
+			if in.IsNull() {
+				in.Skip()
+				d.AudioTokens = nil
+			} else {
+				v := in.Int()
+				d.AudioTokens = &v
+			}
 		default:
 			in.SkipRecursive()
 		}

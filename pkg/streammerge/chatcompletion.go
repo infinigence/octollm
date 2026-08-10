@@ -105,7 +105,10 @@ func (m *chatCompletionMerger) Merge(chunk *octollm.StreamChunk) error {
 			acc.content.WriteString(string(s))
 			acc.sawContent = true
 		}
-		if s, ok := d.ReasoningContent.(openai.MessageContentString); ok {
+		// An explicit reasoning_content: null parses to an empty, non-nil content,
+		// so a non-thinking stream would otherwise merge into reasoning_content: "".
+		// Only a non-empty fragment marks the response as carrying reasoning.
+		if s, ok := d.ReasoningContent.(openai.MessageContentString); ok && s != "" {
 			acc.reasoning.WriteString(string(s))
 			acc.sawReasoning = true
 		}
@@ -143,7 +146,7 @@ func mergeChatCompletionUsage(dst, src *openai.Usage) *openai.Usage {
 }
 
 // mergeCompletionTokensDetails folds completion-token detail fields into the
-// running total, so a non-zero src field overrides dst and zero fields are left
+// running total, so a present src field overrides dst and absent fields are left
 // untouched (rather than the whole pointer being replaced).
 func mergeCompletionTokensDetails(dst, src *openai.CompletionTokensDetails) *openai.CompletionTokensDetails {
 	if src == nil {
@@ -153,17 +156,17 @@ func mergeCompletionTokensDetails(dst, src *openai.CompletionTokensDetails) *ope
 		cp := *src
 		return &cp
 	}
-	if src.ReasoningTokens != 0 {
+	if src.ReasoningTokens != nil {
 		dst.ReasoningTokens = src.ReasoningTokens
 	}
-	if src.AudioTokens != 0 {
+	if src.AudioTokens != nil {
 		dst.AudioTokens = src.AudioTokens
 	}
 	return dst
 }
 
 // mergePromptTokensDetails folds prompt-token detail fields into the running
-// total, so a non-zero src field overrides dst and zero fields are left
+// total, so a present src field overrides dst and absent fields are left
 // untouched (rather than the whole pointer being replaced).
 func mergePromptTokensDetails(dst, src *openai.PromptTokensDetails) *openai.PromptTokensDetails {
 	if src == nil {
@@ -173,10 +176,10 @@ func mergePromptTokensDetails(dst, src *openai.PromptTokensDetails) *openai.Prom
 		cp := *src
 		return &cp
 	}
-	if src.CachedTokens != 0 {
+	if src.CachedTokens != nil {
 		dst.CachedTokens = src.CachedTokens
 	}
-	if src.AudioTokens != 0 {
+	if src.AudioTokens != nil {
 		dst.AudioTokens = src.AudioTokens
 	}
 	return dst

@@ -55,12 +55,12 @@ type Usage struct {
 
 // CompletionTokensDetails 完成 token 的详细信息
 type CompletionTokensDetails struct {
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"` // 推理过程使用的 tokens（如 o1 模型）
-	AudioTokens     int `json:"audio_tokens,omitempty"`     // 音频生成使用的 tokens
+	ReasoningTokens *int `json:"reasoning_tokens,omitempty"` // 推理过程使用的 tokens（如 o1 模型）
+	AudioTokens     *int `json:"audio_tokens,omitempty"`     // 音频生成使用的 tokens
 }
 
 // PromptTokensDetails 提示 token 的详细信息
 type PromptTokensDetails struct {
-	CachedTokens int `json:"cached_tokens,omitempty"` // 缓存命中的 tokens
-	AudioTokens  int `json:"audio_tokens,omitempty"`  // 音频输入使用的 tokens
+	CachedTokens *int `json:"cached_tokens,omitempty"` // 缓存命中的 tokens
+	AudioTokens  *int `json:"audio_tokens,omitempty"`  // 音频输入使用的 tokens
 }
