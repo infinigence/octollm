@@ -33,6 +33,12 @@ const (
 	// streamness of a derived request (see NonStreamToStreamEngine).
 	ContextKeyIsStream contextKey = "is_stream"
 	ContextKeyIsSSE    contextKey = "is_sse"
+	// ContextKeyOriginalFormat records the API format the request entered the
+	// gateway with. It is set once by NewRequest and never overwritten
+	// downstream (converter engines only mutate Request.Format), so rewrite
+	// expressions can read it via req.OriginalFormat() to tell the entry
+	// protocol apart from the current (possibly converted) one.
+	ContextKeyOriginalFormat contextKey = "original_format"
 )
 
 type Server struct {

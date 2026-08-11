@@ -103,4 +103,14 @@ func TestCloneForReplication(t *testing.T) {
 		cancel()
 		assert.Error(t, clone.Context().Err())
 	})
+
+	t.Run("clone inherits original format from source context", func(t *testing.T) {
+		req := newTestRequest(t)
+		clone, cancel := CloneForReplication(req, time.Minute)
+		defer cancel()
+
+		v, ok := octollm.GetCtxValue[octollm.APIFormat](clone, octollm.ContextKeyOriginalFormat)
+		assert.True(t, ok)
+		assert.Equal(t, octollm.APIFormatChatCompletions, v)
+	})
 }

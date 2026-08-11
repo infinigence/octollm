@@ -112,3 +112,19 @@ func (r *requestExprEnv) Header(key string) string {
 	}
 	return recvHeader.Get(key)
 }
+
+// OriginalFormat returns the API format the request entered the gateway with,
+// e.g. to let a model's rewrite expr pick different thinking defaults for
+// Messages vs Chat Completions entry protocols regardless of any conversion
+// downstream. It falls back to the request's current Format when the request
+// has no context (e.g. the Sentinel env) or the original-format value is
+// missing.
+func (r *requestExprEnv) OriginalFormat() string {
+	if v, ok := octollm.GetCtxValue[octollm.APIFormat](r.req, octollm.ContextKeyOriginalFormat); ok {
+		return string(v)
+	}
+	if r.req == nil {
+		return string(octollm.APIFormatUnknown)
+	}
+	return string(r.req.Format)
+}
