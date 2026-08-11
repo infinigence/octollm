@@ -76,3 +76,23 @@ func TestRequestIsStream(t *testing.T) {
 		assert.False(t, isStream)
 	})
 }
+
+func TestRequestOriginalFormat(t *testing.T) {
+	t.Run("NewRequest records the entry format", func(t *testing.T) {
+		req := testhelper.CreateTestRequest(testhelper.WithFormat(octollm.APIFormatClaudeMessages))
+
+		v, ok := octollm.GetCtxValue[octollm.APIFormat](req, octollm.ContextKeyOriginalFormat)
+		assert.True(t, ok)
+		assert.Equal(t, octollm.APIFormatClaudeMessages, v)
+	})
+
+	t.Run("survives Format being changed after conversion", func(t *testing.T) {
+		req := testhelper.CreateTestRequest(testhelper.WithFormat(octollm.APIFormatClaudeMessages))
+
+		req.Format = octollm.APIFormatChatCompletions
+
+		v, ok := octollm.GetCtxValue[octollm.APIFormat](req, octollm.ContextKeyOriginalFormat)
+		assert.True(t, ok)
+		assert.Equal(t, octollm.APIFormatClaudeMessages, v, "original format must not follow Format mutations")
+	})
+}

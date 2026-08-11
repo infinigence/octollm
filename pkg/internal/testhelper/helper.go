@@ -87,6 +87,12 @@ func CreateTestRequest(opts ...reqOptFunc) *octollm.Request {
 	return req
 }
 
+func WithFormat(format octollm.APIFormat) reqOptFunc {
+	return func(opts *reqOptions) {
+		opts.Format = format
+	}
+}
+
 func WithContext(ctx context.Context) reqOptFunc {
 	return func(opts *reqOptions) {
 		opts.ctx = ctx

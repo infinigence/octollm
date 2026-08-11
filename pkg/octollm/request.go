@@ -277,13 +277,14 @@ func (sc *StreamChan) OnClose(closeFunc func()) {
 }
 
 func NewRequest(r *http.Request, format APIFormat) *Request {
+	ctx := context.WithValue(r.Context(), ContextKeyOriginalFormat, format)
 	u := &Request{
 		Method:   r.Method,
 		Format:   format,
 		URL:      r.URL,
 		Query:    r.URL.Query(),
 		Header:   make(http.Header),
-		ctx:      r.Context(),
+		ctx:      ctx,
 		metadata: &sync.Map{},
 		Body: &UnifiedBody{
 			reader: r.Body,
