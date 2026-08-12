@@ -984,6 +984,120 @@ func TestChatCompletionsToClaudeMessages_convertNonStreamResponseBody_ToolCallWi
 	testChatCompletionsToClaudeMessages_convertNonStreamResponseBody(t, openaiRespJSON, expectedClaudeRespJSON)
 }
 
+func TestChatCompletionsToClaudeMessages_convertNonStreamResponseBody_ToolCallInvalidArguments(t *testing.T) {
+	// Truncated arguments (unbalanced braces), as emitted when a tool call is cut
+	// off mid-generation.
+	openaiRespJSON := `{
+		"id": "chatcmpl-abc123",
+		"object": "chat.completion",
+		"created": 1699896916,
+		"model": "gpt-4o-mini",
+		"choices": [
+			{
+			"index": 0,
+			"message": {
+				"role": "assistant",
+				"content": null,
+				"tool_calls": [
+					{
+						"id": "call_abc123",
+						"type": "function",
+						"function": {
+							"name": "get_current_weather",
+							"arguments": "{\"location\": \"Boston, MA\""
+						}
+					}
+				]
+			},
+			"finish_reason": "tool_calls"
+			}
+		],
+		"usage": {
+			"prompt_tokens": 82,
+			"completion_tokens": 17,
+			"total_tokens": 99
+		}
+	}`
+
+	expectedClaudeRespJSON := `{
+		"id": "chatcmpl-abc123",
+		"type": "message",
+		"role": "assistant",
+		"model": "gpt-4o-mini",
+		"content": [
+			{
+				"type": "tool_use",
+				"id": "call_abc123",
+				"name": "get_current_weather",
+				"input": {}
+			}
+		],
+		"stop_reason": "tool_use",
+		"usage": {
+			"input_tokens": 82,
+			"output_tokens": 17
+		}
+	}`
+
+	testChatCompletionsToClaudeMessages_convertNonStreamResponseBody(t, openaiRespJSON, expectedClaudeRespJSON)
+}
+
+func TestChatCompletionsToClaudeMessages_convertNonStreamResponseBody_ToolCallEmptyArguments(t *testing.T) {
+	openaiRespJSON := `{
+		"id": "chatcmpl-abc123",
+		"object": "chat.completion",
+		"created": 1699896916,
+		"model": "gpt-4o-mini",
+		"choices": [
+			{
+			"index": 0,
+			"message": {
+				"role": "assistant",
+				"content": null,
+				"tool_calls": [
+					{
+						"id": "call_abc123",
+						"type": "function",
+						"function": {
+							"name": "get_current_time",
+							"arguments": ""
+						}
+					}
+				]
+			},
+			"finish_reason": "tool_calls"
+			}
+		],
+		"usage": {
+			"prompt_tokens": 82,
+			"completion_tokens": 17,
+			"total_tokens": 99
+		}
+	}`
+
+	expectedClaudeRespJSON := `{
+		"id": "chatcmpl-abc123",
+		"type": "message",
+		"role": "assistant",
+		"model": "gpt-4o-mini",
+		"content": [
+			{
+				"type": "tool_use",
+				"id": "call_abc123",
+				"name": "get_current_time",
+				"input": {}
+			}
+		],
+		"stop_reason": "tool_use",
+		"usage": {
+			"input_tokens": 82,
+			"output_tokens": 17
+		}
+	}`
+
+	testChatCompletionsToClaudeMessages_convertNonStreamResponseBody(t, openaiRespJSON, expectedClaudeRespJSON)
+}
+
 func TestChatCompletionsToClaudeMessages_convertNonStreamResponseBody_ToolCallWithContent(t *testing.T) {
 	openaiRespJSON := `{
 		"id": "chatcmpl-abc123",
