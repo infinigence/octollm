@@ -359,11 +359,19 @@ func (e *ChatCompletionToClaudeMessages) convertNonStreamResponseBody(ctx contex
 				if toolCall.Function == nil {
 					continue
 				}
+				// Arguments is opaque upstream text and can be empty or truncated
+				// (e.g. a tool call cut off by max_tokens). It is emitted verbatim as
+				// the tool_use input, so invalid JSON would fail the whole response
+				// marshal below; fall back to an empty object instead.
+				input := json.RawMessage(toolCall.Function.Arguments)
+				if !json.Valid(input) {
+					input = json.RawMessage("{}")
+				}
 				claudeResp.Content = append(claudeResp.Content, &anthropic.ToolUseBlockParam{
 					Type:  "tool_use",
 					ID:    toolCall.ID,
 					Name:  toolCall.Function.Name,
-					Input: json.RawMessage(toolCall.Function.Arguments),
+					Input: input,
 				})
 			}
 		}
