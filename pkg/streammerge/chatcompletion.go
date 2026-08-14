@@ -128,8 +128,10 @@ func mergeChatCompletionUsage(dst, src *openai.Usage) *openai.Usage {
 		return dst
 	}
 	if dst == nil {
-		cp := *src
-		return &cp
+		// Start from a fresh object rather than copying src wholesale: a shallow
+		// copy would share the nested details structs with the chunk, so merging
+		// a later chunk would mutate the earlier chunk's parsed body.
+		dst = &openai.Usage{}
 	}
 	if src.CompletionTokens != 0 {
 		dst.CompletionTokens = src.CompletionTokens
@@ -181,6 +183,9 @@ func mergePromptTokensDetails(dst, src *openai.PromptTokensDetails) *openai.Prom
 	}
 	if src.AudioTokens != nil {
 		dst.AudioTokens = src.AudioTokens
+	}
+	if src.CacheWriteTokens != nil {
+		dst.CacheWriteTokens = src.CacheWriteTokens
 	}
 	return dst
 }

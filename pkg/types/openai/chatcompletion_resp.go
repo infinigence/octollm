@@ -63,4 +63,8 @@ type CompletionTokensDetails struct {
 type PromptTokensDetails struct {
 	CachedTokens *int `json:"cached_tokens,omitempty"` // 缓存命中的 tokens
 	AudioTokens  *int `json:"audio_tokens,omitempty"`  // 音频输入使用的 tokens
+
+	// CacheWriteTokens is the prompt-caching write count: tokens that were
+	// written into the cache by this request rather than read from it.
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 }

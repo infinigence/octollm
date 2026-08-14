@@ -3,7 +3,7 @@
 // This file contains jlexer streaming parsers for the structs defined in:
 //   pkg/types/anthropic/messages_response.go
 //
-// Source file SHA-256: 412cb28ff80bf6d58fffaadfed7ca17c942609ecda640835bd257ebc373144f5
+// Source file SHA-256: afcce67c22f5cae5706f1bc2a1561065a31de49ccc3442e6b60f8e613a510ce9
 //
 // Generation guide: pkg/types/JLEXER_PARSER_GUIDE.md
 // Polymorphic field patterns: pkg/types/UNION_TYPES.md
@@ -141,6 +141,55 @@ func (u *Usage) ParseJLexer(in *jlexer.Lexer) {
 			} else {
 				v := in.Int64()
 				u.CacheReadInputTokens = &v
+			}
+		case "cache_creation":
+			if in.IsNull() {
+				in.Skip()
+				u.CacheCreation = nil
+			} else {
+				u.CacheCreation = &CacheCreation{}
+				u.CacheCreation.ParseJLexer(in)
+			}
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+
+func (c *CacheCreation) ParseJLexer(in *jlexer.Lexer) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		switch key {
+		case "ephemeral_5m_input_tokens":
+			if in.IsNull() {
+				in.Skip()
+				c.Ephemeral5mInputTokens = nil
+			} else {
+				v := in.Int64()
+				c.Ephemeral5mInputTokens = &v
+			}
+		case "ephemeral_1h_input_tokens":
+			if in.IsNull() {
+				in.Skip()
+				c.Ephemeral1hInputTokens = nil
+			} else {
+				v := in.Int64()
+				c.Ephemeral1hInputTokens = &v
 			}
 		default:
 			in.SkipRecursive()

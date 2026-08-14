@@ -187,3 +187,43 @@ func TestClaudeMerger_UsageSplit(t *testing.T) {
 		`{"type":"message_stop"}`,
 	}, `{"id":"msg_usage","type":"message","role":"assistant","model":"claude-sonnet-4","stop_reason":"end_turn","usage":{"input_tokens":25,"output_tokens":15,"cache_creation_input_tokens":10,"cache_read_input_tokens":4},"content":[{"type":"text","text":"hi"}]}`)
 }
+
+// TestClaudeMerger_CacheCreationSplit checks the 5m/1h breakdown announced in
+// message_start survives into the merged usage.
+func TestClaudeMerger_CacheCreationSplit(t *testing.T) {
+	runClaudeMerge(t, []string{
+		`{"type":"message_start","message":{"id":"msg_split","type":"message","role":"assistant","model":"claude-sonnet-4","usage":{"input_tokens":2,"cache_creation_input_tokens":2573,"cache_read_input_tokens":194664,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":2573},"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15}}`,
+		`{"type":"message_stop"}`,
+	}, `{"id":"msg_split","type":"message","role":"assistant","model":"claude-sonnet-4","stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":15,"cache_creation_input_tokens":2573,"cache_read_input_tokens":194664,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":2573}},"content":[{"type":"text","text":"hi"}]}`)
+}
+
+// TestClaudeMerger_CacheCreationPartialRepeat covers message_delta repeating
+// cache_creation with one bucket explicitly null: the null must not erase the
+// value message_start reported for that bucket.
+func TestClaudeMerger_CacheCreationPartialRepeat(t *testing.T) {
+	runClaudeMerge(t, []string{
+		`{"type":"message_start","message":{"id":"msg_partial","type":"message","role":"assistant","model":"claude-sonnet-4","usage":{"input_tokens":10,"cache_creation_input_tokens":42,"cache_creation":{"ephemeral_5m_input_tokens":40,"ephemeral_1h_input_tokens":2},"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15,"cache_creation_input_tokens":42,"cache_creation":{"ephemeral_5m_input_tokens":null}}}`,
+		`{"type":"message_stop"}`,
+	}, `{"id":"msg_partial","type":"message","role":"assistant","model":"claude-sonnet-4","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":15,"cache_creation_input_tokens":42,"cache_creation":{"ephemeral_5m_input_tokens":40,"ephemeral_1h_input_tokens":2}},"content":[{"type":"text","text":"hi"}]}`)
+}
+
+// TestClaudeMerger_CacheCreationOnlyInMessageDelta covers cache_creation arriving
+// first on message_delta, with no cache_creation in message_start to merge onto.
+func TestClaudeMerger_CacheCreationOnlyInMessageDelta(t *testing.T) {
+	runClaudeMerge(t, []string{
+		`{"type":"message_start","message":{"id":"msg_late","type":"message","role":"assistant","model":"claude-sonnet-4","usage":{"input_tokens":10,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":20,"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":0}}}`,
+		`{"type":"message_stop"}`,
+	}, `{"id":"msg_late","type":"message","role":"assistant","model":"claude-sonnet-4","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":20,"cache_creation":{"ephemeral_5m_input_tokens":100,"ephemeral_1h_input_tokens":0}},"content":[{"type":"text","text":"hi"}]}`)
+}

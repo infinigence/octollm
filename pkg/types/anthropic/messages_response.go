@@ -35,6 +35,21 @@ type Usage struct {
 
 	// Tokens from cache read (prompt caching)
 	CacheReadInputTokens *int64 `json:"cache_read_input_tokens,omitempty"`
+
+	// Breakdown of CacheCreationInputTokens by cache TTL. Only sent by models
+	// that support the extended (1h) cache; when present the two entries sum to
+	// cache_creation_input_tokens.
+	CacheCreation *CacheCreation `json:"cache_creation,omitempty"`
+}
+
+// CacheCreation splits cache-creation input tokens by the TTL of the cache
+// entry they were written to.
+type CacheCreation struct {
+	// Tokens written to a 5-minute (default) ephemeral cache entry
+	Ephemeral5mInputTokens *int64 `json:"ephemeral_5m_input_tokens,omitempty"`
+
+	// Tokens written to a 1-hour ephemeral cache entry
+	Ephemeral1hInputTokens *int64 `json:"ephemeral_1h_input_tokens,omitempty"`
 }
 
 // ClaudeMessagesStreamEvent represents a streaming event

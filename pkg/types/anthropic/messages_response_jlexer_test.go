@@ -128,6 +128,26 @@ func TestClaudeMessagesResponse_ParseJLexer(t *testing.T) {
 			JSON: `{"id":"msg_11","type":"message","role":"assistant","model":"claude-3-5-sonnet","content":[],"usage":{"input_tokens":5,"cache_read_input_tokens":2}}`,
 		},
 		{
+			Name: "UsageWithCacheCreationSplit",
+			JSON: `{"id":"msg_14","type":"message","role":"assistant","model":"claude-3-5-sonnet","content":[],"usage":{"input_tokens":5,"cache_creation_input_tokens":30,"cache_creation":{"ephemeral_5m_input_tokens":10,"ephemeral_1h_input_tokens":20}}}`,
+		},
+		{
+			Name: "UsageWithNullCacheCreation",
+			JSON: `{"id":"msg_15","type":"message","role":"assistant","model":"claude-3-5-sonnet","content":[],"usage":{"input_tokens":5,"cache_creation":null}}`,
+		},
+		{
+			Name: "UsageWithEmptyCacheCreation",
+			JSON: `{"id":"msg_16","type":"message","role":"assistant","model":"claude-3-5-sonnet","content":[],"usage":{"input_tokens":5,"cache_creation":{}}}`,
+		},
+		{
+			Name: "UsageWithPartialCacheCreation",
+			JSON: `{"id":"msg_17","type":"message","role":"assistant","model":"claude-3-5-sonnet","content":[],"usage":{"input_tokens":5,"cache_creation":{"ephemeral_5m_input_tokens":10,"ephemeral_1h_input_tokens":null}}}`,
+		},
+		{
+			Name: "UsageWithUnknownCacheCreationBucket",
+			JSON: `{"id":"msg_18","type":"message","role":"assistant","model":"claude-3-5-sonnet","content":[],"usage":{"input_tokens":5,"cache_creation":{"ephemeral_24h_input_tokens":7,"ephemeral_5m_input_tokens":10}}}`,
+		},
+		{
 			Name: "TopLevelNull",
 			JSON: `null`,
 		},
@@ -264,6 +284,14 @@ func TestClaudeMessagesStreamEvent_ParseJLexer(t *testing.T) {
 		{
 			Name: "ClaudeSonnet46_MessageDelta",
 			JSON: `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":680,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":38}}`,
+		},
+		{
+			Name: "MessageStart_CacheCreationSplit",
+			JSON: `{"type":"message_start","message":{"id":"msg_split","type":"message","role":"assistant","model":"claude-sonnet-4","content":[],"usage":{"input_tokens":2,"output_tokens":1,"cache_creation_input_tokens":2573,"cache_read_input_tokens":194664,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":2573}}}}`,
+		},
+		{
+			Name: "MessageDelta_CacheCreationPartialNull",
+			JSON: `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15,"cache_creation_input_tokens":42,"cache_creation":{"ephemeral_5m_input_tokens":null}}}`,
 		},
 		{
 			Name: "ClaudeSonnet46_MessageStop",

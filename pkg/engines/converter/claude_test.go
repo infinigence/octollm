@@ -2173,6 +2173,165 @@ func TestChatCompletionsToClaudeMessages_convertStreamResponse_NoCachedTokens(t 
 	testChatCompletionsToClaudeMessages_convertStreamResponse(t, openaiRespJSON, expectedClaudeRespJSON)
 }
 
+// cache_write_tokens maps onto the aggregate cache_creation_input_tokens, and is
+// subtracted out of input_tokens along with the cache reads: prompt_tokens is the
+// grand total on the OpenAI side, whereas Anthropic's input_tokens counts only the
+// uncached remainder. The 5m/1h cache_creation breakdown must stay absent — the
+// OpenAI side carries no cache TTL to derive it from.
+func TestChatCompletionsToClaudeMessages_convertNonStreamResponseBody_CacheWriteTokens(t *testing.T) {
+	openaiRespJSON := `{
+		"id": "chatcmpl-123",
+		"object": "chat.completion",
+		"created": 1677652288,
+		"model": "gpt-4",
+		"choices": [{
+			"index": 0,
+			"message": {
+				"role": "assistant",
+				"content": "I'm doing well, thank you!"
+			},
+			"finish_reason": "stop"
+		}],
+		"usage": {
+			"prompt_tokens": 100,
+			"completion_tokens": 8,
+			"total_tokens": 108,
+			"prompt_tokens_details": {
+				"cached_tokens": 20,
+				"cache_write_tokens": 30
+			}
+		}
+	}`
+
+	expectedClaudeRespJSON := `{
+		"id": "chatcmpl-123",
+		"type": "message",
+		"role": "assistant",
+		"model": "gpt-4",
+		"content": [
+			{
+				"type": "text",
+				"text": "I'm doing well, thank you!"
+			}
+		],
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 50,
+			"output_tokens": 8,
+			"cache_read_input_tokens": 20,
+			"cache_creation_input_tokens": 30
+		}
+	}`
+
+	testChatCompletionsToClaudeMessages_convertNonStreamResponseBody(t, openaiRespJSON, expectedClaudeRespJSON)
+}
+
+// An explicit cache_write_tokens: 0 is a real accounting of "nothing was written to
+// the cache" and must survive as cache_creation_input_tokens: 0.
+func TestChatCompletionsToClaudeMessages_convertNonStreamResponseBody_ZeroCacheWriteTokens(t *testing.T) {
+	openaiRespJSON := `{
+		"id": "chatcmpl-123",
+		"object": "chat.completion",
+		"created": 1677652288,
+		"model": "gpt-4",
+		"choices": [{
+			"index": 0,
+			"message": {"role": "assistant", "content": "hi"},
+			"finish_reason": "stop"
+		}],
+		"usage": {
+			"prompt_tokens": 10,
+			"completion_tokens": 8,
+			"total_tokens": 18,
+			"prompt_tokens_details": {
+				"cached_tokens": 0,
+				"cache_write_tokens": 0
+			}
+		}
+	}`
+
+	expectedClaudeRespJSON := `{
+		"id": "chatcmpl-123",
+		"type": "message",
+		"role": "assistant",
+		"model": "gpt-4",
+		"content": [{"type": "text", "text": "hi"}],
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 10,
+			"output_tokens": 8,
+			"cache_read_input_tokens": 0,
+			"cache_creation_input_tokens": 0
+		}
+	}`
+
+	testChatCompletionsToClaudeMessages_convertNonStreamResponseBody(t, openaiRespJSON, expectedClaudeRespJSON)
+}
+
+// Upstreams that report reads plus writes exceeding prompt_tokens would otherwise
+// produce a negative input_tokens; it is clamped to 0 instead.
+func TestChatCompletionsToClaudeMessages_convertNonStreamResponseBody_CacheWriteExceedsPromptTokens(t *testing.T) {
+	openaiRespJSON := `{
+		"id": "chatcmpl-123",
+		"object": "chat.completion",
+		"created": 1677652288,
+		"model": "gpt-4",
+		"choices": [{
+			"index": 0,
+			"message": {"role": "assistant", "content": "hi"},
+			"finish_reason": "stop"
+		}],
+		"usage": {
+			"prompt_tokens": 10,
+			"completion_tokens": 8,
+			"total_tokens": 18,
+			"prompt_tokens_details": {
+				"cached_tokens": 6,
+				"cache_write_tokens": 30
+			}
+		}
+	}`
+
+	expectedClaudeRespJSON := `{
+		"id": "chatcmpl-123",
+		"type": "message",
+		"role": "assistant",
+		"model": "gpt-4",
+		"content": [{"type": "text", "text": "hi"}],
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 0,
+			"output_tokens": 8,
+			"cache_read_input_tokens": 6,
+			"cache_creation_input_tokens": 30
+		}
+	}`
+
+	testChatCompletionsToClaudeMessages_convertNonStreamResponseBody(t, openaiRespJSON, expectedClaudeRespJSON)
+}
+
+// Streaming variant of the cache_write_tokens mapping.
+func TestChatCompletionsToClaudeMessages_convertStreamResponse_CacheWriteTokens(t *testing.T) {
+	openaiRespJSON := []string{
+		`{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1765734075,"model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":"I'm","tool_calls":null},"logprobs":null,"finish_reason":null}]}`,
+		`{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1765734075,"model":"gpt-4","choices":[{"index":0,"delta":{"content":" fine","tool_calls":null},"logprobs":null,"finish_reason":"stop","matched_stop":null}]}`,
+		`{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1765734075,"model":"gpt-4","choices":[],"usage":{"prompt_tokens":100,"total_tokens":108,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":30}}}`,
+		`[DONE]`,
+	}
+
+	expectedClaudeRespJSON := []string{
+		`{"type":"message_start","message":{"id":"chatcmpl-123","type":"message","role":"assistant","content":[],"model":"gpt-4","usage":{"input_tokens":0,"output_tokens":0}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'm"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" fine"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":50,"output_tokens":8,"cache_read_input_tokens":20,"cache_creation_input_tokens":30}}`,
+		`{"type":"message_stop"}`,
+	}
+
+	testChatCompletionsToClaudeMessages_convertStreamResponse(t, openaiRespJSON, expectedClaudeRespJSON)
+}
+
 // A non-thinking response that carries reasoning_content: null must not produce an
 // empty thinking block. Currently reasoning_content: null parses to a non-nil empty
 // MessageContentString, so the converter emits a thinking block with thinking: "";
