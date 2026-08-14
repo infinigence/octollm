@@ -83,6 +83,22 @@ func TestChatCompletionResponse_ParseJLexer(t *testing.T) {
 			JSON: `{"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":5,"audio_tokens":2}}}`,
 		},
 		{
+			Name: "response with cache_write_tokens",
+			JSON: `{"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":30}}}`,
+		},
+		{
+			Name: "response with zero cache_write_tokens",
+			JSON: `{"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0}}}`,
+		},
+		{
+			Name: "response with null cache_write_tokens",
+			JSON: `{"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":null}}}`,
+		},
+		{
+			Name: "response with cache_write_tokens only",
+			JSON: `{"id":"chatcmpl-1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cache_write_tokens":30}}}`,
+		},
+		{
 			Name: "top-level null response",
 			JSON: `null`,
 		},
@@ -143,6 +159,14 @@ func TestChatCompletionStreamChunk_ParseJLexer(t *testing.T) {
 		{
 			Name: "FinalChunk_WithUsageDetails",
 			JSON: `{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"completion_tokens_details":{"reasoning_tokens":20,"audio_tokens":5},"prompt_tokens_details":{"cached_tokens":10,"audio_tokens":2}}}`,
+		},
+		{
+			Name: "FinalChunk_WithCacheWriteTokens",
+			JSON: `{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":10,"cache_write_tokens":40}}}`,
+		},
+		{
+			Name: "FinalChunk_WithNullCacheWriteTokens",
+			JSON: `{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":10,"cache_write_tokens":null}}}`,
 		},
 		{
 			Name: "ReasoningContent_String",

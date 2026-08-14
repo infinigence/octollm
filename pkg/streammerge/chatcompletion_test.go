@@ -160,3 +160,25 @@ func TestChatCompletionMerger_UsagePromptTokensDetailsAbsent(t *testing.T) {
 		`[DONE]`,
 	}, `{"id":"x","created":1,"object":"chat.completion","model":"m","usage":{"completion_tokens":8,"prompt_tokens":10,"total_tokens":18},"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]}`)
 }
+
+// cache_write_tokens on the final usage chunk must reach the merged usage.
+func TestChatCompletionMerger_UsageCacheWriteTokens(t *testing.T) {
+	runChatMerge(t, []string{
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"finish_reason":"stop","delta":{"content":""}}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":100,"total_tokens":150,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":10,"cache_write_tokens":40}}}`,
+		`[DONE]`,
+	}, `{"id":"x","created":1,"object":"chat.completion","model":"m","usage":{"completion_tokens":50,"prompt_tokens":100,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":10,"cache_write_tokens":40}},"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]}`)
+}
+
+// cache_write_tokens and cached_tokens arriving on separate usage chunks must
+// both survive into the merged usage instead of the later chunk clobbering the
+// earlier one.
+func TestChatCompletionMerger_UsageCacheWriteSplitAcrossChunks(t *testing.T) {
+	runChatMerge(t, []string{
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}],"usage":{"prompt_tokens":0,"total_tokens":0,"completion_tokens":0,"prompt_tokens_details":{"cache_write_tokens":40}}}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"finish_reason":"stop","delta":{"content":""}}]}`,
+		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":100,"total_tokens":150,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":10}}}`,
+		`[DONE]`,
+	}, `{"id":"x","created":1,"object":"chat.completion","model":"m","usage":{"completion_tokens":50,"prompt_tokens":100,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":10,"cache_write_tokens":40}},"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]}`)
+}

@@ -755,11 +755,16 @@ func (e *ChatCompletionToClaudeMessages) sendEvent(ctx context.Context, ch chan<
 
 // convertUsage maps an OpenAI usage object onto Anthropic usage accounting.
 //
-// Anthropic reports cache reads separately from input tokens, so cached tokens are
-// subtracted out of prompt_tokens. cache_read_input_tokens is emitted whenever the
-// upstream reported prompt_tokens_details at all: an explicit zero is a real cache
-// accounting of "nothing hit the cache" and must survive the conversion, while an
-// absent prompt_tokens_details means the upstream reported no cache info to relay.
+// Anthropic reports cache reads and cache writes separately from input tokens, so
+// both are subtracted out of prompt_tokens. cache_read_input_tokens is emitted
+// whenever the upstream reported prompt_tokens_details at all: an explicit zero is
+// a real cache accounting of "nothing hit the cache" and must survive the
+// conversion, while an absent prompt_tokens_details means the upstream reported no
+// cache info to relay.
+//
+// cache_write_tokens maps onto the aggregate cache_creation_input_tokens only. The
+// OpenAI side carries no cache TTL, so the cache_creation 5m/1h breakdown is left
+// unset rather than guessed at.
 func convertUsage(u *openai.Usage) *anthropic.Usage {
 	if u == nil {
 		return nil
@@ -769,11 +774,23 @@ func convertUsage(u *openai.Usage) *anthropic.Usage {
 	if details != nil && details.CachedTokens != nil {
 		cached = int64(*details.CachedTokens)
 	}
+	var cacheWrite *int64
+	if details != nil && details.CacheWriteTokens != nil {
+		v := int64(*details.CacheWriteTokens)
+		cacheWrite = &v
+	}
+	// prompt_tokens is the grand total, so reads plus writes exceeding it would
+	// make input_tokens negative; clamp instead.
 	inputTokens := int64(u.PromptTokens) - cached
+	if cacheWrite != nil {
+		inputTokens -= *cacheWrite
+	}
+	inputTokens = max(inputTokens, 0)
 	outputTokens := int64(u.CompletionTokens)
 	usage := &anthropic.Usage{
-		InputTokens:  &inputTokens,
-		OutputTokens: &outputTokens,
+		InputTokens:              &inputTokens,
+		OutputTokens:             &outputTokens,
+		CacheCreationInputTokens: cacheWrite,
 	}
 	if details != nil {
 		usage.CacheReadInputTokens = &cached

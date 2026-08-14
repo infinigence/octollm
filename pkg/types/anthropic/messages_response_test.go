@@ -101,8 +101,8 @@ func TestClaudeMessagesStreamEvent_Marshal_UnmarshalJSON(t *testing.T) {
 
 // TestRealAPI_NonStreamResponses_Unmarshal tests unmarshaling of real non-streaming API
 // responses captured from Infini-AI's GLM-5.1 and Claude-Sonnet-4-6 models. These responses
-// contain extra non-standard fields (e.g. prompt_tokens_details, caller, stop_details,
-// cache_creation) that our types don't model, so only Unmarshal is tested.
+// contain extra non-standard fields (e.g. prompt_tokens_details, caller, stop_details)
+// that our types don't model, so only Unmarshal is tested.
 func TestRealAPI_NonStreamResponses_Unmarshal(t *testing.T) {
 	testCases := []struct {
 		Name   string
@@ -258,6 +258,10 @@ func TestRealAPI_NonStreamResponses_Unmarshal(t *testing.T) {
 					OutputTokens:             int64Ptr(71),
 					CacheCreationInputTokens: int64Ptr(0),
 					CacheReadInputTokens:     int64Ptr(0),
+					CacheCreation: &CacheCreation{
+						Ephemeral5mInputTokens: int64Ptr(0),
+						Ephemeral1hInputTokens: int64Ptr(0),
+					},
 				},
 			},
 		},
@@ -432,6 +436,10 @@ func TestRealAPI_StreamEvents_Unmarshal(t *testing.T) {
 						OutputTokens:             int64Ptr(5),
 						CacheCreationInputTokens: int64Ptr(0),
 						CacheReadInputTokens:     int64Ptr(0),
+						CacheCreation: &CacheCreation{
+							Ephemeral5mInputTokens: int64Ptr(0),
+							Ephemeral1hInputTokens: int64Ptr(0),
+						},
 					},
 				},
 			},

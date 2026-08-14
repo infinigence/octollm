@@ -271,8 +271,26 @@ func TestResponsesResponse_UnmarshalJSON(t *testing.T) {
 					InputTokens:         10,
 					OutputTokens:        5,
 					TotalTokens:         15,
-					InputTokensDetails:  &ResponsesInputTokenDetails{CachedTokens: 3},
-					OutputTokensDetails: &ResponsesOutputTokenDetails{ReasoningTokens: 2},
+					InputTokensDetails:  &ResponsesInputTokenDetails{CachedTokens: intPtr(3)},
+					OutputTokensDetails: &ResponsesOutputTokenDetails{ReasoningTokens: intPtr(2)},
+				},
+			},
+		},
+		{
+			Name: "UsageWithCacheWriteTokens",
+			JSON: `{
+				"id":"r2","object":"response","created_at":1,"status":"completed","model":"m",
+				"usage":{"input_tokens":100,"output_tokens":5,"total_tokens":105,
+					"input_tokens_details":{"cached_tokens":20,"cache_write_tokens":30}
+				}
+			}`,
+			Object: ResponsesResponse{
+				Id: "r2",
+				Usage: &ResponsesUsage{
+					InputTokens:        100,
+					OutputTokens:       5,
+					TotalTokens:        105,
+					InputTokensDetails: &ResponsesInputTokenDetails{CachedTokens: intPtr(20), CacheWriteTokens: intPtr(30)},
 				},
 			},
 		},

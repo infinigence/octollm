@@ -173,6 +173,14 @@ func (r ClaudeMessagesResponse) String() string {
 		if u.CacheReadInputTokens != nil {
 			fmt.Fprintf(w, ", cache_read=%d", *u.CacheReadInputTokens)
 		}
+		if c := u.CacheCreation; c != nil {
+			if c.Ephemeral5mInputTokens != nil {
+				fmt.Fprintf(w, ", cache_creation_5m=%d", *c.Ephemeral5mInputTokens)
+			}
+			if c.Ephemeral1hInputTokens != nil {
+				fmt.Fprintf(w, ", cache_creation_1h=%d", *c.Ephemeral1hInputTokens)
+			}
+		}
 		w.WriteString("\n")
 	}
 	return fmt.Sprintf("(ClaudeMessagesResponse) {\n%s}", w.String())

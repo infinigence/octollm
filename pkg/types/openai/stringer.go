@@ -239,6 +239,9 @@ func usageString(u *Usage) string {
 		if d.CachedTokens != nil && *d.CachedTokens > 0 {
 			fmt.Fprintf(w, ", cached=%d", *d.CachedTokens)
 		}
+		if d.CacheWriteTokens != nil && *d.CacheWriteTokens > 0 {
+			fmt.Fprintf(w, ", cache_write=%d", *d.CacheWriteTokens)
+		}
 		if d.AudioTokens != nil && *d.AudioTokens > 0 {
 			fmt.Fprintf(w, ", prompt_audio=%d", *d.AudioTokens)
 		}
@@ -363,11 +366,16 @@ func (r ResponsesResponse) String() string {
 	}
 	if u := r.Usage; u != nil {
 		fmt.Fprintf(w, "  Usage: input=%d, output=%d, total=%d", u.InputTokens, u.OutputTokens, u.TotalTokens)
-		if d := u.InputTokensDetails; d != nil && d.CachedTokens > 0 {
-			fmt.Fprintf(w, ", cached=%d", d.CachedTokens)
+		if d := u.InputTokensDetails; d != nil {
+			if d.CachedTokens != nil && *d.CachedTokens > 0 {
+				fmt.Fprintf(w, ", cached=%d", *d.CachedTokens)
+			}
+			if d.CacheWriteTokens != nil && *d.CacheWriteTokens > 0 {
+				fmt.Fprintf(w, ", cache_write=%d", *d.CacheWriteTokens)
+			}
 		}
-		if d := u.OutputTokensDetails; d != nil && d.ReasoningTokens > 0 {
-			fmt.Fprintf(w, ", reasoning=%d", d.ReasoningTokens)
+		if d := u.OutputTokensDetails; d != nil && d.ReasoningTokens != nil && *d.ReasoningTokens > 0 {
+			fmt.Fprintf(w, ", reasoning=%d", *d.ReasoningTokens)
 		}
 		w.WriteString("\n")
 	}

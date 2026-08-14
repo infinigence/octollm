@@ -413,6 +413,35 @@ func TestChatCompletionResponse_String(t *testing.T) {
   ServiceTier: "default"
 }`,
 		},
+		{
+			name: "usage with cache_write_tokens",
+			json: `{
+				"id": "chatcmpl-789",
+				"object": "chat.completion",
+				"created": 1700000002,
+				"model": "gpt-4",
+				"choices": [{
+					"index": 0,
+					"message": {"role": "assistant", "content": "ok"},
+					"finish_reason": "stop"
+				}],
+				"usage": {
+					"prompt_tokens": 100,
+					"completion_tokens": 5,
+					"total_tokens": 105,
+					"prompt_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 30}
+				}
+			}`,
+			expected: `(ChatCompletionResponse) {
+  ID: "chatcmpl-789"
+  Model: "gpt-4"
+  Object: "chat.completion"
+  Created: 1700000002
+  Choices: len(1)
+    Choice{index=0, finish_reason=stop, message=(Message) {Role: "assistant", Content: len(2), }}
+  Usage: prompt=100, completion=5, total=105, cached=20, cache_write=30
+}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -583,6 +612,24 @@ func TestResponsesResponse_String(t *testing.T) {
   ID: "resp_2"
   Output: len(0)
   Usage: input=1, output=2, total=3
+}`,
+		},
+		{
+			name: "usage with cache_write_tokens",
+			json: `{
+				"id": "resp_3",
+				"output": [],
+				"usage": {
+					"input_tokens": 100,
+					"output_tokens": 5,
+					"total_tokens": 105,
+					"input_tokens_details": {"cached_tokens": 20, "cache_write_tokens": 30}
+				}
+			}`,
+			expected: `(ResponsesResponse) {
+  ID: "resp_3"
+  Output: len(0)
+  Usage: input=100, output=5, total=105, cached=20, cache_write=30
 }`,
 		},
 	}

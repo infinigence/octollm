@@ -236,6 +236,34 @@ func TestClaudeMessagesResponse_String(t *testing.T) {
   Usage: input=7, output=4, cache_creation=2
 }`,
 		},
+		{
+			name: "usage with cache_creation ttl breakdown",
+			json: `{
+				"id": "msg_04",
+				"type": "message",
+				"role": "assistant",
+				"model": "claude-3-5-sonnet-20241022",
+				"content": [{"type": "text", "text": "ok"}],
+				"stop_reason": "end_turn",
+				"usage": {
+					"input_tokens": 2,
+					"output_tokens": 3,
+					"cache_creation_input_tokens": 2573,
+					"cache_read_input_tokens": 194664,
+					"cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 2573}
+				}
+			}`,
+			expected: `(ClaudeMessagesResponse) {
+  ID: "msg_04"
+  Type: "message"
+  Role: "assistant"
+  Model: "claude-3-5-sonnet-20241022"
+  Content: len(1)
+    text(len=2)
+  StopReason: end_turn
+  Usage: input=2, output=3, cache_creation=2573, cache_read=194664, cache_creation_5m=0, cache_creation_1h=2573
+}`,
+		},
 	}
 
 	for _, tt := range tests {

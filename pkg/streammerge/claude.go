@@ -184,8 +184,10 @@ func mergeClaudeUsage(dst, src *anthropic.Usage) *anthropic.Usage {
 		return dst
 	}
 	if dst == nil {
-		cp := *src
-		return &cp
+		// Start from a fresh object rather than copying src wholesale: a shallow
+		// copy would share the nested CacheCreation with the event, so merging a
+		// later event would mutate the earlier event's parsed body.
+		dst = &anthropic.Usage{}
 	}
 	if src.InputTokens != nil {
 		dst.InputTokens = src.InputTokens
@@ -198,6 +200,28 @@ func mergeClaudeUsage(dst, src *anthropic.Usage) *anthropic.Usage {
 	}
 	if src.CacheReadInputTokens != nil {
 		dst.CacheReadInputTokens = src.CacheReadInputTokens
+	}
+	dst.CacheCreation = mergeClaudeCacheCreation(dst.CacheCreation, src.CacheCreation)
+	return dst
+}
+
+// mergeClaudeCacheCreation overlays the non-nil TTL buckets from src onto dst.
+// message_delta may repeat cache_creation with only one bucket populated (the
+// other explicitly null), so merging per field keeps the value message_start
+// reported instead of dropping it.
+func mergeClaudeCacheCreation(dst, src *anthropic.CacheCreation) *anthropic.CacheCreation {
+	if src == nil {
+		return dst
+	}
+	if dst == nil {
+		cp := *src
+		return &cp
+	}
+	if src.Ephemeral5mInputTokens != nil {
+		dst.Ephemeral5mInputTokens = src.Ephemeral5mInputTokens
+	}
+	if src.Ephemeral1hInputTokens != nil {
+		dst.Ephemeral1hInputTokens = src.Ephemeral1hInputTokens
 	}
 	return dst
 }

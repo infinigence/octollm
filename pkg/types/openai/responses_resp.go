@@ -64,13 +64,21 @@ type ResponsesUsage struct {
 }
 
 // ResponsesInputTokenDetails breaks down input tokens (e.g. prompt caching).
+//
+// The counts are pointers so an upstream that omits one is distinguishable from
+// one reporting an explicit zero, matching PromptTokensDetails on the
+// chat/completions side.
 type ResponsesInputTokenDetails struct {
-	CachedTokens int `json:"cached_tokens"`
+	CachedTokens *int `json:"cached_tokens,omitempty"`
+
+	// CacheWriteTokens is the prompt-caching write count: tokens that were
+	// written into the cache by this request rather than read from it.
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 }
 
 // ResponsesOutputTokenDetails breaks down output tokens (e.g. reasoning).
 type ResponsesOutputTokenDetails struct {
-	ReasoningTokens int `json:"reasoning_tokens"`
+	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
 }
 
 // ResponseStreamChunk is one SSE JSON object from POST /v1/responses with stream=true.

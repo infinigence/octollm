@@ -3,7 +3,7 @@
 // This file contains jlexer streaming parsers for the structs defined in:
 //   pkg/types/openai/chatcompletion_resp.go
 //
-// Source file SHA-256: 0dbc868f1b484d4913987ce9e19575777063939d5df571b57bd940bcc0a57fb2
+// Source file SHA-256: b631d369a27cde452655c8f5fe3a9d81455461a541b270ad35230b071e11d66b
 //
 // Generation guide: pkg/types/JLEXER_PARSER_GUIDE.md
 // Polymorphic field patterns: pkg/types/UNION_TYPES.md
@@ -409,6 +409,14 @@ func (d *PromptTokensDetails) ParseJLexer(in *jlexer.Lexer) {
 			} else {
 				v := in.Int()
 				d.AudioTokens = &v
+			}
+		case "cache_write_tokens":
+			if in.IsNull() {
+				in.Skip()
+				d.CacheWriteTokens = nil
+			} else {
+				v := in.Int()
+				d.CacheWriteTokens = &v
 			}
 		default:
 			in.SkipRecursive()
