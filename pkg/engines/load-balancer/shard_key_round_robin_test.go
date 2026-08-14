@@ -91,7 +91,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 
 func TestResolveAffinity_NilProvider(t *testing.T) {
 	lb := &ShardKeyWeightedRoundRobin{}
-	prioritized, commit, err := lb.resolveAffinity(context.Background(), testhelper.CreateTestRequest())
+	prioritized, commit, err := lb.resolveAffinity(testhelper.CreateTestRequest())
 	require.NoError(t, err)
 	assert.Nil(t, prioritized)
 	assert.Nil(t, commit)
@@ -140,7 +140,7 @@ func TestResolveAffinity_WithRedisAndTrim(t *testing.T) {
 	).Result()
 	assert.NoError(t, zerr)
 
-	prioritized, _, err := lb.resolveAffinity(ctx, testhelper.CreateTestRequest())
+	prioritized, _, err := lb.resolveAffinity(testhelper.CreateTestRequest())
 	require.NoError(t, err)
 	if assert.NotEmpty(t, prioritized) {
 		wantOrderPrefix := []string{"b5", "b4", "b3"}

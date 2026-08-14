@@ -16,10 +16,10 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
-type affinityProviderFunc func(context.Context, *octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error)
+type affinityProviderFunc func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error)
 
-func (f affinityProviderFunc) Resolve(ctx context.Context, req *octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
-	return f(ctx, req)
+func (f affinityProviderFunc) Resolve(req *octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
+	return f(req)
 }
 
 func TestRedisKeyForStrategy(t *testing.T) {
@@ -134,7 +134,7 @@ func TestShardKeyAffinityProvider_EmptyShardKeyList(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	prioritized, commit, err := provider.Resolve(context.Background(), testhelper.CreateTestRequest())
+	prioritized, commit, err := provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
 	assert.Empty(t, prioritized)
 	assert.NotNil(t, commit)
@@ -157,7 +157,7 @@ func TestShardKeyAffinityProvider_NoRedisData(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	prioritized, commit, err := provider.Resolve(context.Background(), testhelper.CreateTestRequest())
+	prioritized, commit, err := provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
 	assert.Empty(t, prioritized)
 	assert.NotNil(t, commit)
@@ -181,7 +181,7 @@ func TestShardKeyAffinityProvider_RedisUnavailableAtResolve(t *testing.T) {
 
 	mr.Close()
 
-	prioritized, _, err := provider.Resolve(context.Background(), testhelper.CreateTestRequest())
+	prioritized, _, err := provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
 	assert.Empty(t, prioritized)
 }
@@ -224,13 +224,13 @@ func TestShardKeyAffinityProvider_PrimaryResolveAndShadowWriteOnly(t *testing.T)
 	require.NoError(t, err)
 
 	req := testhelper.CreateTestRequest()
-	prioritized, commit, err := provider.Resolve(ctx, req)
+	prioritized, commit, err := provider.Resolve(req)
 	require.NoError(t, err)
 	require.Len(t, prioritized, 1)
 	assert.Equal(t, "svc-primary", prioritized[0].Name)
 	assert.True(t, prioritized[0].StrongCacheHit)
 
-	require.NoError(t, commit(ctx, "svc-open"))
+	require.NoError(t, commit("svc-open"))
 
 	members, err := rd.ZRange(ctx, keyPrefix+":primary-key", 0, -1).Result()
 	require.NoError(t, err)
@@ -261,9 +261,9 @@ func TestShardKeyAffinityProvider_WritesAllShadowStrategies(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, commit, err := provider.Resolve(context.Background(), testhelper.CreateTestRequest())
+	_, commit, err := provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
-	require.NoError(t, commit(context.Background(), "svc-a"))
+	require.NoError(t, commit("svc-a"))
 
 	for _, key := range []string{
 		keyPrefix + ":primary",
@@ -300,7 +300,7 @@ func TestShardKeyAffinityProvider_StrongCacheHitFromLastTwoKeys(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	prioritized, _, err := provider.Resolve(ctx, testhelper.CreateTestRequest())
+	prioritized, _, err := provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
 	require.Len(t, prioritized, 2)
 	assert.Equal(t, "strong", prioritized[0].Name)
@@ -335,7 +335,7 @@ func TestShardKeyAffinityProvider_TrimToThreeMembers(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, _, err = provider.Resolve(ctx, testhelper.CreateTestRequest())
+	_, _, err = provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
 
 	card, err := rd.ZCard(ctx, keyPrefix+":k1").Result()
@@ -360,7 +360,7 @@ func TestShardKeyAffinityProvider_CommitSkippedOnFailureByCaller(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, commit, err := provider.Resolve(context.Background(), testhelper.CreateTestRequest())
+	_, commit, err := provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
 	// Simulate LB behavior: commit is only called on success.
 	_ = commit
@@ -586,7 +586,7 @@ func TestShardKeyLoadBalancers_AffinityProviderErrors(t *testing.T) {
 			})}},
 			time.Second,
 			1,
-			affinityProviderFunc(func(context.Context, *octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
+			affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
 				return nil, nil, providerErr
 			}),
 			rd,
@@ -608,7 +608,7 @@ func TestShardKeyLoadBalancers_AffinityProviderErrors(t *testing.T) {
 			})}},
 			time.Second,
 			1,
-			affinityProviderFunc(func(context.Context, *octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
+			affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
 				return nil, nil, providerErr
 			}),
 		)
@@ -622,8 +622,8 @@ func TestShardKeyLoadBalancers_AffinityProviderErrors(t *testing.T) {
 
 func TestShardKeyLoadBalancers_AffinityCommitErrorDoesNotFailRequest(t *testing.T) {
 	commitErr := errors.New("commit failed")
-	provider := affinityProviderFunc(func(context.Context, *octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
-		return nil, func(context.Context, string) error { return commitErr }, nil
+	provider := affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
+		return nil, func(string) error { return commitErr }, nil
 	})
 
 	t.Run("concurrency", func(t *testing.T) {
@@ -685,12 +685,12 @@ func TestShardKeyAffinityProvider_SinglePrimaryStrategy(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	prioritized, commit, err := provider.Resolve(ctx, testhelper.CreateTestRequest())
+	prioritized, commit, err := provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
 	require.Len(t, prioritized, 1)
 	assert.Equal(t, "svc1", prioritized[0].Name)
 
-	require.NoError(t, commit(ctx, "svc1"))
+	require.NoError(t, commit("svc1"))
 	members, err := rd.ZRange(ctx, keyPrefix+":k1", 0, -1).Result()
 	require.NoError(t, err)
 	assert.Contains(t, members, "svc1")

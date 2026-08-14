@@ -1,7 +1,6 @@
 package loadbalancer
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,8 +14,8 @@ import (
 )
 
 // ErrCacheMissHeadroom is returned when a cache-miss request cannot be served because every
-// candidate backend is at or above cacheMissMaxUtilization — only the reserved headroom remains,
-// and it is restricted to cache-hit (last-two-shard-key) requests.
+// candidate backend is above cacheMissMaxUtilization — only the reserved headroom remains,
+// and it is restricted to strong-cache-hit requests.
 var ErrCacheMissHeadroom = errors.New("cache-miss request rejected to preserve cache-hit headroom")
 
 // ShardMaxConcurrencyFn returns the capacity denominator for concurrency ratio (count/denom).
@@ -35,7 +34,7 @@ type concurrencyBackend struct {
 	cacheMissMaxUtilization float64
 }
 
-// prioritizedBackend pairs a shard-key-resolved backend with whether it is a strong cache hit.
+// prioritizedBackend pairs an affinity-resolved backend with whether it is a strong cache hit.
 type prioritizedBackend struct {
 	backend        *concurrencyBackend
 	strongCacheHit bool
@@ -46,7 +45,7 @@ func (pb *prioritizedBackend) isStrongCacheHit() bool {
 }
 
 // ShardKeyConcurrency implements a load balancer that:
-//   - When affinityProvider is set: prioritizes backends resolved from shard keys (Redis ZSETs),
+//   - When affinityProvider is set: prioritizes backends resolved by the provider,
 //     falling back to concurrency-based selection once all prioritized backends are exhausted.
 //   - When affinityProvider is nil: selects the backend with the lowest
 //     currentConcurrency/maxConcurrency ratio via Redis ZCard.
@@ -61,10 +60,15 @@ type ShardKeyConcurrency struct {
 
 var _ octollm.Engine = (*ShardKeyConcurrency)(nil)
 
-// NewShardKeyConcurrency creates a load balancer that selects backends by shard-key affinity
+// NewShardKeyConcurrency creates a load balancer that selects backends by backend affinity
 // (when affinityProvider is non-nil) or by lowest concurrency ratio (when nil).
 //
-// A nil affinityProvider disables shard-key affinity. concurrencyKeyFn is required for selection.
+// Backends with Weight <= 0 are skipped unless MaxConcurrencyFn is set; a static Weight is wrapped
+// as the request-time maximum concurrency when MaxConcurrencyFn is nil. A nil affinityProvider
+// disables backend affinity. redisClient and concurrencyKeyFn are required for selection;
+// concurrencyKeyFn must return the Redis ZSET key whose cardinality represents the backend's
+// current concurrency. The per-backend cache-miss ceiling is configured through
+// BackendItem.CacheMissMaxUtilization.
 func NewShardKeyConcurrency(
 	backends []BackendItem,
 	retryTimeout time.Duration,
@@ -115,15 +119,12 @@ func NewShardKeyConcurrency(
 	}, nil
 }
 
-func (l *ShardKeyConcurrency) resolveAffinity(
-	ctx context.Context,
-	req *octollm.Request,
-) ([]prioritizedBackend, AffinityCommitFunc, error) {
+func (l *ShardKeyConcurrency) resolveAffinity(req *octollm.Request) ([]prioritizedBackend, AffinityCommitFunc, error) {
 	if l.affinityProvider == nil {
 		return nil, nil, nil
 	}
 
-	providerBackends, commit, err := l.affinityProvider.Resolve(ctx, req)
+	providerBackends, commit, err := l.affinityProvider.Resolve(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -234,11 +235,12 @@ func (l *ShardKeyConcurrency) overHeadroom(req *octollm.Request, b *concurrencyB
 }
 
 func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, error) {
+	// Materialize the request body once so every retry can read it again.
 	if _, err := req.Body.Bytes(); err != nil {
 		return nil, fmt.Errorf("failed to cache request body for retries: %w", err)
 	}
 
-	prioritized, commit, err := l.resolveAffinity(req.Context(), req)
+	prioritized, commit, err := l.resolveAffinity(req)
 	if err != nil {
 		return nil, err
 	}
@@ -275,6 +277,8 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 				)
 				excludeNames[b.name] = true
 				if len(excludeNames) >= len(l.backends) {
+					// If every backend is now excluded, no concurrency fallback remains. On the first
+					// attempt, return ErrCacheMissHeadroom; during failover, preserve the previous error.
 					if retryCount > 0 {
 						slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] all backends over headroom on failover, returning previous error: %v", lastErr))
 						return lastResp, lastErr
@@ -303,6 +307,8 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			if selected != nil && selected.headroomEnabled() && ratio > selected.cacheMissMaxUtilization {
 				excludeNames[selected.name] = true
 				if len(excludeNames) >= len(l.backends) {
+					// Exhausting all candidates is a headroom rejection. During failover, preserve
+					// the previous backend error instead of masking it with ErrCacheMissHeadroom.
 					if retryCount > 0 {
 						slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] all backends over headroom on failover, returning previous error: %v", lastErr))
 						return lastResp, lastErr
@@ -318,7 +324,10 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 		}
 
 		if eng == nil {
-			// Dynamic capacity can leave every non-excluded backend unselectable.
+			// Backends with non-positive effective capacity are skipped without being added to
+			// excludeNames, so selection may return nil before every backend is explicitly excluded.
+			// During failover, preserve the previous backend error instead of masking it with a
+			// generic selection failure.
 			if retryCount > 0 {
 				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no backend engine available on failover, returning previous error: %v", lastErr))
 				return lastResp, lastErr
@@ -329,7 +338,7 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 		resp, err := eng.Process(req)
 		if err == nil {
 			if commit != nil {
-				if commitErr := commit(req.Context(), n); commitErr != nil {
+				if commitErr := commit(n); commitErr != nil {
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] failed to commit shard key mapping: %v", commitErr))
 				}
 			}
