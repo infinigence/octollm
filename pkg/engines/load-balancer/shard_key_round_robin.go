@@ -11,11 +11,10 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
-// ShardKeyWeightedRoundRobin implements a weighted round-robin load balancer with shard key support.
-// It follows the same structure and algorithm as WeightedRoundRobin, but:
-//   - Uses AffinityProvider to resolve shard_key_list -> backendName
-//   - Prioritizes backends corresponding to shard_key_list (later keys have higher priority)
-//   - Once all shard-key backends are used, falls back to normal WRR by weight.
+// ShardKeyWeightedRoundRobin implements weighted round-robin with optional backend affinity. It:
+//   - Uses AffinityProvider to resolve ordered backend candidates.
+//   - Tries eligible affinity candidates before normal WRR selection.
+//   - Falls back to smooth WRR after affinity candidates are exhausted.
 type ShardKeyWeightedRoundRobin struct {
 	mu sync.Mutex
 
@@ -27,9 +26,10 @@ type ShardKeyWeightedRoundRobin struct {
 
 var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
 
-// NewShardKeyWeightedRoundRobin creates a shard-key-aware weighted round-robin load balancer.
+// NewShardKeyWeightedRoundRobin creates an affinity-aware weighted round-robin load balancer.
 //
-// A nil affinityProvider disables shard-key affinity and uses normal weighted round-robin.
+// Negative weights are rejected. If every configured weight is zero, all backends are normalized
+// to the same positive weight. A nil affinityProvider disables affinity and uses normal WRR.
 func NewShardKeyWeightedRoundRobin(
 	backends []BackendItem,
 	retryTimeout time.Duration,
@@ -40,6 +40,8 @@ func NewShardKeyWeightedRoundRobin(
 		return nil, fmt.Errorf("backends must have at least one item")
 	}
 
+	// Normalize an all-zero configuration to equal positive weights so affinity routing and smooth
+	// WRR remain active.
 	allZero := true
 	for _, backend := range backends {
 		if backend.Weight < 0 {
@@ -73,15 +75,14 @@ func NewShardKeyWeightedRoundRobin(
 	}, nil
 }
 
-func (l *ShardKeyWeightedRoundRobin) resolveAffinity(
-	ctx context.Context,
-	req *octollm.Request,
-) ([]*wrrBackend, AffinityCommitFunc, error) {
+// resolveAffinity maps provider candidates to the existing WRR backends so currentWeight state
+// remains shared across requests.
+func (l *ShardKeyWeightedRoundRobin) resolveAffinity(req *octollm.Request) ([]*wrrBackend, AffinityCommitFunc, error) {
 	if l.affinityProvider == nil {
 		return nil, nil, nil
 	}
 
-	providerBackends, commit, err := l.affinityProvider.Resolve(ctx, req)
+	providerBackends, commit, err := l.affinityProvider.Resolve(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -108,11 +109,12 @@ func (l *ShardKeyWeightedRoundRobin) resolveAffinity(
 }
 
 func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Response, error) {
+	// Materialize the request body once so every retry can read it again.
 	if _, err := req.Body.Bytes(); err != nil {
 		return nil, fmt.Errorf("failed to cache request body for retries: %w", err)
 	}
 
-	prioritizedBackends, commit, err := l.resolveAffinity(req.Context(), req)
+	prioritizedBackends, commit, err := l.resolveAffinity(req)
 	if err != nil {
 		return nil, err
 	}
@@ -149,8 +151,10 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 		req.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(req)
 		if err == nil {
+			// Do not persist affinity for the stateless all-zero fallback; its random selection
+			// should not become a future affinity decision.
 			if commit != nil && !isAllZero {
-				if commitErr := commit(req.Context(), n); commitErr != nil {
+				if commitErr := commit(n); commitErr != nil {
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] failed to commit shard key mapping: %v", commitErr))
 				}
 			}
@@ -184,8 +188,15 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 	}
 }
 
-// GetNextEngine prefers an eligible shard-key backend, then falls back to smooth WRR. A selected
-// backend is penalized by total weight before every non-zero-weight candidate is accumulated.
+// GetNextEngine applies affinity-aware smooth WRR selection.
+//
+// Per-pick algorithm:
+//  1. Build non-excluded candidates with non-negative weights and compute totalWeight.
+//  2. If totalWeight is zero, pick a random candidate without mutating WRR state.
+//  3. Otherwise, prefer an eligible positive-weight affinity backend; fall back to the
+//     positive-weight candidate with the highest currentWeight.
+//  4. Penalize the selected backend by subtracting totalWeight.
+//  5. Add each positive-weight candidate's weight to its currentWeight.
 func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioritizedBackend string, excludeNames map[string]bool) (string, octollm.Engine, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

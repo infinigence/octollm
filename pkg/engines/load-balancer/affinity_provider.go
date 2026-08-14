@@ -11,41 +11,48 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
-// PrioritizedBackend pairs a shard-key-resolved backend name with whether it is a strong
+// PrioritizedBackend pairs an affinity-resolved backend name with whether it is a strong
 // (high-confidence) cache hit. LB implementations use Name to look up their internal backend.
 type PrioritizedBackend struct {
-	Name           string
+	Name string
+	// StrongCacheHit marks high-confidence affinity; ShardKeyConcurrency lets such hits bypass
+	// cache-miss headroom limits.
 	StrongCacheHit bool
 }
 
-// AffinityCommitFunc writes primary and shadow shard-key mappings after a successful request.
-// It is only invoked when eng.Process returns err == nil.
-type AffinityCommitFunc func(ctx context.Context, selectedBackend string) error
+// AffinityCommitFunc persists affinity for a selected backend. Load balancers invoke it only after
+// eng.Process succeeds; implementations capture any required request context when creating it.
+type AffinityCommitFunc func(selectedBackend string) error
 
-// AffinityProvider resolves shard-key affinity for routing and deferred Redis writes.
+// AffinityProvider resolves backend affinity and optionally returns a deferred commit callback.
 //
-// Resolve may return a non-nil error for hard failures; LBs then fail the request
-// without selecting a backend. The built-in ShardKeyAffinityProvider never does this
-// for Redis miss/unavailable: it returns an empty prioritized list and err == nil so
-// the LB falls back to normal selection (same soft-fail as the pre-extraction logic).
+// Resolve returns candidates in priority order. A non-nil error prevents backend selection;
+// implementations obtain cancellation and request-scoped values from req.Context().
 type AffinityProvider interface {
-	Resolve(ctx context.Context, req *octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error)
+	Resolve(req *octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error)
 }
 
-// ShardKeyStrategySpec describes one shard-key strategy. maas-gateway compiles expr into
-// ShardKeyListGetter before constructing the provider.
+// ShardKeyStrategySpec describes how one strategy derives and namespaces shard keys.
 type ShardKeyStrategySpec struct {
+	// ShardKeyListGetter extracts keys in ascending priority order; later keys have higher priority.
 	ShardKeyListGetter func(req *octollm.Request) []string
-	CacheKeyNamespace  string
-	IsPrimary          bool
+	// CacheKeyNamespace isolates this strategy's Redis keys from other strategies.
+	CacheKeyNamespace string
+	// IsPrimary enables Redis reads for routing. Exactly one strategy must be primary.
+	IsPrimary bool
 }
 
 // ShardKeyAffinityProviderConfig configures a multi-strategy shard-key affinity provider.
 type ShardKeyAffinityProviderConfig struct {
-	Strategies   []ShardKeyStrategySpec
-	RedisClient  *redis.Client
-	KeyPrefix    string
-	ShardKeyTTL  time.Duration
+	// Strategies must contain exactly one primary strategy. Other strategies are write-only shadows.
+	Strategies []ShardKeyStrategySpec
+	// RedisClient is required for affinity reads and deferred writes.
+	RedisClient *redis.Client
+	// KeyPrefix is prepended to every strategy's Redis keys when non-empty.
+	KeyPrefix string
+	// ShardKeyTTL controls mapping expiration; values <= 0 disable deferred writes.
+	ShardKeyTTL time.Duration
+	// BackendNames optionally restricts resolved mappings to known backends. An empty list allows all.
 	BackendNames []string
 }
 
@@ -55,7 +62,11 @@ type shardKeyStrategyRuntime struct {
 	isPrimary bool
 }
 
-type shardKeyAffinityProvider struct {
+// ShardKeyAffinityProvider is the built-in Redis-backed affinity provider. It reads routing
+// affinity from the primary strategy and writes successful selections to the primary and all
+// shadow strategies. Redis misses and read errors do not cause Resolve to return an error; when no
+// candidates are resolved, load balancers fall back to their normal selection algorithm.
+type ShardKeyAffinityProvider struct {
 	primary      shardKeyStrategyRuntime
 	shadows      []shardKeyStrategyRuntime
 	redisClient  *redis.Client
@@ -64,11 +75,11 @@ type shardKeyAffinityProvider struct {
 	backendNames map[string]struct{}
 }
 
-var _ AffinityProvider = (*shardKeyAffinityProvider)(nil)
+var _ AffinityProvider = (*ShardKeyAffinityProvider)(nil)
 
 // NewShardKeyAffinityProvider creates a provider with one primary strategy (Redis read + write)
 // and zero or more shadow strategies (write-only on success).
-func NewShardKeyAffinityProvider(cfg ShardKeyAffinityProviderConfig) (AffinityProvider, error) {
+func NewShardKeyAffinityProvider(cfg ShardKeyAffinityProviderConfig) (*ShardKeyAffinityProvider, error) {
 	if cfg.RedisClient == nil {
 		return nil, fmt.Errorf("redisClient must be provided")
 	}
@@ -107,7 +118,7 @@ func NewShardKeyAffinityProvider(cfg ShardKeyAffinityProviderConfig) (AffinityPr
 		}
 	}
 
-	return &shardKeyAffinityProvider{
+	return &ShardKeyAffinityProvider{
 		primary:      *primary,
 		shadows:      shadows,
 		redisClient:  cfg.RedisClient,
@@ -130,10 +141,10 @@ func redisKeyForStrategy(keyPrefix, namespace, shardKey string) string {
 	return keyPrefix + ":" + namespace + ":" + shardKey
 }
 
-func (p *shardKeyAffinityProvider) Resolve(
-	ctx context.Context,
-	req *octollm.Request,
-) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
+// Resolve reads primary affinity, snapshots this request's primary and shadow keys, and returns a
+// callback for deferred persistence after backend success.
+func (p *ShardKeyAffinityProvider) Resolve(req *octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
+	ctx := req.Context()
 	primaryKeys := p.primary.getter(req)
 	prioritized := p.resolvePrimaryBackends(ctx, primaryKeys)
 
@@ -154,17 +165,17 @@ func (p *shardKeyAffinityProvider) Resolve(
 		}
 	}
 
-	commit := func(commitCtx context.Context, selectedBackend string) error {
+	commit := func(selectedBackend string) error {
 		if selectedBackend == "" || p.shardKeyTTL <= 0 {
 			return nil
 		}
 		pipe := p.redisClient.Pipeline()
-		writeShardKeyMappings(pipe, commitCtx, p.keyPrefix, p.primary.namespace, primarySnapshot, selectedBackend, p.shardKeyTTL)
+		writeShardKeyMappings(pipe, ctx, p.keyPrefix, p.primary.namespace, primarySnapshot, selectedBackend, p.shardKeyTTL)
 		for _, shadow := range shadowSnapshots {
-			writeShardKeyMappings(pipe, commitCtx, p.keyPrefix, shadow.namespace, shadow.keys, selectedBackend, p.shardKeyTTL)
+			writeShardKeyMappings(pipe, ctx, p.keyPrefix, shadow.namespace, shadow.keys, selectedBackend, p.shardKeyTTL)
 		}
-		if _, err := pipe.Exec(commitCtx); err != nil && err != redis.Nil {
-			slog.WarnContext(commitCtx, fmt.Sprintf("[ShardKey affinity provider] failed to update shard key mapping in Redis: %v", err))
+		if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+			slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to update shard key mapping in Redis: %v", err))
 			return err
 		}
 		return nil
@@ -196,7 +207,8 @@ func writeShardKeyMappings(
 
 // resolvePrimaryBackends scans shard keys from last to first, so later keys have higher priority.
 // Only primary mappings affect routing; Redis ZSETs are trimmed to their three newest backends.
-func (p *shardKeyAffinityProvider) resolvePrimaryBackends(
+// A hit on either of the last two shard keys is strong; this threshold is fixed and not configurable.
+func (p *ShardKeyAffinityProvider) resolvePrimaryBackends(
 	ctx context.Context,
 	shardKeyList []string,
 ) []*PrioritizedBackend {
@@ -232,11 +244,14 @@ func (p *shardKeyAffinityProvider) resolvePrimaryBackends(
 			continue
 		}
 		if len(backendNames) > 3 {
+			// ZRemRangeByRank uses ascending score order; remove the oldest ranks and retain
+			// the three newest backend mappings.
 			stop := int64(len(backendNames) - 4)
 			if stop >= 0 {
 				trimPipe.ZRemRangeByRank(ctx, redisKeyForStrategy(p.keyPrefix, p.primary.namespace, shardKeyList[i]), 0, stop)
 			}
 		}
+		// ZRevRange already orders mappings from newest to oldest; preserve that order.
 		for _, name := range backendNames {
 			if name == "" || seen[name] {
 				continue
