@@ -130,6 +130,9 @@ func (m *ModelRepoFileBased) UpdateFromConfig(conf *ConfigFile) error {
 			if backend.ConvertToMessages != "" {
 				finalBackend.ConvertToMessages = backend.ConvertToMessages
 			}
+			if backend.ConvertToResponses != "" {
+				finalBackend.ConvertToResponses = backend.ConvertToResponses
+			}
 			if backend.ConvertToVertex != "" {
 				finalBackend.ConvertToVertex = backend.ConvertToVertex
 			}
@@ -315,6 +318,23 @@ func (m *ModelRepoFileBased) BuildEngineByBackend(b *Backend) (octollm.Engine, e
 		if convEngine != nil {
 			conv := func(req *octollm.Request) (*octollm.Response, error) {
 				if req.Format != octollm.APIFormatClaudeMessages {
+					return oriEngine.Process(req)
+				}
+				return convEngine.Process(req)
+			}
+			llmEngine = octollm.EngineFunc(conv)
+		}
+	}
+
+	if b.ConvertToResponses != "" {
+		oriEngine := llmEngine
+		var convEngine octollm.Engine
+		if b.ConvertToResponses == "from_chat" {
+			convEngine = converter.NewChatCompletionToResponses(oriEngine)
+		}
+		if convEngine != nil {
+			conv := func(req *octollm.Request) (*octollm.Response, error) {
+				if req.Format != octollm.APIFormatResponses {
 					return oriEngine.Process(req)
 				}
 				return convEngine.Process(req)

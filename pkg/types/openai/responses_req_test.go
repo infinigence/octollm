@@ -33,8 +33,8 @@ func TestResponsesRequest_Marshal_UnmarshalJSON(t *testing.T) {
 			Object: ResponsesRequest{
 				Model:  "gpt-4.1",
 				Stream: boolPtr(true),
-				Input: ResponsesInputMessageArray{
-					{
+				Input: ResponsesInputItemArray{
+					&ResponsesInputMessage{
 						Role:    "user",
 						Content: ResponsesInputMessageContentArray{{Type: "input_text", Text: "hi"}},
 					},
@@ -46,8 +46,8 @@ func TestResponsesRequest_Marshal_UnmarshalJSON(t *testing.T) {
 			JSON: `{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"what is in this image?"},{"type":"input_image","image_url":"https://example.com/a.jpg"}]}]}`,
 			Object: ResponsesRequest{
 				Model: "gpt-5.4",
-				Input: ResponsesInputMessageArray{
-					{
+				Input: ResponsesInputItemArray{
+					&ResponsesInputMessage{
 						Role: "user",
 						Content: ResponsesInputMessageContentArray{
 							{Type: "input_text", Text: "what is in this image?"},
@@ -62,8 +62,8 @@ func TestResponsesRequest_Marshal_UnmarshalJSON(t *testing.T) {
 			JSON: `{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_image","image_url":{"url":"https://example.com/b.jpg","detail":"high"}}]}]}`,
 			Object: ResponsesRequest{
 				Model: "gpt-5.4",
-				Input: ResponsesInputMessageArray{
-					{
+				Input: ResponsesInputItemArray{
+					&ResponsesInputMessage{
 						Role: "user",
 						Content: ResponsesInputMessageContentArray{
 							{Type: "input_image", ImageURL: &MessageContentItemImageURL{URL: "https://example.com/b.jpg", Detail: "high"}},
@@ -77,9 +77,45 @@ func TestResponsesRequest_Marshal_UnmarshalJSON(t *testing.T) {
 			JSON: `{"model":"gpt-5.4","input":[{"role":"user","content":"plain text message"}]}`,
 			Object: ResponsesRequest{
 				Model: "gpt-5.4",
-				Input: ResponsesInputMessageArray{
-					{Role: "user", Content: ResponsesInputMessageContentString("plain text message")},
+				Input: ResponsesInputItemArray{
+					&ResponsesInputMessage{Role: "user", Content: ResponsesInputMessageContentString("plain text message")},
 				},
+			},
+		},
+		{
+			Name: "FunctionCallAndOutputItems",
+			JSON: `{"model":"gpt-5.4","instructions":"You are helpful","input":[{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Tokyo\"}"},{"type":"function_call_output","call_id":"call_1","output":"Sunny"}]}`,
+			Object: ResponsesRequest{
+				Model:        "gpt-5.4",
+				Instructions: "You are helpful",
+				Input: ResponsesInputItemArray{
+					&ResponsesInputFunctionCall{Type: "function_call", CallID: "call_1", Name: "get_weather", Arguments: `{"city":"Tokyo"}`},
+					&ResponsesInputFunctionCallOutput{Type: "function_call_output", CallID: "call_1", Output: ResponsesFunctionCallOutputString("Sunny")},
+				},
+			},
+		},
+		{
+			Name: "ToolChoiceStringAndTools",
+			JSON: `{"model":"gpt-5.4","tool_choice":"required","tools":[{"type":"function","name":"get_weather","description":"Get weather","parameters":{"type":"object"}}]}`,
+			Object: ResponsesRequest{
+				Model:      "gpt-5.4",
+				ToolChoice: ResponsesToolChoiceString("required"),
+				Tools: []*ResponseTool{
+					{
+						Type:        "function",
+						Name:        "get_weather",
+						Description: "Get weather",
+						Parameters:  json.RawMessage(`{"type":"object"}`),
+					},
+				},
+			},
+		},
+		{
+			Name: "ToolChoiceObject",
+			JSON: `{"model":"gpt-5.4","tool_choice":{"type":"function","name":"get_weather"}}`,
+			Object: ResponsesRequest{
+				Model:      "gpt-5.4",
+				ToolChoice: ResponsesToolChoiceObject{Type: "function", Name: "get_weather"},
 			},
 		},
 	}
@@ -113,7 +149,7 @@ func TestResponsesInputValue_Marshal_UnmarshalJSON(t *testing.T) {
 		{
 			Name:   "Array",
 			JSON:   `[{"role":"user","content":"hi"}]`,
-			Object: ResponsesInputMessageArray{{Role: "user", Content: ResponsesInputMessageContentString("hi")}},
+			Object: ResponsesInputItemArray{&ResponsesInputMessage{Role: "user", Content: ResponsesInputMessageContentString("hi")}},
 		},
 	}
 
@@ -250,6 +286,47 @@ func TestResponsesInputMessage_Marshal_UnmarshalJSON(t *testing.T) {
 	}
 }
 
+func TestResponsesFunctionCallOutput_Marshal_UnmarshalJSON(t *testing.T) {
+	testCases := []struct {
+		Name   string
+		JSON   string
+		Object ResponsesInputFunctionCallOutput
+	}{
+		{
+			Name: "StringOutput",
+			JSON: `{"type":"function_call_output","call_id":"call_1","output":"Sunny"}`,
+			Object: ResponsesInputFunctionCallOutput{
+				Type:   "function_call_output",
+				CallID: "call_1",
+				Output: ResponsesFunctionCallOutputString("Sunny"),
+			},
+		},
+		{
+			Name: "ArrayOutput",
+			JSON: `{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"Sunny"}]}`,
+			Object: ResponsesInputFunctionCallOutput{
+				Type:   "function_call_output",
+				CallID: "call_1",
+				Output: ResponsesFunctionCallOutputArray{{Type: "input_text", Text: "Sunny"}},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run("Unmarshal_"+tc.Name, func(t *testing.T) {
+			var item ResponsesInputFunctionCallOutput
+			err := json.Unmarshal([]byte(tc.JSON), &item)
+			require.NoError(t, err)
+			assert.Equal(t, tc.Object, item)
+		})
+		t.Run("Marshal_"+tc.Name, func(t *testing.T) {
+			data, err := json.Marshal(tc.Object)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.JSON, string(data))
+		})
+	}
+}
+
 func TestResponsesResponse_UnmarshalJSON(t *testing.T) {
 	testCases := []struct {
 		Name   string
@@ -266,7 +343,11 @@ func TestResponsesResponse_UnmarshalJSON(t *testing.T) {
 				}
 			}`,
 			Object: ResponsesResponse{
-				Id: "r1",
+				Id:      "r1",
+				Object:  "response",
+				Created: 1,
+				Status:  "completed",
+				Model:   "m",
 				Usage: &ResponsesUsage{
 					InputTokens:         10,
 					OutputTokens:        5,
@@ -285,12 +366,31 @@ func TestResponsesResponse_UnmarshalJSON(t *testing.T) {
 				}
 			}`,
 			Object: ResponsesResponse{
-				Id: "r2",
+				Id:      "r2",
+				Object:  "response",
+				Created: 1,
+				Status:  "completed",
+				Model:   "m",
 				Usage: &ResponsesUsage{
 					InputTokens:        100,
 					OutputTokens:       5,
 					TotalTokens:        105,
 					InputTokensDetails: &ResponsesInputTokenDetails{CachedTokens: intPtr(20), CacheWriteTokens: intPtr(30)},
+				},
+			},
+		},
+		{
+			Name: "FunctionCallOutput",
+			JSON: `{
+				"id":"r3","status":"completed","model":"m",
+				"output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Tokyo\"}"}]
+			}`,
+			Object: ResponsesResponse{
+				Id:     "r3",
+				Status: "completed",
+				Model:  "m",
+				Output: []*ResponsesOutputItem{
+					{ID: "fc_1", Type: "function_call", CallID: "call_1", Name: "get_weather", Arguments: `{"city":"Tokyo"}`},
 				},
 			},
 		},
@@ -303,11 +403,6 @@ func TestResponsesResponse_UnmarshalJSON(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.Object, resp)
 		})
-		// t.Run("Marshal_"+tc.Name, func(t *testing.T) {
-		// 	data, err := json.Marshal(tc.Object)
-		// 	require.NoError(t, err)
-		// 	assert.JSONEq(t, tc.JSON, string(data))
-		// })
 	}
 }
 
@@ -329,6 +424,16 @@ func TestResponseStreamChunk_Marshal_UnmarshalJSON(t *testing.T) {
 						TotalTokens:  3,
 					},
 				},
+			},
+		},
+		{
+			Name: "FunctionCallArgumentsDelta",
+			JSON: `{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"city\":\"Tokyo\"}"}`,
+			Object: ResponseStreamChunk{
+				Type:      "response.function_call_arguments.delta",
+				ItemID:    "fc_1",
+				OutputIdx: intPtr(0),
+				Delta:     `{"city":"Tokyo"}`,
 			},
 		},
 	}

@@ -42,9 +42,11 @@ func For(format octollm.APIFormat) (Merger, error) {
 		return NewChatCompletionMerger(), nil
 	case octollm.APIFormatClaudeMessages:
 		return NewClaudeMessagesMerger(), nil
+	case octollm.APIFormatResponses:
+		return NewResponsesMerger(), nil
 	default:
-		// Responses, Vertex generateContent, completions, etc. are not wired up
-		// yet. They fall through to ErrUnsupportedFormat on purpose.
+		// Vertex generateContent, completions, etc. are not wired up yet. They
+		// fall through to ErrUnsupportedFormat on purpose.
 		return nil, ErrUnsupportedFormat
 	}
 }
