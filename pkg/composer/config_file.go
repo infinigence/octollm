@@ -59,9 +59,10 @@ type Backend struct {
 	URLPathResponses        *string           `json:"url_path_responses" yaml:"url_path_responses"`
 	RequestCompression      string            `json:"request_compression" yaml:"request_compression"` // "gzip" or empty for no compression
 
-	ConvertToChat     string `json:"convert_to_chat" yaml:"convert_to_chat"`         // "from_messages" or "from_vertex"
-	ConvertToMessages string `json:"convert_to_messages" yaml:"convert_to_messages"` // "from_chat" or "from_vertex"
-	ConvertToVertex   string `json:"convert_to_vertex" yaml:"convert_to_vertex"`     // "from_chat" or "from_messages"
+	ConvertToChat      string `json:"convert_to_chat" yaml:"convert_to_chat"`           // "from_messages" or "from_vertex"
+	ConvertToMessages  string `json:"convert_to_messages" yaml:"convert_to_messages"`   // "from_chat" or "from_vertex"
+	ConvertToResponses string `json:"convert_to_responses" yaml:"convert_to_responses"` // "from_chat"
+	ConvertToVertex    string `json:"convert_to_vertex" yaml:"convert_to_vertex"`       // "from_chat" or "from_messages"
 
 	RequestRewrites     *engines.RewritePolicy `json:"request_rewrites" yaml:"request_rewrites"`
 	ResponseRewrites    *engines.RewritePolicy `json:"response_rewrites" yaml:"response_rewrites"`

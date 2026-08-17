@@ -335,6 +335,15 @@ func responsesOutputItemString(i *ResponsesOutputItem) string {
 	if i.Role != "" {
 		fmt.Fprintf(w, ", role=%s", i.Role)
 	}
+	if i.Type == "function_call" {
+		if i.CallID != "" {
+			fmt.Fprintf(w, ", call_id=%s", i.CallID)
+		}
+		if i.Name != "" {
+			fmt.Fprintf(w, ", name=%s", i.Name)
+		}
+		fmt.Fprintf(w, ", args_len=%d", len(i.Arguments))
+	}
 	if len(i.Content) > 0 {
 		fmt.Fprintf(w, ", content=[")
 		for _, p := range i.Content {
@@ -360,6 +369,12 @@ func responsesOutputItemString(i *ResponsesOutputItem) string {
 func (r ResponsesResponse) String() string {
 	w := &strings.Builder{}
 	fmt.Fprintf(w, "  ID: %q\n", r.Id)
+	if r.Status != "" {
+		fmt.Fprintf(w, "  Status: %q\n", r.Status)
+	}
+	if r.Model != "" {
+		fmt.Fprintf(w, "  Model: %q\n", r.Model)
+	}
 	fmt.Fprintf(w, "  Output: len(%d)\n", len(r.Output))
 	for _, item := range r.Output {
 		fmt.Fprintf(w, "    %s\n", responsesOutputItemString(item))
