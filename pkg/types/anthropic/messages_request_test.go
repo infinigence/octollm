@@ -319,17 +319,17 @@ func TestMessageContent_ExtractText(t *testing.T) {
 		{
 			Name:         "ImageBlockBase64",
 			JSON:         `[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]`,
-			ExpectedText: "(base64_inline_image/png)",
+			ExpectedText: "[img:(base64_inline_image/png)]",
 		},
 		{
 			Name:         "ImageBlockURL",
 			JSON:         `[{"type":"image","source":{"type":"url","url":"https://example.com/img.png"}}]`,
-			ExpectedText: "https://example.com/img.png",
+			ExpectedText: "[img:https://example.com/img.png]",
 		},
 		{
 			Name:         "DocumentBlock",
 			JSON:         `[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="},"title":"doc.pdf","context":"A document","citations":{"enabled":true}}]`,
-			ExpectedText: "doc.pdf:A document:(base64_inline_application/pdf)",
+			ExpectedText: "[doc:doc.pdf:A document:(base64_inline_application/pdf)]",
 		},
 		{
 			Name:         "ThinkingBlock",

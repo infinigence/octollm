@@ -146,7 +146,7 @@ func (b *ImageBlockParam) ExtractText() string {
 	if b.Source == nil {
 		return ""
 	}
-	return b.Source.ExtractText()
+	return "[img:" + b.Source.ExtractText() + "]"
 }
 
 // DocumentBlockParam represents a document content block
@@ -172,7 +172,7 @@ func (b *DocumentBlockParam) ExtractText() string {
 	if b.Source != nil {
 		sb.WriteString(b.Source.ExtractText())
 	}
-	return sb.String()
+	return "[doc:" + sb.String() + "]"
 }
 
 // ThinkingBlockParam represents a thinking content block
