@@ -100,7 +100,6 @@ func computeAnthropicMessage5Hashes(system anthropic.SystemContent, messages []*
 	}
 
 	// System prompt counts as the first message (matches converter prepend logic).
-	// Use the full text for system blocks (no 100-byte truncation).
 	for _, sysTxt := range anthropicSystemText(system) {
 		hashOne(sysTxt)
 	}
