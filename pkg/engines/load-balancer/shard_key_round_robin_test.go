@@ -57,7 +57,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 	backendEngine := &stubEngine{}
 
 	// empty backends
-	_, err := NewShardKeyWeightedRoundRobin(nil, time.Second, 1, nil)
+	_, err := NewShardKeyWeightedRoundRobin(nil, time.Second, 1, nil, nil)
 	assert.Error(t, err)
 
 	// negative weight
@@ -66,6 +66,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 			{Name: "b1", Weight: -1, Engine: backendEngine},
 		},
 		time.Second, 1, nil,
+		nil,
 	)
 	assert.Error(t, err)
 
@@ -77,6 +78,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 		},
 		time.Second,
 		1,
+		nil,
 		nil,
 	)
 	require.NoError(t, err)
@@ -118,7 +120,7 @@ func TestResolveAffinity_WithRedisAndTrim(t *testing.T) {
 		5*time.Minute,
 		backends,
 	)
-	lb, err := NewShardKeyWeightedRoundRobin(backends, 5*time.Second, 5, provider)
+	lb, err := NewShardKeyWeightedRoundRobin(backends, 5*time.Second, 5, provider, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -156,7 +158,7 @@ func TestResolveAffinity_WithRedisAndTrim(t *testing.T) {
 	assert.LessOrEqual(t, card, int64(3))
 }
 
-func TestGetNextEngine_PrioritizedHit(t *testing.T) {
+func TestSelectNextEngine_PrioritizedHit(t *testing.T) {
 	e1 := &stubEngine{}
 	e2 := &stubEngine{}
 
@@ -167,9 +169,10 @@ func TestGetNextEngine_PrioritizedHit(t *testing.T) {
 		},
 	}
 
-	name, eng, _ := lb.GetNextEngine(context.Background(), "b", nil)
-	assert.Equal(t, "b", name)
-	assert.Equal(t, e2, eng)
+	sel := lb.selectNextEngine(context.Background(), "b", nil)
+	require.NotNil(t, sel)
+	assert.Equal(t, "b", sel.name)
+	assert.Equal(t, e2, sel.engine)
 
 	// We don't assert exact weights here because the initial currentWeight is randomized in constructor.
 	// Just ensure weights remain finite and have been updated.
@@ -177,7 +180,7 @@ func TestGetNextEngine_PrioritizedHit(t *testing.T) {
 	assert.NotZero(t, lb.backends[0].currentWeight)
 }
 
-func TestGetNextEngine_AllWeightZeroBackends(t *testing.T) {
+func TestSelectNextEngine_AllWeightZeroBackends(t *testing.T) {
 	lb := &ShardKeyWeightedRoundRobin{
 		backends: []*wrrBackend{
 			{name: "a", weight: 0, engine: &stubEngine{}, currentWeight: 0},
@@ -185,10 +188,11 @@ func TestGetNextEngine_AllWeightZeroBackends(t *testing.T) {
 		},
 	}
 
-	name, eng, _ := lb.GetNextEngine(context.Background(), "", nil)
-	assert.NotEmpty(t, name)
-	assert.Contains(t, []string{"a", "b"}, name)
-	assert.NotNil(t, eng)
+	sel := lb.selectNextEngine(context.Background(), "", nil)
+	require.NotNil(t, sel)
+	assert.NotEmpty(t, sel.name)
+	assert.Contains(t, []string{"a", "b"}, sel.name)
+	assert.NotNil(t, sel.engine)
 }
 
 type failingReader struct{}
@@ -239,7 +243,7 @@ func TestShardKeyWeightedRoundRobin_Process_SuccessAndRedisUpdate(t *testing.T) 
 		time.Minute,
 		backends,
 	)
-	lb, err := NewShardKeyWeightedRoundRobin(backends, time.Second, 3, provider)
+	lb, err := NewShardKeyWeightedRoundRobin(backends, time.Second, 3, provider, nil)
 	require.NoError(t, err)
 
 	req := newTestRequest(t)
@@ -314,7 +318,7 @@ func TestShardKeyWeightedRoundRobin_Process_RetryMaxCount(t *testing.T) {
 	assert.Equal(t, 1, failEngine.callCount)
 }
 
-func TestGetNextEngine_SmoothWeightedRoundRobin_NoShard(t *testing.T) {
+func TestSelectNextEngine_SmoothWeightedRoundRobin_NoShard(t *testing.T) {
 	// Weights: A=2, B=3, C=5, total=10.
 	// For classic smooth WRR, in any window of length 10 we should see A,B,C chosen
 	// exactly 2,3,5 times respectively (ignoring randomness in initial currentWeight).
@@ -331,11 +335,12 @@ func TestGetNextEngine_SmoothWeightedRoundRobin_NoShard(t *testing.T) {
 	sequence := make([]string, 0, totalPicks)
 
 	for i := 0; i < totalPicks; i++ {
-		name, eng, _ := lb.GetNextEngine(context.Background(), "", nil)
-		assert.NotEmpty(t, name)
-		assert.NotNil(t, eng)
-		counts[name]++
-		sequence = append(sequence, name)
+		sel := lb.selectNextEngine(context.Background(), "", nil)
+		require.NotNil(t, sel)
+		assert.NotEmpty(t, sel.name)
+		assert.NotNil(t, sel.engine)
+		counts[sel.name]++
+		sequence = append(sequence, sel.name)
 	}
 
 	assert.Equal(t, 2, counts["A"])
@@ -374,7 +379,7 @@ func TestShardKeyWeightedRoundRobin_Process_AllBackendExhausted(t *testing.T) {
 		return []string{"shard-key-1"}
 	}
 	provider := newPrimaryShardKeyProvider(t, shardKeyListFunc, rd, "shard-key:all-backend-exhausted", time.Minute, lbItems)
-	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, provider)
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, provider, nil)
 	require.NoError(t, err)
 
 	t.Run("all backends exhausted without shard key prioritization", func(t *testing.T) {
@@ -434,7 +439,7 @@ func TestShardKeyWeightedRoundRobin_Process_FailoverToZeroWeightedBackend(t *tes
 		return []string{"shard-key-1"}
 	}
 	provider := newPrimaryShardKeyProvider(t, shardKeyListFunc, rd, "shard-key:failover-zero-weight", time.Minute, lbItems)
-	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, provider)
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, provider, nil)
 	require.NoError(t, err)
 
 	t.Run("weighted backends fail, zero-weight backend succeeds", func(t *testing.T) {
@@ -488,7 +493,7 @@ func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineNotFirstChoice(t *t
 		{Name: "C", Weight: 0, Engine: stubC},
 	}
 
-	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, nil) // skip shard-key prioritized routing
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, nil, nil) // skip shard-key prioritized routing
 	require.NoError(t, err)
 
 	t.Run("WRR prefers weighted backends; zero-weight not called when healthy alternatives exist", func(t *testing.T) {
@@ -516,7 +521,7 @@ func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineCanBeLoadBalanced(t
 		{Name: "D", Weight: 0, Engine: stubD},
 	}
 
-	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, nil) // skip shard-key prioritized routing
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, nil, nil) // skip shard-key prioritized routing
 	require.NoError(t, err)
 
 	t.Run("WRR failover to zero-weight backends load-balanced when all weighted backends fail", func(t *testing.T) {
@@ -557,7 +562,7 @@ func TestShardKeyWeightedRoundRobin_Process_Priority(t *testing.T) {
 	ctxC := context.WithValue(context.Background(), "selected-backend", "C")
 
 	provider := newPrimaryShardKeyProvider(t, shardKeyListFunc, rd, "shard-key:select-by-ctx", time.Minute, lbItems)
-	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, provider)
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, provider, nil)
 	require.NoError(t, err)
 
 	ctx := context.Background()
