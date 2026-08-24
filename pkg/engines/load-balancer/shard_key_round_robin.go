@@ -18,10 +18,11 @@ import (
 type ShardKeyWeightedRoundRobin struct {
 	mu sync.Mutex
 
-	backends         []*wrrBackend
-	affinityProvider AffinityProvider
-	retryTimeout     time.Duration
-	retryMaxCount    int
+	backends           []*wrrBackend
+	affinityProvider   AffinityProvider
+	retryTimeout       time.Duration
+	retryMaxCount      int
+	backendAttemptHook BackendAttemptHook
 }
 
 var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
@@ -30,11 +31,13 @@ var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
 //
 // Negative weights are rejected. If every configured weight is zero, all backends are normalized
 // to the same positive weight. A nil affinityProvider disables affinity and uses normal WRR.
+// A nil backendAttemptHook skips admission checks and preserves current balancer behavior.
 func NewShardKeyWeightedRoundRobin(
 	backends []BackendItem,
 	retryTimeout time.Duration,
 	retryMaxCount int,
 	affinityProvider AffinityProvider,
+	backendAttemptHook BackendAttemptHook,
 ) (*ShardKeyWeightedRoundRobin, error) {
 	if len(backends) == 0 {
 		return nil, fmt.Errorf("backends must have at least one item")
@@ -68,10 +71,11 @@ func NewShardKeyWeightedRoundRobin(
 	}
 
 	return &ShardKeyWeightedRoundRobin{
-		backends:         wrrBackends,
-		affinityProvider: affinityProvider,
-		retryTimeout:     retryTimeout,
-		retryMaxCount:    retryMaxCount,
+		backends:           wrrBackends,
+		affinityProvider:   affinityProvider,
+		retryTimeout:       retryTimeout,
+		retryMaxCount:      retryMaxCount,
+		backendAttemptHook: backendAttemptHook,
 	}, nil
 }
 
@@ -124,6 +128,9 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 
 	start := time.Now()
 	retryCount := 0
+	hookSkipCount := 0
+	var lastResp *octollm.Response
+	var lastErr error
 	for {
 		var prioritizedBackend string
 		if prioritizedIndex < len(prioritizedBackends) {
@@ -133,10 +140,18 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			prioritizedIndex++
 		}
 
-		n, eng, isAllZero := l.GetNextEngine(req.Context(), prioritizedBackend, excludeNames)
-		if eng == nil {
+		selection := l.selectNextEngine(req.Context(), prioritizedBackend, excludeNames)
+		if selection == nil || selection.engine == nil {
+			if lastErr != nil {
+				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] no backend engine available on failover, returning previous error: %v", lastErr))
+				return lastResp, lastErr
+			}
+			if hookSkipCount > 0 {
+				return nil, ErrNoBackendPermitted
+			}
 			return nil, fmt.Errorf("no backend engine available")
 		}
+		n, eng, isAllZero := selection.name, selection.engine, selection.isAllZero
 		if prioritizedBackend != "" && n == prioritizedBackend {
 			slog.InfoContext(req.Context(),
 				fmt.Sprintf("[ShardKey WRR load balancer] prioritized backend hit: %s (index %d/%d)", n, prioritizedIndex, len(prioritizedBackends)),
@@ -148,8 +163,30 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 				slog.String("backend_name", n),
 			)
 		}
+
+		var done AttemptDoneFunc
+		if l.backendAttemptHook != nil {
+			var allowed bool
+			done, allowed = l.backendAttemptHook.BeforeAttempt(req, n)
+			if !allowed {
+				selection.Rollback()
+				excludeNames[n] = true
+				hookSkipCount++
+				if len(excludeNames) >= len(l.backends) {
+					if lastErr != nil {
+						return lastResp, lastErr
+					}
+					return nil, ErrNoBackendPermitted
+				}
+				continue
+			}
+		}
+
 		req.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(req)
+		if done != nil {
+			done(resp, err)
+		}
 		if err == nil {
 			// Do not persist affinity for the stateless all-zero fallback; its random selection
 			// should not become a future affinity decision.
@@ -165,6 +202,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			return resp, err
 		}
 		excludeNames[n] = true
+		lastResp, lastErr = resp, err
 		retryCount++
 		if req.Context().Err() != nil {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] request context error: %v", req.Context().Err()))
@@ -188,7 +226,20 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 	}
 }
 
-// GetNextEngine applies affinity-aware smooth WRR selection.
+type wrrSelection struct {
+	name      string
+	engine    octollm.Engine
+	isAllZero bool
+	rollback  func()
+}
+
+func (s *wrrSelection) Rollback() {
+	if s != nil && s.rollback != nil {
+		s.rollback()
+	}
+}
+
+// selectNextEngine applies affinity-aware smooth WRR selection.
 //
 // Per-pick algorithm:
 //  1. Build non-excluded candidates with non-negative weights and compute totalWeight.
@@ -197,7 +248,10 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 //     positive-weight candidate with the highest currentWeight.
 //  4. Penalize the selected backend by subtracting totalWeight.
 //  5. Add each positive-weight candidate's weight to its currentWeight.
-func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioritizedBackend string, excludeNames map[string]bool) (string, octollm.Engine, bool) {
+//
+// Steps 4–5 are applied immediately. The returned rollback undoes that delta;
+// Process calls it on hook deny and leaves the update in place after a real Process.
+func (l *ShardKeyWeightedRoundRobin) selectNextEngine(ctx context.Context, prioritizedBackend string, excludeNames map[string]bool) *wrrSelection {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -218,14 +272,14 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioriti
 	// Keep the all-zero fallback stateless; no smooth-WRR weight is updated on this path.
 	if isAllZero {
 		if len(candidates) == 0 {
-			return "", nil, true
+			return &wrrSelection{isAllZero: true}
 		}
 		selected := candidates[rand.Intn(len(candidates))]
 		slog.InfoContext(ctx,
 			fmt.Sprintf("[ShardKey WRR load balancer] all-zero weights, random pick: %s, candidates: %v", selected.name, candidates),
 			slog.String("backend_name", selected.name),
 		)
-		return selected.name, selected.engine, true
+		return &wrrSelection{name: selected.name, engine: selected.engine, isAllZero: true}
 	}
 
 	var selected *wrrBackend
@@ -250,7 +304,7 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioriti
 	}
 
 	if selected == nil {
-		return "", nil, false
+		return &wrrSelection{}
 	}
 
 	slog.InfoContext(ctx,
@@ -259,12 +313,29 @@ func (l *ShardKeyWeightedRoundRobin) GetNextEngine(ctx context.Context, prioriti
 	)
 
 	selected.currentWeight -= totalWeight
+	var incremented []*wrrBackend
+	var added []int
 	for _, backend := range candidates {
 		if backend == nil || backend.weight <= 0 {
 			continue
 		}
 		backend.currentWeight += backend.weight
+		incremented = append(incremented, backend)
+		added = append(added, backend.weight)
 	}
 
-	return selected.name, selected.engine, false
+	total := totalWeight
+	picked := selected
+	return &wrrSelection{
+		name:   selected.name,
+		engine: selected.engine,
+		rollback: func() {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			picked.currentWeight += total
+			for i, backend := range incremented {
+				backend.currentWeight -= added[i]
+			}
+		},
+	}
 }

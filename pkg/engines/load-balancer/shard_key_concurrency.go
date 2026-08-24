@@ -50,12 +50,13 @@ func (pb *prioritizedBackend) isStrongCacheHit() bool {
 //   - When affinityProvider is nil: selects the backend with the lowest
 //     currentConcurrency/maxConcurrency ratio via Redis ZCard.
 type ShardKeyConcurrency struct {
-	backends         []*concurrencyBackend
-	affinityProvider AffinityProvider
-	redisClient      *redis.Client
-	concurrencyKeyFn func(req *octollm.Request, backendName string) string
-	retryTimeout     time.Duration
-	retryMaxCount    int
+	backends           []*concurrencyBackend
+	affinityProvider   AffinityProvider
+	redisClient        *redis.Client
+	concurrencyKeyFn   func(req *octollm.Request, backendName string) string
+	retryTimeout       time.Duration
+	retryMaxCount      int
+	backendAttemptHook BackendAttemptHook
 }
 
 var _ octollm.Engine = (*ShardKeyConcurrency)(nil)
@@ -68,7 +69,8 @@ var _ octollm.Engine = (*ShardKeyConcurrency)(nil)
 // disables backend affinity. redisClient and concurrencyKeyFn are required for selection;
 // concurrencyKeyFn must return the Redis ZSET key whose cardinality represents the backend's
 // current concurrency. The per-backend cache-miss ceiling is configured through
-// BackendItem.CacheMissMaxUtilization.
+// BackendItem.CacheMissMaxUtilization. A nil backendAttemptHook skips admission checks
+// and preserves current balancer behavior.
 func NewShardKeyConcurrency(
 	backends []BackendItem,
 	retryTimeout time.Duration,
@@ -76,6 +78,7 @@ func NewShardKeyConcurrency(
 	affinityProvider AffinityProvider,
 	redisClient *redis.Client,
 	concurrencyKeyFn func(req *octollm.Request, backendName string) string,
+	backendAttemptHook BackendAttemptHook,
 ) (*ShardKeyConcurrency, error) {
 	if redisClient == nil {
 		return nil, fmt.Errorf("redisClient must be provided")
@@ -110,12 +113,13 @@ func NewShardKeyConcurrency(
 	}
 
 	return &ShardKeyConcurrency{
-		backends:         cb,
-		affinityProvider: affinityProvider,
-		redisClient:      redisClient,
-		concurrencyKeyFn: concurrencyKeyFn,
-		retryTimeout:     retryTimeout,
-		retryMaxCount:    retryMaxCount,
+		backends:           cb,
+		affinityProvider:   affinityProvider,
+		redisClient:        redisClient,
+		concurrencyKeyFn:   concurrencyKeyFn,
+		retryTimeout:       retryTimeout,
+		retryMaxCount:      retryMaxCount,
+		backendAttemptHook: backendAttemptHook,
 	}, nil
 }
 
@@ -250,6 +254,7 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 
 	start := time.Now()
 	retryCount := 0
+	hookSkipCount := 0
 	var lastResp *octollm.Response
 	var lastErr error
 	for {
@@ -332,10 +337,34 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no backend engine available on failover, returning previous error: %v", lastErr))
 				return lastResp, lastErr
 			}
+			if hookSkipCount > 0 {
+				return nil, ErrNoBackendPermitted
+			}
 			return nil, fmt.Errorf("no backend engine available")
 		}
+
+		var done AttemptDoneFunc
+		if l.backendAttemptHook != nil {
+			var allowed bool
+			done, allowed = l.backendAttemptHook.BeforeAttempt(req, n)
+			if !allowed {
+				excludeNames[n] = true
+				hookSkipCount++
+				if len(excludeNames) >= len(l.backends) {
+					if lastErr != nil {
+						return lastResp, lastErr
+					}
+					return nil, ErrNoBackendPermitted
+				}
+				continue
+			}
+		}
+
 		req.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(req)
+		if done != nil {
+			done(resp, err)
+		}
 		if err == nil {
 			if commit != nil {
 				if commitErr := commit(n); commitErr != nil {

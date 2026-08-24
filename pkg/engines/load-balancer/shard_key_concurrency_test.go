@@ -103,6 +103,7 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -141,6 +142,7 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -150,6 +152,7 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -211,6 +214,7 @@ func TestShardKeyConcurrency_Failover(t *testing.T) {
 		func(req *octollm.Request, backendName string) string {
 			return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 		},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -246,6 +250,7 @@ func TestShardKeyConcurrency_NotRetriableError(t *testing.T) {
 		func(req *octollm.Request, backendName string) string {
 			return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 		},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -283,6 +288,7 @@ func TestShardKeyConcurrency_ShardKey(t *testing.T) {
 		func(req *octollm.Request, backendName string) string {
 			return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
 		},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -383,6 +389,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 		req := testhelper.CreateTestRequest()
@@ -404,6 +411,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 		req := testhelper.CreateTestRequest()
@@ -429,6 +437,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 		_, err = lb.Process(testhelper.CreateTestRequest())
@@ -453,6 +462,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 		req := testhelper.CreateTestRequest()
@@ -499,6 +509,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 		req := testhelper.CreateTestRequest()
@@ -527,6 +538,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 		req := testhelper.CreateTestRequest()
@@ -548,6 +560,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.NoError(t, err)
 		_, err = lb.Process(testhelper.CreateTestRequest())
@@ -566,6 +579,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			func(_ *octollm.Request, backendName string) string {
 				return "concurrency:" + backendName + ":tier_0"
 			},
+			nil,
 		)
 		require.Error(t, err)
 	})
@@ -617,7 +631,7 @@ func TestShardKeyConcurrency_Headroom(t *testing.T) {
 		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
 
 		provider := newPrimaryShardKeyProvider(t, func(_ *octollm.Request) []string { return []string{"sk0", "sk1", "sk2"} }, rd, keyPrefix, time.Minute, items)
-		lb, err := NewShardKeyConcurrency(items, time.Second, 3, provider, rd, concurrencyKeyFn)
+		lb, err := NewShardKeyConcurrency(items, time.Second, 3, provider, rd, concurrencyKeyFn, nil)
 		require.NoError(t, err)
 
 		req := testhelper.CreateTestRequest()
@@ -644,7 +658,7 @@ func TestShardKeyConcurrency_Headroom(t *testing.T) {
 		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk0", redis.Z{Score: 1, Member: "hot"}).Err())
 
 		provider := newPrimaryShardKeyProvider(t, func(_ *octollm.Request) []string { return []string{"sk0", "sk1", "sk2"} }, rd, keyPrefix, time.Minute, items)
-		lb, err := NewShardKeyConcurrency(items, time.Second, 3, provider, rd, concurrencyKeyFn)
+		lb, err := NewShardKeyConcurrency(items, time.Second, 3, provider, rd, concurrencyKeyFn, nil)
 		require.NoError(t, err)
 
 		req := testhelper.CreateTestRequest()
@@ -666,7 +680,7 @@ func TestShardKeyConcurrency_Headroom(t *testing.T) {
 		seedConcurrency(t, rd, "a", 10)
 		seedConcurrency(t, rd, "b", 10)
 
-		lb, err := NewShardKeyConcurrency(items, time.Second, 3, nil, rd, concurrencyKeyFn) // skip shard-key prioritized routing
+		lb, err := NewShardKeyConcurrency(items, time.Second, 3, nil, rd, concurrencyKeyFn, nil) // skip shard-key prioritized routing
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -686,7 +700,7 @@ func TestShardKeyConcurrency_Headroom(t *testing.T) {
 		seedConcurrency(t, rd, "a", 5) // 0.5 < 0.9
 		seedConcurrency(t, rd, "b", 5)
 
-		lb, err := NewShardKeyConcurrency(items, time.Second, 3, nil, rd, concurrencyKeyFn) // skip shard-key prioritized routing
+		lb, err := NewShardKeyConcurrency(items, time.Second, 3, nil, rd, concurrencyKeyFn, nil) // skip shard-key prioritized routing
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -709,7 +723,7 @@ func TestShardKeyConcurrency_Headroom(t *testing.T) {
 		seedConcurrency(t, rd, "a", 6) // 0.6 > 0.5 (over its ceiling)
 		seedConcurrency(t, rd, "b", 8) // 0.8 < 0.9 (under its ceiling)
 
-		lb, err := NewShardKeyConcurrency(items, time.Second, 3, nil, rd, concurrencyKeyFn) // skip shard-key prioritized routing
+		lb, err := NewShardKeyConcurrency(items, time.Second, 3, nil, rd, concurrencyKeyFn, nil) // skip shard-key prioritized routing
 		require.NoError(t, err)
 
 		req := testhelper.CreateTestRequest()
@@ -731,7 +745,7 @@ func TestShardKeyConcurrency_Headroom(t *testing.T) {
 		seedConcurrency(t, rd, "a", 10)
 		seedConcurrency(t, rd, "b", 10)
 
-		lb, err := NewShardKeyConcurrency(items, time.Second, 3, nil, rd, concurrencyKeyFn) // skip shard-key prioritized routing
+		lb, err := NewShardKeyConcurrency(items, time.Second, 3, nil, rd, concurrencyKeyFn, nil) // skip shard-key prioritized routing
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -759,7 +773,7 @@ func TestShardKeyConcurrency_Headroom(t *testing.T) {
 			redis.Z{Score: 1, Member: "a"}, redis.Z{Score: 2, Member: "b"}).Err())
 
 		provider := newPrimaryShardKeyProvider(t, func(_ *octollm.Request) []string { return []string{"sk0", "sk1", "sk2"} }, rd, keyPrefix, time.Minute, items)
-		lb, err := NewShardKeyConcurrency(items, time.Second, 3, provider, rd, concurrencyKeyFn)
+		lb, err := NewShardKeyConcurrency(items, time.Second, 3, provider, rd, concurrencyKeyFn, nil)
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -793,7 +807,7 @@ func TestShardKeyConcurrency_Headroom(t *testing.T) {
 			redis.Z{Score: 1, Member: "weak1"}, redis.Z{Score: 2, Member: "weak2"}).Err())
 
 		provider := newPrimaryShardKeyProvider(t, func(_ *octollm.Request) []string { return []string{"sk0", "sk1", "sk2"} }, rd, keyPrefix, time.Minute, items)
-		lb, err := NewShardKeyConcurrency(items, time.Second, 3, provider, rd, concurrencyKeyFn)
+		lb, err := NewShardKeyConcurrency(items, time.Second, 3, provider, rd, concurrencyKeyFn, nil)
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())

@@ -413,6 +413,7 @@ func TestShardKeyConcurrency_WithAffinityProvider(t *testing.T) {
 		func(_ *octollm.Request, backendName string) string {
 			return "concurrency:" + backendName
 		},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -462,6 +463,7 @@ func TestShardKeyConcurrency_WithAffinityProvider_RequestFailureDoesNotCommit(t 
 		provider,
 		rd,
 		func(_ *octollm.Request, backendName string) string { return "concurrency:" + backendName },
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -511,6 +513,7 @@ func TestShardKeyWeightedRoundRobin_WithAffinityProvider(t *testing.T) {
 		},
 		time.Second, 3,
 		provider,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -556,6 +559,7 @@ func TestShardKeyWeightedRoundRobin_WithAffinityProvider_RequestFailureDoesNotCo
 		time.Second,
 		1,
 		provider,
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -591,6 +595,7 @@ func TestShardKeyLoadBalancers_AffinityProviderErrors(t *testing.T) {
 			}),
 			rd,
 			func(_ *octollm.Request, backendName string) string { return "concurrency:" + backendName },
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -611,6 +616,7 @@ func TestShardKeyLoadBalancers_AffinityProviderErrors(t *testing.T) {
 			affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
 				return nil, nil, providerErr
 			}),
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -639,6 +645,7 @@ func TestShardKeyLoadBalancers_AffinityCommitErrorDoesNotFailRequest(t *testing.
 			provider,
 			rd,
 			func(_ *octollm.Request, backendName string) string { return "concurrency:" + backendName },
+			nil,
 		)
 		require.NoError(t, err)
 
@@ -655,6 +662,7 @@ func TestShardKeyLoadBalancers_AffinityCommitErrorDoesNotFailRequest(t *testing.
 			time.Second,
 			1,
 			provider,
+			nil,
 		)
 		require.NoError(t, err)
 
