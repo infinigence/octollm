@@ -13,7 +13,13 @@ type UpstreamRespError struct {
 }
 
 func (e *UpstreamRespError) Error() string {
-	return fmt.Sprintf("upstream response error: status code %d, body %s", e.StatusCode, string(e.Body))
+	// truncate body to 1k for error message
+	body := e.Body
+	if len(body) > 1024 {
+		body = body[:1024]
+		return fmt.Sprintf("upstream response error: status code %d, body (truncated): %s", e.StatusCode, string(body))
+	}
+	return fmt.Sprintf("upstream response error: status code %d, body: %s", e.StatusCode, string(body))
 }
 
 // UpstreamHTTPError indicates an error during HTTP request to the upstream server.
