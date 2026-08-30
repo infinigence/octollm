@@ -2,13 +2,9 @@ package softcircuitbreaker
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 // BreakerMode is the admission mode of one backend breaker entry.
@@ -27,7 +23,7 @@ const (
 	OutcomeNeutral Outcome = iota
 	// OutcomeSuccess is a confirmed healthy completion.
 	OutcomeSuccess
-	// OutcomeTargetFailure is a real attempt error not excluded by the HTTP status whitelist.
+	// OutcomeTargetFailure is a real attempt error recorded by Admission.
 	OutcomeTargetFailure
 )
 
@@ -77,21 +73,12 @@ func (e *Entry) Mode() BreakerMode {
 	return e.mode
 }
 
-// IsExcludedHTTPStatus reports whether status is in this entry's frozen whitelist.
-func (e *Entry) IsExcludedHTTPStatus(status int) bool {
-	if e == nil {
-		return false
-	}
-	_, ok := e.policy.ExcludedHTTPStatusCodes[status]
-	return ok
-}
-
-// Policy returns a copy of this entry's frozen policy. The whitelist map is cloned.
+// Policy returns a copy of this entry's frozen policy.
 func (e *Entry) Policy() Policy {
 	if e == nil {
 		return Policy{}
 	}
-	return clonePolicy(e.policy)
+	return e.policy
 }
 
 // snapshotGeneration returns the current generation for logging.
@@ -287,72 +274,6 @@ func (e *Entry) recoverNormalLocked() {
 	e.normalSamples = nil
 	e.recoverySamples = nil
 	e.degradedRequestTimes = nil
-}
-
-// ClassifyAttemptError maps a real backend attempt error to an Outcome.
-// Client-canceled request context is Neutral. An extractable HTTP status in
-// this entry's exclusion set is Neutral. Everything else, including
-// deadline/timeout and errors with no HTTP status, is TargetFailure.
-// error.code is not inspected. A nil Entry has no whitelist.
-func (e *Entry) ClassifyAttemptError(req *octollm.Request, err error) Outcome {
-	if isClientCanceled(req) {
-		return OutcomeNeutral
-	}
-	if status, ok := ExtractHTTPStatus(err); ok && e.IsExcludedHTTPStatus(status) {
-		return OutcomeNeutral
-	}
-	return OutcomeTargetFailure
-}
-
-// ClassifyHTTPStatus maps a response HTTP status to an Outcome.
-// Client-canceled request context is Neutral. Excluded statuses are Neutral.
-// Other 4xx/5xx statuses are TargetFailure. Statuses below 400 are Success.
-// A nil Entry has no whitelist.
-func (e *Entry) ClassifyHTTPStatus(req *octollm.Request, status int) Outcome {
-	if isClientCanceled(req) {
-		return OutcomeNeutral
-	}
-	if e.IsExcludedHTTPStatus(status) {
-		return OutcomeNeutral
-	}
-	if status >= 400 {
-		return OutcomeTargetFailure
-	}
-	return OutcomeSuccess
-}
-
-// isClientCanceled reports whether the request context was canceled by the
-// client. DeadlineExceeded is not treated as cancel.
-func isClientCanceled(req *octollm.Request) bool {
-	if req == nil {
-		return false
-	}
-	ctx := req.Context()
-	if ctx == nil {
-		return false
-	}
-	return errors.Is(ctx.Err(), context.Canceled)
-}
-
-// ExtractHTTPStatus walks the error chain for a positive HTTP status.
-// Order: UpstreamRespError, UpstreamHTTPError, HandlerError.
-func ExtractHTTPStatus(err error) (int, bool) {
-	if err == nil {
-		return 0, false
-	}
-	var respErr *errutils.UpstreamRespError
-	if errors.As(err, &respErr) && respErr.StatusCode > 0 {
-		return respErr.StatusCode, true
-	}
-	var httpErr *errutils.UpstreamHTTPError
-	if errors.As(err, &httpErr) && httpErr.StatusCode > 0 {
-		return httpErr.StatusCode, true
-	}
-	var handlerErr *errutils.HandlerError
-	if errors.As(err, &handlerErr) && handlerErr.StatusCode > 0 {
-		return handlerErr.StatusCode, true
-	}
-	return 0, false
 }
 
 // pruneSamples drops samples strictly before cutoff and keeps the rest in

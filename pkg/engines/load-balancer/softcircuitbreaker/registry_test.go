@@ -2,7 +2,6 @@ package softcircuitbreaker
 
 import (
 	"context"
-	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -46,6 +45,35 @@ func TestRegistry_NilPolicyUsesRegistryPolicy(t *testing.T) {
 	assert.Same(t, entry, mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil))
 }
 
+func TestRegistry_NilPolicyRebuildsCustomEntryWithRegistryPolicy(t *testing.T) {
+	defaultPolicy := testPolicy()
+	defaultPolicy.DegradedTraffic.MaxRequests = 7
+	customPolicy := testPolicy()
+	customPolicy.Failure.MinRequests = 1
+	customPolicy.Failure.Rate = 1
+	customPolicy.DegradedTraffic.MaxRequests = 3
+	reg := mustRegistry(t, defaultPolicy)
+	key := BreakerKey{ModelName: "m", BackendName: "a"}
+
+	entry := mustGetOrCreate(t, reg, key, &customPolicy)
+	entry.complete(context.Background(), 0, OutcomeTargetFailure, time.Unix(0, 0))
+	require.Equal(t, ModeDegraded, entry.Mode())
+
+	rebuilt := mustGetOrCreate(t, reg, key, nil)
+	assert.NotSame(t, entry, rebuilt)
+	assert.Equal(t, defaultPolicy, rebuilt.Policy())
+	assert.Equal(t, ModeNormal, rebuilt.Mode())
+}
+
+func TestRegistry_NilPolicyReusesEntryWithRegistryPolicy(t *testing.T) {
+	defaultPolicy := testPolicy()
+	reg := mustRegistry(t, defaultPolicy)
+	key := BreakerKey{ModelName: "m", BackendName: "a"}
+
+	entry := mustGetOrCreate(t, reg, key, &defaultPolicy)
+	assert.Same(t, entry, mustGetOrCreate(t, reg, key, nil))
+}
+
 func TestRegistry_NilIsDisabled(t *testing.T) {
 	var reg *Registry
 	p := testPolicy()
@@ -80,25 +108,19 @@ func TestRegistry_PolicyIsPerKey(t *testing.T) {
 		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
 		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
 		TrafficRule{Window: time.Second, MaxRequests: 1},
-		[]int{http.StatusTooManyRequests},
 	)
 	require.NoError(t, err)
 	lenient, err := NewPolicy(
 		RateRule{Window: time.Minute, MinRequests: 20, Rate: 0.9},
 		RateRule{Window: time.Minute, MinRequests: 10, Rate: 0.5},
 		TrafficRule{Window: time.Second, MaxRequests: 5},
-		[]int{http.StatusRequestEntityTooLarge, http.StatusTooManyRequests},
 	)
 	require.NoError(t, err)
 
 	a := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, &strict)
 	b := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "b"}, &lenient)
 
-	assert.True(t, a.IsExcludedHTTPStatus(http.StatusTooManyRequests))
-	assert.False(t, a.IsExcludedHTTPStatus(http.StatusRequestEntityTooLarge))
 	assert.Equal(t, 1, a.Policy().DegradedTraffic.MaxRequests)
-
-	assert.True(t, b.IsExcludedHTTPStatus(http.StatusRequestEntityTooLarge))
 	assert.Equal(t, 5, b.Policy().DegradedTraffic.MaxRequests)
 }
 
@@ -109,14 +131,12 @@ func TestRegistry_GetOrCreateRebuildsWhenPolicyDiffers(t *testing.T) {
 		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
 		RateRule{Window: time.Second, MinRequests: 100, Rate: 1},
 		TrafficRule{Window: time.Minute, MaxRequests: 1},
-		nil,
 	)
 	require.NoError(t, err)
 	second, err := NewPolicy(
 		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
 		RateRule{Window: time.Second, MinRequests: 100, Rate: 1},
 		TrafficRule{Window: time.Minute, MaxRequests: 100},
-		[]int{http.StatusTooManyRequests},
 	)
 	require.NoError(t, err)
 
@@ -129,7 +149,6 @@ func TestRegistry_GetOrCreateRebuildsWhenPolicyDiffers(t *testing.T) {
 	assert.NotSame(t, entry, rebuilt)
 	assert.Equal(t, ModeNormal, rebuilt.Mode())
 	assert.Equal(t, 100, rebuilt.Policy().DegradedTraffic.MaxRequests)
-	assert.True(t, rebuilt.IsExcludedHTTPStatus(http.StatusTooManyRequests))
 }
 
 func TestRegistry_GetOrCreateSamePolicyReturnsCache(t *testing.T) {
@@ -138,7 +157,6 @@ func TestRegistry_GetOrCreateSamePolicyReturnsCache(t *testing.T) {
 	p := testPolicy()
 	first := mustGetOrCreate(t, reg, key, &p)
 	copy := p
-	copy.ExcludedHTTPStatusCodes = map[int]struct{}{}
 	again := mustGetOrCreate(t, reg, key, &copy)
 	assert.Same(t, first, again)
 }
@@ -159,7 +177,6 @@ func TestRegistry_InvalidRebuildKeepsOldEntry(t *testing.T) {
 		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
 		RateRule{Window: time.Second, MinRequests: 100, Rate: 1},
 		TrafficRule{Window: time.Minute, MaxRequests: 1},
-		nil,
 	)
 	require.NoError(t, err)
 	reg := mustRegistry(t, p)
@@ -174,16 +191,16 @@ func TestRegistry_InvalidRebuildKeepsOldEntry(t *testing.T) {
 	assert.Equal(t, ModeDegraded, again.Mode())
 }
 
-func TestRegistry_CallerMapMutationDoesNotAffectEntry(t *testing.T) {
+func TestRegistry_CallerMutationDoesNotAffectEntry(t *testing.T) {
 	p := testPolicy()
-	p.ExcludedHTTPStatusCodes[http.StatusBadGateway] = struct{}{}
+	p.DegradedTraffic.MaxRequests = 7
 	entry := mustGetOrCreate(t, mustRegistry(t, p), BreakerKey{ModelName: "m", BackendName: "a"}, &p)
-	assert.True(t, entry.IsExcludedHTTPStatus(http.StatusBadGateway))
+	assert.Equal(t, 7, entry.Policy().DegradedTraffic.MaxRequests)
 
-	delete(p.ExcludedHTTPStatusCodes, http.StatusBadGateway)
-	assert.True(t, entry.IsExcludedHTTPStatus(http.StatusBadGateway))
+	p.DegradedTraffic.MaxRequests = 99
+	assert.Equal(t, 7, entry.Policy().DegradedTraffic.MaxRequests)
 
 	copied := entry.Policy()
-	copied.ExcludedHTTPStatusCodes[http.StatusInternalServerError] = struct{}{}
-	assert.False(t, entry.IsExcludedHTTPStatus(http.StatusInternalServerError))
+	copied.DegradedTraffic.MaxRequests = 1
+	assert.Equal(t, 7, entry.Policy().DegradedTraffic.MaxRequests)
 }

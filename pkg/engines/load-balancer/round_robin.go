@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -68,6 +69,30 @@ func isNotRetriableError(err error) bool {
 	var upstreamErr *errutils.UpstreamRespError
 	if errors.As(err, &upstreamErr) {
 		if upstreamErr.StatusCode == http.StatusRequestEntityTooLarge {
+			return true
+		}
+	}
+	return false
+}
+
+// isIgnoredAttemptError reports errors that are not recorded as backend
+// failures: client cancellation, upstream HTTP 413/429, and gateway HandlerError
+// 413/429 (service/rule concurrency). Failover still uses isNotRetriableError.
+func isIgnoredAttemptError(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	var upstreamErr *errutils.UpstreamRespError
+	if errors.As(err, &upstreamErr) {
+		switch upstreamErr.StatusCode {
+		case http.StatusRequestEntityTooLarge, http.StatusTooManyRequests:
+			return true
+		}
+	}
+	var handlerErr *errutils.HandlerError
+	if errors.As(err, &handlerErr) && handlerErr != nil {
+		switch handlerErr.StatusCode {
+		case http.StatusRequestEntityTooLarge, http.StatusTooManyRequests:
 			return true
 		}
 	}

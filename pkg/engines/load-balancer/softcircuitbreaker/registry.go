@@ -28,36 +28,35 @@ func NewRegistry(policy Policy) (*Registry, error) {
 	}
 	return &Registry{
 		entries: make(map[BreakerKey]*Entry),
-		policy:  clonePolicy(normalized),
+		policy:  normalized,
 	}, nil
 }
 
 // GetOrCreate returns the entry for key.
 //
-//   - policy == nil: create with the Registry default policy; if the key exists, return the cache.
-//   - policy != nil and Same as the cached entry: return the cache.
-//   - policy != nil and not Same: replace the entry (windows restart in NORMAL).
+//   - policy == nil: resolve to the Registry default policy.
+//   - resolved policy equal to the cached entry: return the cache.
+//   - resolved policy not equal: replace the entry (windows restart in NORMAL).
 //   - policy is invalid and the key already exists: log, keep the cached entry, and return it.
 func (r *Registry) GetOrCreate(key BreakerKey, policy *Policy) (*Entry, error) {
 	if r == nil {
 		return nil, nil
 	}
+	resolved, err := r.resolvePolicy(policy)
 
 	r.mu.RLock()
 	entry, ok := r.entries[key]
 	r.mu.RUnlock()
-	if ok && (policy == nil || entry.policy.Same(*policy)) {
+	if err == nil && ok && entry.policy == resolved {
 		return entry, nil
 	}
-
-	resolved, err := r.resolvePolicy(policy)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	// Double-check after the write lock: another goroutine may have created or
-	// replaced this key between RUnlock and Lock. Reuse it when policy is nil
-	// (registry default) or Same as the cached entry.
-	if entry, ok = r.entries[key]; ok && (policy == nil || entry.policy.Same(*policy)) {
+	// replaced this key between RUnlock and Lock. Reuse it when its policy is
+	// equal to the resolved policy.
+	if entry, ok = r.entries[key]; err == nil && ok && entry.policy == resolved {
 		return entry, nil
 	}
 	if err != nil {
@@ -73,7 +72,7 @@ func (r *Registry) GetOrCreate(key BreakerKey, policy *Policy) (*Entry, error) {
 	}
 	entry = &Entry{
 		key:    key,
-		policy: clonePolicy(resolved),
+		policy: resolved,
 		mode:   ModeNormal,
 	}
 	r.entries[key] = entry

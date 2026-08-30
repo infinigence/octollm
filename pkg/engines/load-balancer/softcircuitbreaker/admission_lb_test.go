@@ -3,7 +3,7 @@ package softcircuitbreaker
 import (
 	"errors"
 	"fmt"
-	"io"
+	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	loadbalancer "github.com/infinigence/octollm/pkg/engines/load-balancer"
+	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
@@ -60,28 +61,27 @@ func denyAfterOneFailurePolicy(t *testing.T) Policy {
 		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
 		RateRule{Window: time.Minute, MinRequests: 100, Rate: 1},
 		TrafficRule{Window: time.Minute, MaxRequests: 1},
-		nil,
 	)
 	require.NoError(t, err)
 	return policy
 }
 
-func exhaustBackend(t *testing.T, hook *Hook, backendName string) {
+func exhaustBackend(t *testing.T, hook *Admission, backendName string) {
 	t.Helper()
 	req := testhelper.CreateTestRequest()
 	done, allowed := hook.BeforeAttempt(req, backendName)
 	require.True(t, allowed)
-	done(nil, io.EOF)
+	done(false)
 
 	req = testhelper.CreateTestRequest()
 	done, allowed = hook.BeforeAttempt(req, backendName)
 	require.True(t, allowed)
-	done(&octollm.Response{StatusCode: 200}, nil)
+	done(true)
 }
 
-func TestHook_WRR_DeniedBackendIsNotInvoked(t *testing.T) {
+func TestAdmission_WRR_DeniedBackendIsNotInvoked(t *testing.T) {
 	reg := mustRegistry(t, denyAfterOneFailurePolicy(t))
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 	exhaustBackend(t, hook, "A")
 
 	engineA := &countingEngine{err: errors.New("should not be called")}
@@ -102,9 +102,9 @@ func TestHook_WRR_DeniedBackendIsNotInvoked(t *testing.T) {
 	assert.Equal(t, int32(1), engineB.calls.Load())
 }
 
-func TestHook_WRR_AllDeniedReturnsSentinel(t *testing.T) {
+func TestAdmission_WRR_AllDeniedReturnsSentinel(t *testing.T) {
 	reg := mustRegistry(t, denyAfterOneFailurePolicy(t))
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 	exhaustBackend(t, hook, "A")
 	exhaustBackend(t, hook, "B")
 
@@ -126,9 +126,9 @@ func TestHook_WRR_AllDeniedReturnsSentinel(t *testing.T) {
 	assert.Equal(t, int32(0), engineB.calls.Load())
 }
 
-func TestHook_WRR_PreservesRealErrorWhenRemainingDenied(t *testing.T) {
+func TestAdmission_WRR_PreservesRealErrorWhenRemainingDenied(t *testing.T) {
 	reg := mustRegistry(t, denyAfterOneFailurePolicy(t))
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 	exhaustBackend(t, hook, "B")
 
 	upstream := errors.New("upstream boom")
@@ -151,9 +151,9 @@ func TestHook_WRR_PreservesRealErrorWhenRemainingDenied(t *testing.T) {
 	assert.Equal(t, int32(0), engineB.calls.Load())
 }
 
-func TestHook_Concurrency_DeniedBackendIsNotInvoked(t *testing.T) {
+func TestAdmission_Concurrency_DeniedBackendIsNotInvoked(t *testing.T) {
 	reg := mustRegistry(t, denyAfterOneFailurePolicy(t))
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 	exhaustBackend(t, hook, "A")
 
 	engineA := &countingEngine{err: errors.New("should not be called")}
@@ -176,9 +176,9 @@ func TestHook_Concurrency_DeniedBackendIsNotInvoked(t *testing.T) {
 	assert.Equal(t, int32(1), engineB.calls.Load())
 }
 
-func TestHook_Concurrency_AllDeniedReturnsSentinel(t *testing.T) {
+func TestAdmission_Concurrency_AllDeniedReturnsSentinel(t *testing.T) {
 	reg := mustRegistry(t, denyAfterOneFailurePolicy(t))
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 	exhaustBackend(t, hook, "A")
 	exhaustBackend(t, hook, "B")
 
@@ -198,6 +198,31 @@ func TestHook_Concurrency_AllDeniedReturnsSentinel(t *testing.T) {
 	assert.Nil(t, resp)
 	assert.Equal(t, int32(0), engineA.calls.Load())
 	assert.Equal(t, int32(0), engineB.calls.Load())
+}
+
+func TestAdmission_WRR_ExcludedHTTPStatusIsNotRecorded(t *testing.T) {
+	policy, err := NewPolicy(
+		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
+		RateRule{Window: time.Minute, MinRequests: 100, Rate: 1},
+		TrafficRule{Window: time.Minute, MaxRequests: 1},
+	)
+	require.NoError(t, err)
+	reg := mustRegistry(t, policy)
+	hook := NewAdmission(reg, "m", &policy)
+
+	engine := &countingEngine{err: &errutils.UpstreamRespError{StatusCode: http.StatusTooManyRequests}}
+	lb, err := loadbalancer.NewShardKeyWeightedRoundRobin(
+		[]loadbalancer.BackendItem{{Name: "A", Weight: 1, Engine: engine}},
+		time.Second, 3, nil, hook,
+	)
+	require.NoError(t, err)
+
+	_, err = lb.Process(testhelper.CreateTestRequest())
+	require.Error(t, err)
+
+	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "A"}, nil)
+	assert.Equal(t, ModeNormal, entry.Mode())
+	assert.Empty(t, entry.normalSamples)
 }
 
 func newHookLBRedis(t *testing.T) *redis.Client {

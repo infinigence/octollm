@@ -3,7 +3,6 @@ package softcircuitbreaker
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,69 +12,68 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/infinigence/octollm/pkg/engines/client"
-	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
-func TestHook_NilRegistryAllows(t *testing.T) {
-	hook := NewHook(nil, "m", nil)
+func TestAdmission_NilRegistryAllows(t *testing.T) {
+	hook := NewAdmission(nil, "m", nil)
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	assert.True(t, allowed)
 	assert.Nil(t, done)
 }
 
-func TestHook_NilReceiverAllows(t *testing.T) {
-	var hook *Hook
+func TestAdmission_NilReceiverAllows(t *testing.T) {
+	var hook *Admission
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	assert.True(t, allowed)
 	assert.Nil(t, done)
 }
 
-func TestHook_DenyWhenDegradedQuotaExceeded(t *testing.T) {
+func TestAdmission_DenyWhenDegradedQuotaExceeded(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 1
 	policy.Failure.Rate = 1
 	policy.Recovery.MinRequests = 100
 	policy.DegradedTraffic.MaxRequests = 1
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 	req := testhelper.CreateTestRequest()
 
 	done, allowed := hook.BeforeAttempt(req, "a")
 	require.True(t, allowed)
-	done(nil, io.EOF)
+	done(false)
 
 	done, allowed = hook.BeforeAttempt(req, "a")
 	require.True(t, allowed, "first degraded admit consumes the only quota slot")
-	done(&octollm.Response{StatusCode: 200, Body: req.Body}, nil)
+	done(true)
 	require.NoError(t, req.Body.Close())
 
 	_, allowed = hook.BeforeAttempt(req, "a")
 	assert.False(t, allowed, "quota is consumed on admit and is not returned on success")
 }
 
-func TestHook_SyncErrorClassifiesImmediately(t *testing.T) {
+func TestAdmission_SyncErrorClassifiesImmediately(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 1
 	policy.Failure.Rate = 1
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(nil, &errutils.UpstreamRespError{StatusCode: 502})
+	done(false)
 
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
 	assert.Equal(t, ModeDegraded, entry.Mode())
 }
 
-func TestHook_StreamCloseUsesClientProcessStreamError(t *testing.T) {
+func TestAdmission_StreamProcessSuccessIsNotReclassifiedOnClose(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 1
 	policy.Failure.Rate = 1
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -103,7 +101,7 @@ func TestHook_StreamCloseUsesClientProcessStreamError(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	require.NotNil(t, resp.Stream)
-	done(resp, err)
+	done(err == nil)
 
 	for range resp.Stream.Chan() {
 	}
@@ -114,24 +112,25 @@ func TestHook_StreamCloseUsesClientProcessStreamError(t *testing.T) {
 	require.Error(t, streamErr)
 
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
-	assert.Equal(t, ModeDegraded, entry.Mode())
+	assert.Equal(t, ModeNormal, entry.Mode(), "stream close errors are not observed; Process err == nil is success")
+	require.Len(t, entry.normalSamples, 1)
+	assert.True(t, entry.normalSamples[0].success)
 }
 
-func TestHook_CleanStreamCloseIsSuccess(t *testing.T) {
+func TestAdmission_CleanStreamCloseIsSuccess(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 1
 	policy.Failure.Rate = 1
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	ch := make(chan *octollm.StreamChunk)
 	close(ch)
 	stream := octollm.NewStreamChan(ch, nil)
-	resp := &octollm.Response{StatusCode: 200, Stream: stream}
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(resp, nil)
+	done(true)
 	stream.Close()
 
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
@@ -140,12 +139,12 @@ func TestHook_CleanStreamCloseIsSuccess(t *testing.T) {
 	assert.True(t, entry.normalSamples[0].success)
 }
 
-func TestHook_CanceledStreamIsNeutral(t *testing.T) {
+func TestAdmission_CanceledStreamIsSuccess(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 1
 	policy.Failure.Rate = 1
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -154,129 +153,116 @@ func TestHook_CanceledStreamIsNeutral(t *testing.T) {
 	ch := make(chan *octollm.StreamChunk)
 	close(ch)
 	stream := octollm.NewStreamChan(ch, nil)
-	resp := &octollm.Response{StatusCode: 200, Stream: stream}
 
 	done, allowed := hook.BeforeAttempt(req, "a")
 	require.True(t, allowed)
-	done(resp, nil)
+	done(true)
 	stream.Close()
 
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
 	assert.Equal(t, ModeNormal, entry.Mode())
-	assert.Empty(t, entry.normalSamples)
+	require.Len(t, entry.normalSamples, 1)
+	assert.True(t, entry.normalSamples[0].success)
 }
 
-func TestHook_NilRespIsTargetFailure(t *testing.T) {
+func TestAdmission_NilRespIsSuccess(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 1
 	policy.Failure.Rate = 1
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(nil, nil)
+	done(true)
 
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
-	assert.Equal(t, ModeDegraded, entry.Mode())
+	assert.Equal(t, ModeNormal, entry.Mode())
+	require.Len(t, entry.normalSamples, 1)
+	assert.True(t, entry.normalSamples[0].success)
 }
 
-func TestHook_NilRespLogsInvalidResponseAndTargetFailure(t *testing.T) {
+func TestAdmission_SyncErrorLogsTargetFailure(t *testing.T) {
 	logs := installLogCapture(t)
 	policy := testPolicy()
 	policy.Failure.MinRequests = 20
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(nil, nil)
-
-	assert.Equal(t, 1, logs.count("soft_circuit_breaker_invalid_response"))
-	assert.Equal(t, 1, logs.count("soft_circuit_breaker_target_failure"))
-}
-
-func TestHook_SyncErrorLogsTargetFailure(t *testing.T) {
-	logs := installLogCapture(t)
-	policy := testPolicy()
-	policy.Failure.MinRequests = 20
-	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
-
-	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
-	require.True(t, allowed)
-	done(nil, &errutils.UpstreamRespError{StatusCode: 502})
+	done(false)
 
 	assert.Equal(t, 0, logs.count("soft_circuit_breaker_invalid_response"))
 	assert.Equal(t, 1, logs.count("soft_circuit_breaker_target_failure"))
 }
 
-func TestHook_HTTPStatusWithoutErrorUsesWhitelist(t *testing.T) {
+func TestAdmission_HTTPStatusWithoutErrorIsSuccess(t *testing.T) {
 	policy, err := NewPolicy(
 		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
 		RateRule{Window: time.Minute, MinRequests: 100, Rate: 1},
 		TrafficRule{Window: time.Minute, MaxRequests: 1},
-		[]int{http.StatusTooManyRequests},
 	)
 	require.NoError(t, err)
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(&octollm.Response{StatusCode: http.StatusTooManyRequests}, nil)
+	done(true)
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
 	assert.Equal(t, ModeNormal, entry.Mode())
-	assert.Empty(t, entry.normalSamples)
+	require.Len(t, entry.normalSamples, 1)
+	assert.True(t, entry.normalSamples[0].success)
 
 	done, allowed = hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(&octollm.Response{StatusCode: http.StatusBadGateway}, nil)
-	assert.Equal(t, ModeDegraded, entry.Mode())
+	done(true)
+	assert.Equal(t, ModeNormal, entry.Mode(), "HTTP status on resp is ignored when Process err is nil")
+	assert.Len(t, entry.normalSamples, 2)
 }
 
-func TestHook_ExcludedUpstreamErrorIsNeutral(t *testing.T) {
+func TestAdmission_DoneFalseIsFailureWithoutWhitelist(t *testing.T) {
 	policy, err := NewPolicy(
 		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
 		RateRule{Window: time.Minute, MinRequests: 100, Rate: 1},
 		TrafficRule{Window: time.Minute, MaxRequests: 1},
-		[]int{http.StatusTooManyRequests},
 	)
 	require.NoError(t, err)
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(nil, &errutils.UpstreamRespError{StatusCode: http.StatusTooManyRequests})
+	done(false)
 
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
-	assert.Equal(t, ModeNormal, entry.Mode())
-	assert.Empty(t, entry.normalSamples)
+	assert.Equal(t, ModeDegraded, entry.Mode(), "Admission records ok only; 413/429 skip is applied at the load balancer")
 }
 
-func TestHook_Empty200IsNeutral(t *testing.T) {
+func TestAdmission_Empty200IsSuccess(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 1
 	policy.Failure.Rate = 1
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(&octollm.Response{StatusCode: 200}, nil)
+	done(true)
 
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
 	assert.Equal(t, ModeNormal, entry.Mode())
-	assert.Empty(t, entry.normalSamples)
+	require.Len(t, entry.normalSamples, 1)
+	assert.True(t, entry.normalSamples[0].success)
 }
 
-func TestHook_CanceledBodyIsNeutral(t *testing.T) {
+func TestAdmission_CanceledBodyIsSuccess(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 1
 	policy.Failure.Rate = 1
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -284,28 +270,28 @@ func TestHook_CanceledBodyIsNeutral(t *testing.T) {
 
 	done, allowed := hook.BeforeAttempt(req, "a")
 	require.True(t, allowed)
-	done(&octollm.Response{StatusCode: 200, Body: req.Body}, nil)
+	done(true)
 	require.NoError(t, req.Body.Close())
 
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
 	assert.Equal(t, ModeNormal, entry.Mode())
-	assert.Empty(t, entry.normalSamples)
+	require.Len(t, entry.normalSamples, 1)
+	assert.True(t, entry.normalSamples[0].success)
 }
 
-func TestHook_StreamCloseIsIdempotent(t *testing.T) {
+func TestAdmission_StreamCloseIsIdempotent(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 20
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	ch := make(chan *octollm.StreamChunk)
 	close(ch)
 	stream := octollm.NewStreamChan(ch, nil)
-	resp := &octollm.Response{StatusCode: 200, Stream: stream}
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(resp, nil)
+	done(true)
 	stream.Close()
 	stream.Close()
 
@@ -314,17 +300,16 @@ func TestHook_StreamCloseIsIdempotent(t *testing.T) {
 	assert.True(t, entry.normalSamples[0].success)
 }
 
-func TestHook_BodyCloseIsIdempotent(t *testing.T) {
+func TestAdmission_BodyCloseIsIdempotent(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 20
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 	req := testhelper.CreateTestRequest()
 
 	done, allowed := hook.BeforeAttempt(req, "a")
 	require.True(t, allowed)
-	resp := &octollm.Response{StatusCode: 200, Body: req.Body}
-	done(resp, nil)
+	done(true)
 	require.NoError(t, req.Body.Close())
 	require.NoError(t, req.Body.Close())
 
@@ -332,40 +317,39 @@ func TestHook_BodyCloseIsIdempotent(t *testing.T) {
 	assert.Len(t, entry.normalSamples, 1)
 }
 
-func TestHook_SuccessRecoversFromDegraded(t *testing.T) {
+func TestAdmission_SuccessRecoversFromDegraded(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 1
 	policy.Failure.Rate = 1
 	policy.Recovery.MinRequests = 1
 	policy.Recovery.Rate = 1
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(nil, io.EOF)
+	done(false)
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
 	require.Equal(t, ModeDegraded, entry.Mode())
 
 	req := testhelper.CreateTestRequest()
 	done, allowed = hook.BeforeAttempt(req, "a")
 	require.True(t, allowed)
-	done(&octollm.Response{StatusCode: 200, Body: req.Body}, nil)
+	done(true)
 	require.NoError(t, req.Body.Close())
 	assert.Equal(t, ModeNormal, entry.Mode())
 }
 
-func TestHook_BodyCloseSuccess(t *testing.T) {
+func TestAdmission_BodyCloseSuccess(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 20
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", nil)
+	hook := NewAdmission(reg, "m", nil)
 	req := testhelper.CreateTestRequest()
 
 	done, allowed := hook.BeforeAttempt(req, "a")
 	require.True(t, allowed)
-	resp := &octollm.Response{StatusCode: 200, Body: req.Body}
-	done(resp, nil)
+	done(true)
 	require.NoError(t, req.Body.Close())
 
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
@@ -373,7 +357,7 @@ func TestHook_BodyCloseSuccess(t *testing.T) {
 	assert.True(t, entry.normalSamples[0].success)
 }
 
-func TestHook_InjectedPolicyIsUsedInsteadOfRegistryDefault(t *testing.T) {
+func TestAdmission_InjectedPolicyIsUsedInsteadOfRegistryDefault(t *testing.T) {
 	defaultPolicy := testPolicy()
 	defaultPolicy.Failure.MinRequests = 100
 	defaultPolicy.Failure.Rate = 1
@@ -383,83 +367,80 @@ func TestHook_InjectedPolicyIsUsedInsteadOfRegistryDefault(t *testing.T) {
 		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
 		RateRule{Window: time.Minute, MinRequests: 100, Rate: 1},
 		TrafficRule{Window: time.Minute, MaxRequests: 1},
-		nil,
 	)
 	require.NoError(t, err)
-	hook := NewHook(reg, "m", &strict)
+	hook := NewAdmission(reg, "m", &strict)
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(nil, io.EOF)
+	done(false)
 
-	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
+	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, &strict)
 	assert.Equal(t, ModeDegraded, entry.Mode())
 	assert.Equal(t, 1, entry.Policy().Failure.MinRequests)
 }
 
-func TestHook_PolicyChangeRebuildsEntry(t *testing.T) {
+func TestAdmission_PolicyChangeRebuildsEntry(t *testing.T) {
 	first, err := NewPolicy(
 		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
 		RateRule{Window: time.Minute, MinRequests: 100, Rate: 1},
 		TrafficRule{Window: time.Minute, MaxRequests: 1},
-		nil,
 	)
 	require.NoError(t, err)
 	second, err := NewPolicy(
 		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
 		RateRule{Window: time.Minute, MinRequests: 100, Rate: 1},
 		TrafficRule{Window: time.Minute, MaxRequests: 100},
-		nil,
 	)
 	require.NoError(t, err)
 	reg := mustRegistry(t, first)
 
-	hook := NewHook(reg, "m", &first)
+	hook := NewAdmission(reg, "m", &first)
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(nil, io.EOF)
+	done(false)
 	done, allowed = hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed, "first degraded admit consumes the only quota slot")
-	done(nil, io.EOF)
+	done(false)
 	_, allowed = hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.False(t, allowed)
 
-	reloaded := NewHook(reg, "m", &second)
+	reloaded := NewAdmission(reg, "m", &second)
 	done, allowed = reloaded.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed, "rebuilt entry starts in NORMAL and admits")
-	done(nil, io.EOF)
-	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
+	done(false)
+	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, &second)
 	assert.Equal(t, 100, entry.Policy().DegradedTraffic.MaxRequests)
 }
 
-func TestHook_InvalidPolicyKeepsOldEntryAndRecords(t *testing.T) {
+func TestAdmission_InvalidPolicyKeepsOldEntryAndRecords(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 1
 	policy.Failure.Rate = 1
 	policy.Recovery.MinRequests = 100
 	policy.DegradedTraffic.MaxRequests = 1
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", &policy)
+	hook := NewAdmission(reg, "m", &policy)
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(nil, io.EOF)
+	done(false)
 	done, allowed = hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed, "first degraded admit consumes the only quota slot")
-	done(nil, io.EOF)
+	done(false)
 	_, allowed = hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.False(t, allowed)
 
-	broken := NewHook(reg, "m", &Policy{})
+	broken := NewAdmission(reg, "m", &Policy{})
 	_, allowed = broken.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	assert.False(t, allowed, "invalid policy must keep the degraded entry and still deny")
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
 	assert.Equal(t, ModeDegraded, entry.Mode())
 }
 
-func TestHook_InvalidPolicyWithoutEntryAllows(t *testing.T) {
+func TestAdmission_InvalidPolicyWithoutEntryAllows(t *testing.T) {
 	reg := mustRegistry(t, testPolicy())
-	hook := NewHook(reg, "m", &Policy{})
+	hook := NewAdmission(reg, "m", &Policy{})
 	key := BreakerKey{ModelName: "m", BackendName: "a"}
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
@@ -469,30 +450,28 @@ func TestHook_InvalidPolicyWithoutEntryAllows(t *testing.T) {
 	assert.False(t, exists, "fail-open must not create an entry")
 }
 
-func TestHook_CallerPolicyMutationDoesNotAffectHook(t *testing.T) {
+func TestAdmission_CallerPolicyMutationDoesNotAffectAdmission(t *testing.T) {
 	policy := testPolicy()
 	policy.Failure.MinRequests = 1
 	policy.Failure.Rate = 1
 	policy.Recovery.MinRequests = 100
 	policy.DegradedTraffic.MaxRequests = 1
 	reg := mustRegistry(t, policy)
-	hook := NewHook(reg, "m", &policy)
+	hook := NewAdmission(reg, "m", &policy)
 
 	done, allowed := hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(nil, io.EOF)
+	done(false)
 	done, allowed = hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.True(t, allowed)
-	done(nil, io.EOF)
+	done(false)
 	_, allowed = hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	require.False(t, allowed)
 
 	policy.DegradedTraffic.MaxRequests = 100
-	policy.ExcludedHTTPStatusCodes[http.StatusBadGateway] = struct{}{}
 
 	_, allowed = hook.BeforeAttempt(testhelper.CreateTestRequest(), "a")
 	assert.False(t, allowed, "cloned hook policy must keep the degraded quota")
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
 	assert.Equal(t, 1, entry.Policy().DegradedTraffic.MaxRequests)
-	assert.False(t, entry.IsExcludedHTTPStatus(http.StatusBadGateway))
 }
