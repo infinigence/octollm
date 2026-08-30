@@ -50,13 +50,13 @@ func (pb *prioritizedBackend) isStrongCacheHit() bool {
 //   - When affinityProvider is nil: selects the backend with the lowest
 //     currentConcurrency/maxConcurrency ratio via Redis ZCard.
 type ShardKeyConcurrency struct {
-	backends           []*concurrencyBackend
-	affinityProvider   AffinityProvider
-	redisClient        *redis.Client
-	concurrencyKeyFn   func(req *octollm.Request, backendName string) string
-	retryTimeout       time.Duration
-	retryMaxCount      int
-	backendAttemptHook BackendAttemptHook
+	backends         []*concurrencyBackend
+	affinityProvider AffinityProvider
+	redisClient      *redis.Client
+	concurrencyKeyFn func(req *octollm.Request, backendName string) string
+	retryTimeout     time.Duration
+	retryMaxCount    int
+	backendAdmission BackendAdmission
 }
 
 var _ octollm.Engine = (*ShardKeyConcurrency)(nil)
@@ -69,7 +69,7 @@ var _ octollm.Engine = (*ShardKeyConcurrency)(nil)
 // disables backend affinity. redisClient and concurrencyKeyFn are required for selection;
 // concurrencyKeyFn must return the Redis ZSET key whose cardinality represents the backend's
 // current concurrency. The per-backend cache-miss ceiling is configured through
-// BackendItem.CacheMissMaxUtilization. A nil backendAttemptHook skips admission checks
+// BackendItem.CacheMissMaxUtilization. A nil backendAdmission skips admission checks
 // and preserves current balancer behavior.
 func NewShardKeyConcurrency(
 	backends []BackendItem,
@@ -78,7 +78,7 @@ func NewShardKeyConcurrency(
 	affinityProvider AffinityProvider,
 	redisClient *redis.Client,
 	concurrencyKeyFn func(req *octollm.Request, backendName string) string,
-	backendAttemptHook BackendAttemptHook,
+	backendAdmission BackendAdmission,
 ) (*ShardKeyConcurrency, error) {
 	if redisClient == nil {
 		return nil, fmt.Errorf("redisClient must be provided")
@@ -113,13 +113,13 @@ func NewShardKeyConcurrency(
 	}
 
 	return &ShardKeyConcurrency{
-		backends:           cb,
-		affinityProvider:   affinityProvider,
-		redisClient:        redisClient,
-		concurrencyKeyFn:   concurrencyKeyFn,
-		retryTimeout:       retryTimeout,
-		retryMaxCount:      retryMaxCount,
-		backendAttemptHook: backendAttemptHook,
+		backends:         cb,
+		affinityProvider: affinityProvider,
+		redisClient:      redisClient,
+		concurrencyKeyFn: concurrencyKeyFn,
+		retryTimeout:     retryTimeout,
+		retryMaxCount:    retryMaxCount,
+		backendAdmission: backendAdmission,
 	}, nil
 }
 
@@ -254,7 +254,8 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 
 	start := time.Now()
 	retryCount := 0
-	hookSkipCount := 0
+	admissionSkipCount := 0
+	headroomSkipCount := 0
 	var lastResp *octollm.Response
 	var lastErr error
 	for {
@@ -265,6 +266,9 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			pb := prioritized[prioritizedIndex]
 			b := pb.backend
 			prioritizedIndex++
+			if excludeNames[b.name] {
+				continue
+			}
 			if b.maxConcurrencyFn(req) <= 0 {
 				slog.InfoContext(req.Context(),
 					fmt.Sprintf("[ShardKey Concurrency load balancer] skip prioritized backend with no effective capacity: %s (index %d/%d)", b.name, prioritizedIndex, len(prioritized)),
@@ -281,15 +285,7 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 					slog.String("backend_name", b.name),
 				)
 				excludeNames[b.name] = true
-				if len(excludeNames) >= len(l.backends) {
-					// If every backend is now excluded, no concurrency fallback remains. On the first
-					// attempt, return ErrCacheMissHeadroom; during failover, preserve the previous error.
-					if retryCount > 0 {
-						slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] all backends over headroom on failover, returning previous error: %v", lastErr))
-						return lastResp, lastErr
-					}
-					return nil, ErrCacheMissHeadroom
-				}
+				headroomSkipCount++
 				continue
 			}
 			n, eng = b.name, b.engine
@@ -311,15 +307,7 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			// Headroom is per backend, so exclude an over-limit cache miss and try the next candidate.
 			if selected != nil && selected.headroomEnabled() && ratio > selected.cacheMissMaxUtilization {
 				excludeNames[selected.name] = true
-				if len(excludeNames) >= len(l.backends) {
-					// Exhausting all candidates is a headroom rejection. During failover, preserve
-					// the previous backend error instead of masking it with ErrCacheMissHeadroom.
-					if retryCount > 0 {
-						slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] all backends over headroom on failover, returning previous error: %v", lastErr))
-						return lastResp, lastErr
-					}
-					return nil, ErrCacheMissHeadroom
-				}
+				headroomSkipCount++
 				continue
 			}
 			slog.InfoContext(req.Context(),
@@ -329,41 +317,37 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 		}
 
 		if eng == nil {
-			// Backends with non-positive effective capacity are skipped without being added to
-			// excludeNames, so selection may return nil before every backend is explicitly excluded.
-			// During failover, preserve the previous backend error instead of masking it with a
-			// generic selection failure.
+			// selectByConcurrency may return nil before every backend is in excludeNames
+			// (non-positive capacity is skipped without being marked). Skip reasons are
+			// counted on the way here; failover keeps the previous backend error.
 			if retryCount > 0 {
 				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no backend engine available on failover, returning previous error: %v", lastErr))
 				return lastResp, lastErr
 			}
-			if hookSkipCount > 0 {
+			if admissionSkipCount > 0 {
 				return nil, ErrNoBackendPermitted
+			}
+			if headroomSkipCount > 0 {
+				return nil, ErrCacheMissHeadroom
 			}
 			return nil, fmt.Errorf("no backend engine available")
 		}
 
 		var done AttemptDoneFunc
-		if l.backendAttemptHook != nil {
+		if l.backendAdmission != nil {
 			var allowed bool
-			done, allowed = l.backendAttemptHook.BeforeAttempt(req, n)
+			done, allowed = l.backendAdmission.BeforeAttempt(req, n)
 			if !allowed {
 				excludeNames[n] = true
-				hookSkipCount++
-				if len(excludeNames) >= len(l.backends) {
-					if lastErr != nil {
-						return lastResp, lastErr
-					}
-					return nil, ErrNoBackendPermitted
-				}
+				admissionSkipCount++
 				continue
 			}
 		}
 
 		req.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(req)
-		if done != nil {
-			done(resp, err)
+		if done != nil && !isIgnoredAttemptError(err) {
+			done(err == nil)
 		}
 		if err == nil {
 			if commit != nil {

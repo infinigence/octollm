@@ -15,21 +15,21 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
-type denyNamesHook struct {
+type denyNamesAdmission struct {
 	denied    map[string]struct{}
 	mu        sync.Mutex
 	attempted []string
 	doneNames []string
 }
 
-func (h *denyNamesHook) BeforeAttempt(req *octollm.Request, backendName string) (AttemptDoneFunc, bool) {
+func (h *denyNamesAdmission) BeforeAttempt(req *octollm.Request, backendName string) (AttemptDoneFunc, bool) {
 	h.mu.Lock()
 	h.attempted = append(h.attempted, backendName)
 	h.mu.Unlock()
 	if _, ok := h.denied[backendName]; ok {
 		return nil, false
 	}
-	return func(resp *octollm.Response, err error) {
+	return func(ok bool) {
 		h.mu.Lock()
 		h.doneNames = append(h.doneNames, backendName)
 		h.mu.Unlock()
@@ -44,10 +44,10 @@ func snapshotCurrentWeights(lb *ShardKeyWeightedRoundRobin) []int {
 	return out
 }
 
-func TestShardKeyWRR_Hook_SkipDoesNotConsumeRetry(t *testing.T) {
+func TestShardKeyWRR_Admission_SkipDoesNotConsumeRetry(t *testing.T) {
 	engineA := &stubEngine{err: errors.New("should not be called")}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
-	hook := &denyNamesHook{denied: map[string]struct{}{"A": {}}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}}}
 	lb, err := NewShardKeyWeightedRoundRobin(
 		[]BackendItem{
 			{Name: "A", Weight: 10, Engine: engineA},
@@ -70,10 +70,10 @@ func TestShardKeyWRR_Hook_SkipDoesNotConsumeRetry(t *testing.T) {
 	assert.Equal(t, []string{"B"}, hook.doneNames)
 }
 
-func TestShardKeyWRR_Hook_AllDeniedReturnsSentinel(t *testing.T) {
+func TestShardKeyWRR_Admission_AllDeniedReturnsSentinel(t *testing.T) {
 	engineA := &stubEngine{}
 	engineB := &stubEngine{}
-	hook := &denyNamesHook{denied: map[string]struct{}{"A": {}, "B": {}}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}, "B": {}}}
 	lb, err := NewShardKeyWeightedRoundRobin(
 		[]BackendItem{
 			{Name: "A", Weight: 5, Engine: engineA},
@@ -93,12 +93,12 @@ func TestShardKeyWRR_Hook_AllDeniedReturnsSentinel(t *testing.T) {
 	assert.Equal(t, before, snapshotCurrentWeights(lb))
 }
 
-func TestShardKeyWRR_Hook_PreservesRealErrorWhenRemainingDenied(t *testing.T) {
+func TestShardKeyWRR_Admission_PreservesRealErrorWhenRemainingDenied(t *testing.T) {
 	upstream := errors.New("upstream boom")
 	engineA := &stubEngine{resp: &octollm.Response{StatusCode: 502}, err: upstream}
 	engineB := &stubEngine{}
 	engineC := &stubEngine{}
-	hook := &denyNamesHook{denied: map[string]struct{}{"B": {}, "C": {}}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"B": {}, "C": {}}}
 	lb, err := NewShardKeyWeightedRoundRobin(
 		[]BackendItem{
 			{Name: "A", Weight: 100, Engine: engineA},
@@ -121,7 +121,7 @@ func TestShardKeyWRR_Hook_PreservesRealErrorWhenRemainingDenied(t *testing.T) {
 	assert.Equal(t, 0, engineC.callCount)
 }
 
-func TestShardKeyWRR_Hook_RealFailureStillConsumesRetry(t *testing.T) {
+func TestShardKeyWRR_Admission_RealFailureStillConsumesRetry(t *testing.T) {
 	engineA := &stubEngine{err: errors.New("fail a")}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	lb, err := NewShardKeyWeightedRoundRobin(
@@ -142,10 +142,10 @@ func TestShardKeyWRR_Hook_RealFailureStillConsumesRetry(t *testing.T) {
 	assert.Equal(t, 1, engineB.callCount)
 }
 
-func TestShardKeyWRR_Hook_DoneCalledOncePerRealAttempt(t *testing.T) {
+func TestShardKeyWRR_Admission_DoneCalledOncePerRealAttempt(t *testing.T) {
 	engineA := &stubEngine{err: errors.New("fail a")}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
-	hook := &denyNamesHook{denied: map[string]struct{}{}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{}}
 	lb, err := NewShardKeyWeightedRoundRobin(
 		[]BackendItem{
 			{Name: "A", Weight: 100, Engine: engineA},
@@ -162,7 +162,7 @@ func TestShardKeyWRR_Hook_DoneCalledOncePerRealAttempt(t *testing.T) {
 	assert.Equal(t, []string{"A", "B"}, hook.doneNames)
 }
 
-func TestShardKeyWRR_Hook_NilHookKeepsCurrentBehavior(t *testing.T) {
+func TestShardKeyWRR_Admission_NilAdmissionKeepsCurrentBehavior(t *testing.T) {
 	engineA := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	lb, err := NewShardKeyWeightedRoundRobin(
 		[]BackendItem{{Name: "A", Weight: 1, Engine: engineA}},
@@ -176,11 +176,11 @@ func TestShardKeyWRR_Hook_NilHookKeepsCurrentBehavior(t *testing.T) {
 	assert.Equal(t, 1, engineA.callCount)
 }
 
-func TestShardKeyWRR_Hook_RollbackRestoresAllCandidateWeights(t *testing.T) {
+func TestShardKeyWRR_Admission_RollbackRestoresAllCandidateWeights(t *testing.T) {
 	engineA := &stubEngine{}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	engineC := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
-	hook := &denyNamesHook{denied: map[string]struct{}{"A": {}}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}}}
 	lb, err := NewShardKeyWeightedRoundRobin(
 		[]BackendItem{
 			{Name: "A", Weight: 5, Engine: engineA},
@@ -205,11 +205,11 @@ func TestShardKeyWRR_Hook_RollbackRestoresAllCandidateWeights(t *testing.T) {
 	assert.NotEqual(t, beforeRemaining, afterRemaining, "remaining candidates keep the committed WRR update")
 }
 
-func TestShardKeyWRR_Hook_AffinityDenyAlsoRollsBack(t *testing.T) {
+func TestShardKeyWRR_Admission_AffinityDenyAlsoRollsBack(t *testing.T) {
 	engineA := &stubEngine{}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	engineC := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
-	hook := &denyNamesHook{denied: map[string]struct{}{"A": {}}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}}}
 	provider := affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
 		return []*PrioritizedBackend{{Name: "A", StrongCacheHit: true}}, nil, nil
 	})
@@ -233,7 +233,7 @@ func TestShardKeyWRR_Hook_AffinityDenyAlsoRollsBack(t *testing.T) {
 	assert.NotEqual(t, before[1:], snapshotCurrentWeights(lb)[1:])
 }
 
-func TestShardKeyWRR_Hook_AllowedSuccessDoesNotRollback(t *testing.T) {
+func TestShardKeyWRR_Admission_AllowedSuccessDoesNotRollback(t *testing.T) {
 	engineA := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	lb, err := NewShardKeyWeightedRoundRobin(
@@ -241,7 +241,7 @@ func TestShardKeyWRR_Hook_AllowedSuccessDoesNotRollback(t *testing.T) {
 			{Name: "A", Weight: 7, Engine: engineA},
 			{Name: "B", Weight: 3, Engine: engineB},
 		},
-		time.Second, 1, nil, &denyNamesHook{},
+		time.Second, 1, nil, &denyNamesAdmission{},
 	)
 	require.NoError(t, err)
 	lb.backends[0].currentWeight = 4
@@ -254,10 +254,10 @@ func TestShardKeyWRR_Hook_AllowedSuccessDoesNotRollback(t *testing.T) {
 	assert.NotEqual(t, before, snapshotCurrentWeights(lb))
 }
 
-func TestShardKeyWRR_Hook_FailoverAfterAllowedDoesNotRollback(t *testing.T) {
+func TestShardKeyWRR_Admission_FailoverAfterAllowedDoesNotRollback(t *testing.T) {
 	engineA := &stubEngine{err: errors.New("fail")}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
-	hook := &denyNamesHook{}
+	hook := &denyNamesAdmission{}
 	lb, err := NewShardKeyWeightedRoundRobin(
 		[]BackendItem{
 			{Name: "A", Weight: 5, Engine: engineA},
@@ -278,7 +278,7 @@ func TestShardKeyWRR_Hook_FailoverAfterAllowedDoesNotRollback(t *testing.T) {
 	assert.NotEqual(t, before[1], lb.backends[1].currentWeight)
 }
 
-func TestShardKeyWRR_Hook_RollbackRestoresWeights(t *testing.T) {
+func TestShardKeyWRR_Admission_RollbackRestoresWeights(t *testing.T) {
 	lb := &ShardKeyWeightedRoundRobin{
 		backends: []*wrrBackend{
 			{name: "A", weight: 5, engine: &stubEngine{}, currentWeight: 10},
@@ -296,18 +296,18 @@ func TestShardKeyWRR_Hook_RollbackRestoresWeights(t *testing.T) {
 	assert.Equal(t, before, snapshotCurrentWeights(lb))
 }
 
-func TestShardKeyWRR_Hook_AllZeroRollbackIsNoop(t *testing.T) {
+func TestShardKeyWRR_Admission_AllZeroRollbackIsNoop(t *testing.T) {
 	engineA := &stubEngine{}
 	engineB := &stubEngine{}
-	hook := &denyNamesHook{denied: map[string]struct{}{"A": {}, "B": {}}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}, "B": {}}}
 	lb := &ShardKeyWeightedRoundRobin{
 		backends: []*wrrBackend{
 			{name: "A", weight: 0, engine: engineA, currentWeight: 0},
 			{name: "B", weight: 0, engine: engineB, currentWeight: 0},
 		},
-		retryTimeout:       time.Second,
-		retryMaxCount:      3,
-		backendAttemptHook: hook,
+		retryTimeout:     time.Second,
+		retryMaxCount:    3,
+		backendAdmission: hook,
 	}
 	before := snapshotCurrentWeights(lb)
 
@@ -319,12 +319,12 @@ func TestShardKeyWRR_Hook_AllZeroRollbackIsNoop(t *testing.T) {
 	assert.Equal(t, before, snapshotCurrentWeights(lb))
 }
 
-func TestShardKeyWRR_Hook_NonRetriableStillCallsDone(t *testing.T) {
+func TestShardKeyWRR_Admission_IgnoredHTTPStatusDoesNotCallDone(t *testing.T) {
 	engineA := &stubEngine{
 		resp: &octollm.Response{StatusCode: 413},
 		err:  &errutils.UpstreamRespError{StatusCode: 413},
 	}
-	hook := &denyNamesHook{}
+	hook := &denyNamesAdmission{}
 	lb, err := NewShardKeyWeightedRoundRobin(
 		[]BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
@@ -340,12 +340,12 @@ func TestShardKeyWRR_Hook_NonRetriableStillCallsDone(t *testing.T) {
 	require.Error(t, err)
 	require.NotNil(t, resp)
 	assert.Equal(t, 1, engineA.callCount)
-	assert.Equal(t, []string{"A"}, hook.doneNames)
+	assert.Empty(t, hook.doneNames)
 }
 
-func TestShardKeyWRR_Hook_ConcurrentSelectRollback(t *testing.T) {
+func TestShardKeyWRR_Admission_ConcurrentSelectRollback(t *testing.T) {
 	engine := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
-	hook := &denyNamesHook{denied: map[string]struct{}{"A": {}}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}}}
 	lb, err := NewShardKeyWeightedRoundRobin(
 		[]BackendItem{
 			{Name: "A", Weight: 5, Engine: &stubEngine{}},

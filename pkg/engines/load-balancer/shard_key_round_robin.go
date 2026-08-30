@@ -18,11 +18,11 @@ import (
 type ShardKeyWeightedRoundRobin struct {
 	mu sync.Mutex
 
-	backends           []*wrrBackend
-	affinityProvider   AffinityProvider
-	retryTimeout       time.Duration
-	retryMaxCount      int
-	backendAttemptHook BackendAttemptHook
+	backends         []*wrrBackend
+	affinityProvider AffinityProvider
+	retryTimeout     time.Duration
+	retryMaxCount    int
+	backendAdmission BackendAdmission
 }
 
 var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
@@ -31,13 +31,13 @@ var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
 //
 // Negative weights are rejected. If every configured weight is zero, all backends are normalized
 // to the same positive weight. A nil affinityProvider disables affinity and uses normal WRR.
-// A nil backendAttemptHook skips admission checks and preserves current balancer behavior.
+// A nil backendAdmission skips admission checks and preserves current balancer behavior.
 func NewShardKeyWeightedRoundRobin(
 	backends []BackendItem,
 	retryTimeout time.Duration,
 	retryMaxCount int,
 	affinityProvider AffinityProvider,
-	backendAttemptHook BackendAttemptHook,
+	backendAdmission BackendAdmission,
 ) (*ShardKeyWeightedRoundRobin, error) {
 	if len(backends) == 0 {
 		return nil, fmt.Errorf("backends must have at least one item")
@@ -71,11 +71,11 @@ func NewShardKeyWeightedRoundRobin(
 	}
 
 	return &ShardKeyWeightedRoundRobin{
-		backends:           wrrBackends,
-		affinityProvider:   affinityProvider,
-		retryTimeout:       retryTimeout,
-		retryMaxCount:      retryMaxCount,
-		backendAttemptHook: backendAttemptHook,
+		backends:         wrrBackends,
+		affinityProvider: affinityProvider,
+		retryTimeout:     retryTimeout,
+		retryMaxCount:    retryMaxCount,
+		backendAdmission: backendAdmission,
 	}, nil
 }
 
@@ -128,7 +128,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 
 	start := time.Now()
 	retryCount := 0
-	hookSkipCount := 0
+	admissionSkipCount := 0
 	var lastResp *octollm.Response
 	var lastErr error
 	for {
@@ -146,7 +146,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] no backend engine available on failover, returning previous error: %v", lastErr))
 				return lastResp, lastErr
 			}
-			if hookSkipCount > 0 {
+			if admissionSkipCount > 0 {
 				return nil, ErrNoBackendPermitted
 			}
 			return nil, fmt.Errorf("no backend engine available")
@@ -165,13 +165,13 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 		}
 
 		var done AttemptDoneFunc
-		if l.backendAttemptHook != nil {
+		if l.backendAdmission != nil {
 			var allowed bool
-			done, allowed = l.backendAttemptHook.BeforeAttempt(req, n)
+			done, allowed = l.backendAdmission.BeforeAttempt(req, n)
 			if !allowed {
 				selection.Rollback()
 				excludeNames[n] = true
-				hookSkipCount++
+				admissionSkipCount++
 				if len(excludeNames) >= len(l.backends) {
 					if lastErr != nil {
 						return lastResp, lastErr
@@ -184,8 +184,8 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 
 		req.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(req)
-		if done != nil {
-			done(resp, err)
+		if done != nil && !isIgnoredAttemptError(err) {
+			done(err == nil)
 		}
 		if err == nil {
 			// Do not persist affinity for the stateless all-zero fallback; its random selection

@@ -37,10 +37,10 @@ func seedHookConcurrency(t *testing.T, rd *redis.Client, backendName string, n i
 	require.NoError(t, rd.ZAdd(t.Context(), hookConcurrencyKeyFn(nil, backendName), members...).Err())
 }
 
-func TestShardKeyConcurrency_Hook_SkipDoesNotConsumeRetry(t *testing.T) {
+func TestShardKeyConcurrency_Admission_SkipDoesNotConsumeRetry(t *testing.T) {
 	engineA := &stubEngine{err: errors.New("should not be called")}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
-	hook := &denyNamesHook{denied: map[string]struct{}{"A": {}}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}}}
 	rd := newHookTestRedis(t)
 	seedHookConcurrency(t, rd, "B", 10)
 	lb, err := NewShardKeyConcurrency(
@@ -60,10 +60,10 @@ func TestShardKeyConcurrency_Hook_SkipDoesNotConsumeRetry(t *testing.T) {
 	assert.Equal(t, []string{"B"}, hook.doneNames)
 }
 
-func TestShardKeyConcurrency_Hook_AllDeniedReturnsSentinel(t *testing.T) {
+func TestShardKeyConcurrency_Admission_AllDeniedReturnsSentinel(t *testing.T) {
 	engineA := &stubEngine{}
 	engineB := &stubEngine{}
-	hook := &denyNamesHook{denied: map[string]struct{}{"A": {}, "B": {}}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}, "B": {}}}
 	lb, err := NewShardKeyConcurrency(
 		[]BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
@@ -81,12 +81,12 @@ func TestShardKeyConcurrency_Hook_AllDeniedReturnsSentinel(t *testing.T) {
 	assert.Empty(t, hook.doneNames)
 }
 
-func TestShardKeyConcurrency_Hook_PreservesRealErrorWhenRemainingDenied(t *testing.T) {
+func TestShardKeyConcurrency_Admission_PreservesRealErrorWhenRemainingDenied(t *testing.T) {
 	upstream := errors.New("upstream boom")
 	engineA := &stubEngine{resp: &octollm.Response{StatusCode: 502}, err: upstream}
 	engineB := &stubEngine{}
 	engineC := &stubEngine{}
-	hook := &denyNamesHook{denied: map[string]struct{}{"B": {}, "C": {}}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"B": {}, "C": {}}}
 	rd := newHookTestRedis(t)
 	seedHookConcurrency(t, rd, "B", 10)
 	seedHookConcurrency(t, rd, "C", 10)
@@ -109,10 +109,10 @@ func TestShardKeyConcurrency_Hook_PreservesRealErrorWhenRemainingDenied(t *testi
 	assert.Equal(t, 0, engineC.callCount)
 }
 
-func TestShardKeyConcurrency_Hook_DoneCalledOncePerRealAttempt(t *testing.T) {
+func TestShardKeyConcurrency_Admission_DoneCalledOncePerRealAttempt(t *testing.T) {
 	engineA := &stubEngine{err: errors.New("fail a")}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
-	hook := &denyNamesHook{}
+	hook := &denyNamesAdmission{}
 	rd := newHookTestRedis(t)
 	seedHookConcurrency(t, rd, "B", 10)
 	lb, err := NewShardKeyConcurrency(
@@ -131,10 +131,10 @@ func TestShardKeyConcurrency_Hook_DoneCalledOncePerRealAttempt(t *testing.T) {
 	assert.ElementsMatch(t, []string{"A", "B"}, hook.doneNames)
 }
 
-func TestShardKeyConcurrency_Hook_PrioritizedDenyFallsBack(t *testing.T) {
+func TestShardKeyConcurrency_Admission_PrioritizedDenyFallsBack(t *testing.T) {
 	engineA := &stubEngine{}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
-	hook := &denyNamesHook{denied: map[string]struct{}{"A": {}}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}}}
 	provider := affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
 		return []*PrioritizedBackend{{Name: "A", StrongCacheHit: true}}, nil, nil
 	})
@@ -155,7 +155,7 @@ func TestShardKeyConcurrency_Hook_PrioritizedDenyFallsBack(t *testing.T) {
 	assert.Equal(t, []string{"B"}, hook.doneNames)
 }
 
-func TestShardKeyConcurrency_Hook_RealFailureStillConsumesRetry(t *testing.T) {
+func TestShardKeyConcurrency_Admission_RealFailureStillConsumesRetry(t *testing.T) {
 	engineA := &stubEngine{err: errors.New("fail a")}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	rd := newHookTestRedis(t)
@@ -177,7 +177,7 @@ func TestShardKeyConcurrency_Hook_RealFailureStillConsumesRetry(t *testing.T) {
 	assert.Equal(t, 1, engineB.callCount)
 }
 
-func TestShardKeyConcurrency_Hook_NilHookKeepsCurrentBehavior(t *testing.T) {
+func TestShardKeyConcurrency_Admission_NilAdmissionKeepsCurrentBehavior(t *testing.T) {
 	engineA := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	lb, err := NewShardKeyConcurrency(
 		[]BackendItem{{Name: "A", Weight: 1, Engine: engineA}},

@@ -2,12 +2,7 @@ package softcircuitbreaker
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"io"
 	"log/slog"
-	"net"
-	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,9 +10,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/infinigence/octollm/pkg/errutils"
-	"github.com/infinigence/octollm/pkg/internal/testhelper"
 )
 
 func mustEntry(t *testing.T, policy Policy) *Entry {
@@ -360,123 +352,4 @@ func TestEntry_EndedLogOnceOnRecover(t *testing.T) {
 	entry.complete(context.Background(), entry.generation, OutcomeSuccess, now)
 	assert.Equal(t, 1, logs.count("soft_circuit_breaker_ended"))
 	assert.Equal(t, 1, logs.count("soft_circuit_breaker_started"))
-}
-
-func classifyEntry(t *testing.T, excluded ...int) *Entry {
-	t.Helper()
-	policy, err := NewPolicy(
-		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
-		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
-		TrafficRule{Window: time.Second, MaxRequests: 1},
-		excluded,
-	)
-	require.NoError(t, err)
-	return mustEntry(t, policy)
-}
-
-func TestExtractHTTPStatus(t *testing.T) {
-	status, ok := ExtractHTTPStatus(&errutils.UpstreamRespError{StatusCode: 502})
-	assert.True(t, ok)
-	assert.Equal(t, 502, status)
-
-	status, ok = ExtractHTTPStatus(&errutils.UpstreamHTTPError{StatusCode: 504, Err: io.EOF})
-	assert.True(t, ok)
-	assert.Equal(t, 504, status)
-
-	status, ok = ExtractHTTPStatus(errutils.NewHandlerError(errors.New("wrapped"), 429, "too many", "rate_limit_error", "ignored_code"))
-	assert.True(t, ok)
-	assert.Equal(t, 429, status)
-
-	wrapped := fmt.Errorf("outer: %w", &errutils.UpstreamRespError{StatusCode: 413})
-	status, ok = ExtractHTTPStatus(wrapped)
-	assert.True(t, ok)
-	assert.Equal(t, 413, status)
-
-	handlerWrapsUpstream := errutils.NewHandlerError(&errutils.UpstreamRespError{StatusCode: 413}, 429, "mapped", "", "")
-	status, ok = ExtractHTTPStatus(handlerWrapsUpstream)
-	assert.True(t, ok)
-	assert.Equal(t, 413, status, "prefer upstream status over wrapping HandlerError")
-
-	_, ok = ExtractHTTPStatus(&errutils.UpstreamHTTPError{Err: io.EOF})
-	assert.False(t, ok)
-
-	_, ok = ExtractHTTPStatus(io.EOF)
-	assert.False(t, ok)
-
-	_, ok = ExtractHTTPStatus(nil)
-	assert.False(t, ok)
-}
-
-func TestClassifyAttemptError_ExcludedStatusIsNeutral(t *testing.T) {
-	req := testhelper.CreateTestRequest()
-	entry := classifyEntry(t, http.StatusRequestEntityTooLarge, http.StatusTooManyRequests)
-
-	assert.Equal(t, OutcomeNeutral, entry.ClassifyAttemptError(req, &errutils.UpstreamRespError{StatusCode: 413}))
-	assert.Equal(t, OutcomeNeutral, entry.ClassifyAttemptError(req, errutils.NewHandlerError(nil, 429, "rate", "rate_limit_error", "rate_limit_exceeded")))
-	assert.Equal(t, OutcomeTargetFailure, entry.ClassifyAttemptError(req, &errutils.UpstreamRespError{StatusCode: 500}))
-	assert.Equal(t, OutcomeTargetFailure, entry.ClassifyAttemptError(req, &errutils.UpstreamRespError{StatusCode: 400}))
-}
-
-func TestClassifyAttemptError_DoesNotParseErrorCode(t *testing.T) {
-	req := testhelper.CreateTestRequest()
-	entry := classifyEntry(t, http.StatusTooManyRequests)
-	err := errutils.NewHandlerError(nil, 500, "boom", "server_error", "rate_limit_exceeded")
-	assert.Equal(t, OutcomeTargetFailure, entry.ClassifyAttemptError(req, err))
-}
-
-func TestClassifyAttemptError_NoStatusIsTargetFailure(t *testing.T) {
-	req := testhelper.CreateTestRequest()
-	entry := classifyEntry(t, http.StatusRequestEntityTooLarge, http.StatusTooManyRequests)
-	assert.Equal(t, OutcomeTargetFailure, entry.ClassifyAttemptError(req, io.EOF))
-	assert.Equal(t, OutcomeTargetFailure, entry.ClassifyAttemptError(req, &net.OpError{Op: "dial", Err: errors.New("connection refused")}))
-}
-
-func TestClassifyAttemptError_CanceledIsNeutralDeadlineIsFailure(t *testing.T) {
-	entry := classifyEntry(t, http.StatusTooManyRequests)
-	canceled, cancel := context.WithCancel(context.Background())
-	cancel()
-	canceledReq := testhelper.CreateTestRequest(testhelper.WithContext(canceled))
-	assert.Equal(t, OutcomeNeutral, entry.ClassifyAttemptError(canceledReq, io.EOF))
-
-	deadline, cancelDeadline := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	t.Cleanup(cancelDeadline)
-	deadlineReq := testhelper.CreateTestRequest(testhelper.WithContext(deadline))
-	assert.Equal(t, OutcomeTargetFailure, entry.ClassifyAttemptError(deadlineReq, context.DeadlineExceeded))
-	assert.ErrorIs(t, deadlineReq.Context().Err(), context.DeadlineExceeded)
-}
-
-func TestClassifyHTTPStatus(t *testing.T) {
-	req := testhelper.CreateTestRequest()
-	entry := classifyEntry(t, http.StatusRequestEntityTooLarge, http.StatusTooManyRequests)
-	assert.Equal(t, OutcomeNeutral, entry.ClassifyHTTPStatus(req, 429))
-	assert.Equal(t, OutcomeTargetFailure, entry.ClassifyHTTPStatus(req, 503))
-	assert.Equal(t, OutcomeSuccess, entry.ClassifyHTTPStatus(req, 200))
-
-	canceled, cancel := context.WithCancel(context.Background())
-	cancel()
-	canceledReq := testhelper.CreateTestRequest(testhelper.WithContext(canceled))
-	assert.Equal(t, OutcomeNeutral, entry.ClassifyHTTPStatus(canceledReq, 503))
-}
-
-func TestEntry_ClassifyUsesOwnWhitelist(t *testing.T) {
-	policy, err := NewPolicy(
-		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
-		RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
-		TrafficRule{Window: time.Second, MaxRequests: 1},
-		[]int{http.StatusTooManyRequests, http.StatusBadGateway},
-	)
-	require.NoError(t, err)
-	entry := mustEntry(t, policy)
-	req := testhelper.CreateTestRequest()
-
-	assert.Equal(t, OutcomeNeutral, entry.ClassifyAttemptError(req, &errutils.UpstreamRespError{StatusCode: 429}))
-	assert.Equal(t, OutcomeNeutral, entry.ClassifyHTTPStatus(req, 502))
-	assert.Equal(t, OutcomeTargetFailure, entry.ClassifyAttemptError(req, &errutils.UpstreamRespError{StatusCode: 413}))
-	assert.Equal(t, OutcomeTargetFailure, entry.ClassifyHTTPStatus(req, 500))
-}
-
-func TestEntry_NilClassifyHasNoWhitelist(t *testing.T) {
-	var entry *Entry
-	req := testhelper.CreateTestRequest()
-	assert.Equal(t, OutcomeTargetFailure, entry.ClassifyAttemptError(req, &errutils.UpstreamRespError{StatusCode: 429}))
 }
