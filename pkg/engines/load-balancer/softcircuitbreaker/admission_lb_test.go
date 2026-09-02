@@ -102,7 +102,7 @@ func TestAdmission_WRR_DeniedBackendIsNotInvoked(t *testing.T) {
 	assert.Equal(t, int32(1), engineB.calls.Load())
 }
 
-func TestAdmission_WRR_AllDeniedReturnsSentinel(t *testing.T) {
+func TestAdmission_WRR_AllDeniedReturnsNoBackendAvailable(t *testing.T) {
 	reg := mustRegistry(t, denyAfterOneFailurePolicy(t))
 	hook := NewAdmission(reg, "m", nil)
 	exhaustBackend(t, hook, "A")
@@ -120,7 +120,7 @@ func TestAdmission_WRR_AllDeniedReturnsSentinel(t *testing.T) {
 	require.NoError(t, err)
 
 	resp, err := lb.Process(testhelper.CreateTestRequest())
-	require.ErrorIs(t, err, loadbalancer.ErrNoBackendPermitted)
+	require.EqualError(t, err, "no backend engine available")
 	assert.Nil(t, resp)
 	assert.Equal(t, int32(0), engineA.calls.Load())
 	assert.Equal(t, int32(0), engineB.calls.Load())
@@ -176,7 +176,7 @@ func TestAdmission_Concurrency_DeniedBackendIsNotInvoked(t *testing.T) {
 	assert.Equal(t, int32(1), engineB.calls.Load())
 }
 
-func TestAdmission_Concurrency_AllDeniedReturnsSentinel(t *testing.T) {
+func TestAdmission_Concurrency_AllDeniedReturnsNoBackendAvailable(t *testing.T) {
 	reg := mustRegistry(t, denyAfterOneFailurePolicy(t))
 	hook := NewAdmission(reg, "m", nil)
 	exhaustBackend(t, hook, "A")
@@ -194,7 +194,7 @@ func TestAdmission_Concurrency_AllDeniedReturnsSentinel(t *testing.T) {
 	require.NoError(t, err)
 
 	resp, err := lb.Process(testhelper.CreateTestRequest())
-	require.ErrorIs(t, err, loadbalancer.ErrNoBackendPermitted)
+	require.EqualError(t, err, "no backend engine available")
 	assert.Nil(t, resp)
 	assert.Equal(t, int32(0), engineA.calls.Load())
 	assert.Equal(t, int32(0), engineB.calls.Load())
