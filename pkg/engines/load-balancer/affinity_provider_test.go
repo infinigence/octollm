@@ -66,6 +66,14 @@ func TestRedisKeyForStrategy(t *testing.T) {
 	}
 }
 
+func TestLastNonEmptyShardKey(t *testing.T) {
+	assert.Equal(t, "", lastNonEmptyShardKey(nil))
+	assert.Equal(t, "", lastNonEmptyShardKey([]string{"", ""}))
+	assert.Equal(t, "H3", lastNonEmptyShardKey([]string{"H1", "H2", "H3"}))
+	assert.Equal(t, "H3", lastNonEmptyShardKey([]string{"H1", "", "H3", ""}))
+	assert.Equal(t, 2, countNonEmptyShardKeys([]string{"H1", "", "H3", ""}))
+}
+
 func TestNewShardKeyAffinityProvider_Validation(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
@@ -79,6 +87,7 @@ func TestNewShardKeyAffinityProvider_Validation(t *testing.T) {
 		Strategies: []ShardKeyStrategySpec{{
 			ShardKeyListGetter: getter,
 			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLastTwo,
 		}},
 	})
 	assert.Error(t, err)
@@ -94,6 +103,7 @@ func TestNewShardKeyAffinityProvider_Validation(t *testing.T) {
 		Strategies: []ShardKeyStrategySpec{{
 			ShardKeyListGetter: nil,
 			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLastTwo,
 		}},
 	})
 	assert.Error(t, err)
@@ -101,8 +111,8 @@ func TestNewShardKeyAffinityProvider_Validation(t *testing.T) {
 	_, err = NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
 		RedisClient: rd,
 		Strategies: []ShardKeyStrategySpec{
-			{ShardKeyListGetter: getter, IsPrimary: true},
-			{ShardKeyListGetter: getter, IsPrimary: true},
+			{ShardKeyListGetter: getter, IsPrimary: true, StrongHitPolicy: StrongHitPolicyLastTwo},
+			{ShardKeyListGetter: getter, IsPrimary: true, StrongHitPolicy: StrongHitPolicyLastTwo},
 		},
 	})
 	assert.Error(t, err)
@@ -112,9 +122,41 @@ func TestNewShardKeyAffinityProvider_Validation(t *testing.T) {
 		Strategies: []ShardKeyStrategySpec{{
 			ShardKeyListGetter: getter,
 			IsPrimary:          false,
+			StrongHitPolicy:    StrongHitPolicyLastTwo,
 		}},
 	})
 	assert.Error(t, err)
+
+	_, err = NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
+		RedisClient: rd,
+		Strategies: []ShardKeyStrategySpec{{
+			ShardKeyListGetter: getter,
+			IsPrimary:          true,
+			StrongHitPolicy:    "not-a-policy",
+		}},
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not-a-policy")
+
+	_, err = NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
+		RedisClient: rd,
+		Strategies: []ShardKeyStrategySpec{{
+			ShardKeyListGetter: getter,
+			IsPrimary:          true,
+			StrongHitPolicy:    "",
+		}},
+	})
+	assert.Error(t, err)
+
+	_, err = NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
+		RedisClient: rd,
+		Strategies: []ShardKeyStrategySpec{{
+			ShardKeyListGetter: getter,
+			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLeaf,
+		}},
+	})
+	assert.NoError(t, err)
 }
 
 func TestShardKeyAffinityProvider_EmptyShardKeyList(t *testing.T) {
@@ -126,6 +168,7 @@ func TestShardKeyAffinityProvider_EmptyShardKeyList(t *testing.T) {
 		Strategies: []ShardKeyStrategySpec{{
 			ShardKeyListGetter: func(_ *octollm.Request) []string { return nil },
 			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLastTwo,
 		}},
 		RedisClient:  rd,
 		KeyPrefix:    "pfx-empty",
@@ -149,6 +192,7 @@ func TestShardKeyAffinityProvider_NoRedisData(t *testing.T) {
 		Strategies: []ShardKeyStrategySpec{{
 			ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"k1"} },
 			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLastTwo,
 		}},
 		RedisClient:  rd,
 		KeyPrefix:    "pfx-miss",
@@ -171,6 +215,7 @@ func TestShardKeyAffinityProvider_RedisUnavailableAtResolve(t *testing.T) {
 		Strategies: []ShardKeyStrategySpec{{
 			ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"k1"} },
 			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLastTwo,
 		}},
 		RedisClient:  rd,
 		KeyPrefix:    "pfx-down",
@@ -181,9 +226,10 @@ func TestShardKeyAffinityProvider_RedisUnavailableAtResolve(t *testing.T) {
 
 	mr.Close()
 
-	prioritized, _, err := provider.Resolve(testhelper.CreateTestRequest())
+	prioritized, commit, err := provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
 	assert.Empty(t, prioritized)
+	assert.NotNil(t, commit)
 }
 
 func TestShardKeyAffinityProvider_PrimaryResolveAndShadowWriteOnly(t *testing.T) {
@@ -207,13 +253,15 @@ func TestShardKeyAffinityProvider_PrimaryResolveAndShadowWriteOnly(t *testing.T)
 				ShardKeyListGetter: func(_ *octollm.Request) []string {
 					return []string{"primary-key"}
 				},
-				IsPrimary: true,
+				IsPrimary:       true,
+				StrongHitPolicy: StrongHitPolicyLastTwo,
 			},
 			{
 				ShardKeyListGetter: func(_ *octollm.Request) []string {
 					return []string{"shadow-key"}
 				},
 				CacheKeyNamespace: "shadow-ns",
+				StrongHitPolicy:   StrongHitPolicyLastTwo,
 			},
 		},
 		RedisClient:  rd,
@@ -251,9 +299,9 @@ func TestShardKeyAffinityProvider_WritesAllShadowStrategies(t *testing.T) {
 	const keyPrefix = "all-shadows"
 	provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
 		Strategies: []ShardKeyStrategySpec{
-			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"primary"} }, IsPrimary: true},
-			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"shadow-a"} }, CacheKeyNamespace: "a:v1"},
-			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"shadow-b"} }, CacheKeyNamespace: "b:v1"},
+			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"primary"} }, IsPrimary: true, StrongHitPolicy: StrongHitPolicyLastTwo},
+			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"shadow-a"} }, CacheKeyNamespace: "a:v1", StrongHitPolicy: StrongHitPolicyLastTwo},
+			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"shadow-b"} }, CacheKeyNamespace: "b:v1", StrongHitPolicy: StrongHitPolicyLastTwo},
 		},
 		RedisClient: rd,
 		KeyPrefix:   keyPrefix,
@@ -285,13 +333,15 @@ func TestShardKeyAffinityProvider_StrongCacheHitFromLastTwoKeys(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, rd.ZAdd(ctx, keyPrefix+":sk0", redis.Z{Score: 1, Member: "weak"}).Err())
 	require.NoError(t, rd.ZAdd(ctx, keyPrefix+":sk2", redis.Z{Score: 1, Member: "strong"}).Err())
+	require.NoError(t, rd.Set(ctx, keyPrefix+":is-leaf:sk0", "1", time.Minute).Err())
 
 	provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
 		Strategies: []ShardKeyStrategySpec{{
 			ShardKeyListGetter: func(_ *octollm.Request) []string {
 				return []string{"sk0", "sk1", "sk2"}
 			},
-			IsPrimary: true,
+			IsPrimary:       true,
+			StrongHitPolicy: StrongHitPolicyLastTwo,
 		}},
 		RedisClient:  rd,
 		KeyPrefix:    keyPrefix,
@@ -327,6 +377,7 @@ func TestShardKeyAffinityProvider_TrimToThreeMembers(t *testing.T) {
 		Strategies: []ShardKeyStrategySpec{{
 			ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"k1"} },
 			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLastTwo,
 		}},
 		RedisClient:  rd,
 		KeyPrefix:    keyPrefix,
@@ -335,12 +386,17 @@ func TestShardKeyAffinityProvider_TrimToThreeMembers(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, _, err = provider.Resolve(testhelper.CreateTestRequest())
+	prioritized, _, err := provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
+	require.Len(t, prioritized, 5)
+	assert.Equal(t, []string{"b4", "b3", "b2", "b1", "b0"}, []string{
+		prioritized[0].Name, prioritized[1].Name, prioritized[2].Name,
+		prioritized[3].Name, prioritized[4].Name,
+	})
 
 	card, err := rd.ZCard(ctx, keyPrefix+":k1").Result()
 	require.NoError(t, err)
-	assert.LessOrEqual(t, card, int64(3))
+	assert.Equal(t, int64(3), card)
 }
 
 func TestShardKeyAffinityProvider_CommitSkippedOnFailureByCaller(t *testing.T) {
@@ -353,6 +409,7 @@ func TestShardKeyAffinityProvider_CommitSkippedOnFailureByCaller(t *testing.T) {
 		Strategies: []ShardKeyStrategySpec{{
 			ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"k1"} },
 			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLastTwo,
 		}},
 		RedisClient: rd,
 		KeyPrefix:   keyPrefix,
@@ -392,10 +449,12 @@ func TestShardKeyConcurrency_WithAffinityProvider(t *testing.T) {
 			{
 				ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"sk-priority"} },
 				IsPrimary:          true,
+				StrongHitPolicy:    StrongHitPolicyLastTwo,
 			},
 			{
 				ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"sk-shadow"} },
 				CacheKeyNamespace:  "trace:v1",
+				StrongHitPolicy:    StrongHitPolicyLastTwo,
 			},
 		},
 		RedisClient:  rd,
@@ -444,8 +503,8 @@ func TestShardKeyConcurrency_WithAffinityProvider_RequestFailureDoesNotCommit(t 
 	const keyPrefix = "concurrency-failure"
 	provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
 		Strategies: []ShardKeyStrategySpec{
-			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"primary"} }, IsPrimary: true},
-			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"shadow"} }, CacheKeyNamespace: "trace:v1"},
+			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"primary"} }, IsPrimary: true, StrongHitPolicy: StrongHitPolicyLastTwo},
+			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"shadow"} }, CacheKeyNamespace: "trace:v1", StrongHitPolicy: StrongHitPolicyLastTwo},
 		},
 		RedisClient: rd,
 		KeyPrefix:   keyPrefix,
@@ -493,10 +552,12 @@ func TestShardKeyWeightedRoundRobin_WithAffinityProvider(t *testing.T) {
 			{
 				ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"sk1"} },
 				IsPrimary:          true,
+				StrongHitPolicy:    StrongHitPolicyLastTwo,
 			},
 			{
 				ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"sk-shadow"} },
 				CacheKeyNamespace:  "ns1",
+				StrongHitPolicy:    StrongHitPolicyLastTwo,
 			},
 		},
 		RedisClient:  rd,
@@ -540,8 +601,8 @@ func TestShardKeyWeightedRoundRobin_WithAffinityProvider_RequestFailureDoesNotCo
 	const keyPrefix = "wrr-failure"
 	provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
 		Strategies: []ShardKeyStrategySpec{
-			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"primary"} }, IsPrimary: true},
-			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"shadow"} }, CacheKeyNamespace: "trace:v1"},
+			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"primary"} }, IsPrimary: true, StrongHitPolicy: StrongHitPolicyLastTwo},
+			{ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"shadow"} }, CacheKeyNamespace: "trace:v1", StrongHitPolicy: StrongHitPolicyLastTwo},
 		},
 		RedisClient: rd,
 		KeyPrefix:   keyPrefix,
@@ -685,6 +746,7 @@ func TestShardKeyAffinityProvider_SinglePrimaryStrategy(t *testing.T) {
 		Strategies: []ShardKeyStrategySpec{{
 			ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"k1"} },
 			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLastTwo,
 		}},
 		RedisClient:  rd,
 		KeyPrefix:    keyPrefix,
@@ -702,4 +764,162 @@ func TestShardKeyAffinityProvider_SinglePrimaryStrategy(t *testing.T) {
 	members, err := rd.ZRange(ctx, keyPrefix+":k1", 0, -1).Result()
 	require.NoError(t, err)
 	assert.Contains(t, members, "svc1")
+}
+
+func TestShardKeyAffinityProvider_LeafPolicyResolve(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	const keyPrefix = "leaf-resolve"
+
+	require.NoError(t, rd.ZAdd(ctx, keyPrefix+":both", redis.Z{Score: 1, Member: "svc-both"}).Err())
+	require.NoError(t, rd.Set(ctx, keyPrefix+":is-leaf:both", "1", time.Minute).Err())
+	require.NoError(t, rd.ZAdd(ctx, keyPrefix+":map-only", redis.Z{Score: 1, Member: "svc-map"}).Err())
+	require.NoError(t, rd.Set(ctx, keyPrefix+":is-leaf:marker-only", "1", time.Minute).Err())
+
+	provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
+		Strategies: []ShardKeyStrategySpec{{
+			ShardKeyListGetter: func(_ *octollm.Request) []string {
+				return []string{"both", "map-only", "marker-only", "miss"}
+			},
+			IsPrimary:       true,
+			StrongHitPolicy: StrongHitPolicyLeaf,
+		}},
+		RedisClient: rd,
+		KeyPrefix:   keyPrefix,
+		ShardKeyTTL: time.Minute,
+	})
+	require.NoError(t, err)
+
+	prioritized, _, err := provider.Resolve(testhelper.CreateTestRequest())
+	require.NoError(t, err)
+	require.Len(t, prioritized, 2)
+	assert.Equal(t, "svc-map", prioritized[0].Name)
+	assert.False(t, prioritized[0].StrongCacheHit)
+	assert.Equal(t, "svc-both", prioritized[1].Name)
+	assert.True(t, prioritized[1].StrongCacheHit)
+}
+
+func TestShardKeyAffinityProvider_SwitchLastTwoAndLeaf(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	const keyPrefix = "policy-switch"
+	hash := "only"
+
+	require.NoError(t, rd.ZAdd(ctx, keyPrefix+":"+hash, redis.Z{Score: 1, Member: "svc-a"}).Err())
+
+	build := func(policy string) AffinityProvider {
+		t.Helper()
+		provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
+			Strategies: []ShardKeyStrategySpec{{
+				ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{hash} },
+				IsPrimary:          true,
+				StrongHitPolicy:    policy,
+			}},
+			RedisClient:  rd,
+			KeyPrefix:    keyPrefix,
+			ShardKeyTTL:  time.Minute,
+			BackendNames: []string{"svc-a"},
+		})
+		require.NoError(t, err)
+		return provider
+	}
+
+	resolveHit := func(provider AffinityProvider) *PrioritizedBackend {
+		t.Helper()
+		prioritized, _, err := provider.Resolve(testhelper.CreateTestRequest())
+		require.NoError(t, err)
+		require.Len(t, prioritized, 1)
+		return prioritized[0]
+	}
+
+	hit := resolveHit(build(StrongHitPolicyLastTwo))
+	assert.Equal(t, "svc-a", hit.Name)
+	assert.True(t, hit.StrongCacheHit)
+
+	hit = resolveHit(build(StrongHitPolicyLeaf))
+	assert.Equal(t, "svc-a", hit.Name)
+	assert.False(t, hit.StrongCacheHit)
+
+	hit = resolveHit(build(StrongHitPolicyLastTwo))
+	assert.True(t, hit.StrongCacheHit)
+}
+
+func TestShardKeyAffinityProvider_AllowlistAndDedup(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	const keyPrefix = "allow-dedup"
+
+	require.NoError(t, rd.ZAdd(ctx, keyPrefix+":sk-early",
+		redis.Z{Score: 1, Member: "unknown"},
+		redis.Z{Score: 2, Member: "hot"},
+	).Err())
+	require.NoError(t, rd.ZAdd(ctx, keyPrefix+":sk-late", redis.Z{Score: 1, Member: "hot"}).Err())
+
+	provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
+		Strategies: []ShardKeyStrategySpec{{
+			ShardKeyListGetter: func(_ *octollm.Request) []string {
+				return []string{"sk-early", "sk-late"}
+			},
+			IsPrimary:       true,
+			StrongHitPolicy: StrongHitPolicyLastTwo,
+		}},
+		RedisClient:  rd,
+		KeyPrefix:    keyPrefix,
+		ShardKeyTTL:  time.Minute,
+		BackendNames: []string{"hot"},
+	})
+	require.NoError(t, err)
+
+	prioritized, _, err := provider.Resolve(testhelper.CreateTestRequest())
+	require.NoError(t, err)
+	require.Len(t, prioritized, 1)
+	assert.Equal(t, "hot", prioritized[0].Name)
+	assert.True(t, prioritized[0].StrongCacheHit)
+}
+
+func TestShardKeyWeightedRoundRobin_AllZeroSkipsAffinityCommit(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	const keyPrefix = "wrr-all-zero"
+
+	provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
+		Strategies: []ShardKeyStrategySpec{{
+			ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"k1"} },
+			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLastTwo,
+		}},
+		RedisClient: rd,
+		KeyPrefix:   keyPrefix,
+		ShardKeyTTL: time.Minute,
+	})
+	require.NoError(t, err)
+
+	okEngine := octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+		return &octollm.Response{StatusCode: 200}, nil
+	})
+	lb := &ShardKeyWeightedRoundRobin{
+		backends: []*wrrBackend{
+			{name: "svc-a", weight: 0, engine: okEngine},
+		},
+		affinityProvider: provider,
+		retryTimeout:     time.Second,
+		retryMaxCount:    1,
+	}
+
+	resp, err := lb.Process(testhelper.CreateTestRequest())
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	card, err := rd.ZCard(context.Background(), keyPrefix+":k1").Result()
+	require.NoError(t, err)
+	assert.Zero(t, card)
+	assert.Equal(t, int64(0), rd.Exists(context.Background(), keyPrefix+":is-leaf:k1").Val())
 }
