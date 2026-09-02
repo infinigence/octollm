@@ -254,7 +254,6 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 
 	start := time.Now()
 	retryCount := 0
-	admissionSkipCount := 0
 	headroomSkipCount := 0
 	var lastResp *octollm.Response
 	var lastErr error
@@ -306,6 +305,10 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			}
 			// Headroom is per backend, so exclude an over-limit cache miss and try the next candidate.
 			if selected != nil && selected.headroomEnabled() && ratio > selected.cacheMissMaxUtilization {
+				slog.InfoContext(req.Context(),
+					fmt.Sprintf("[ShardKey Concurrency load balancer] skip cache-miss backend over headroom %.2f: %s (ratio=%.2f), candidates: %v", selected.cacheMissMaxUtilization, selected.name, ratio, candidates),
+					slog.String("backend_name", selected.name),
+				)
 				excludeNames[selected.name] = true
 				headroomSkipCount++
 				continue
@@ -317,19 +320,20 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 		}
 
 		if eng == nil {
-			// selectByConcurrency may return nil before every backend is in excludeNames
-			// (non-positive capacity is skipped without being marked). Skip reasons are
-			// counted on the way here; failover keeps the previous backend error.
+			// Unified exit when no engine can be selected. Candidates may already be
+			// exhausted by headroom/admission excludes, or skipped for non-positive
+			// capacity without being marked. Prefer the previous backend error after a
+			// real failover; otherwise ErrCacheMissHeadroom if any headroom skip
+			// occurred; otherwise a generic selection failure.
 			if retryCount > 0 {
 				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no backend engine available on failover, returning previous error: %v", lastErr))
 				return lastResp, lastErr
 			}
-			if admissionSkipCount > 0 {
-				return nil, ErrNoBackendPermitted
-			}
+
 			if headroomSkipCount > 0 {
 				return nil, ErrCacheMissHeadroom
 			}
+
 			return nil, fmt.Errorf("no backend engine available")
 		}
 
@@ -338,8 +342,11 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			var allowed bool
 			done, allowed = l.backendAdmission.BeforeAttempt(req, n)
 			if !allowed {
+				slog.InfoContext(req.Context(),
+					fmt.Sprintf("[ShardKey Concurrency load balancer] skip backend denied by admission: %s", n),
+					slog.String("backend_name", n),
+				)
 				excludeNames[n] = true
-				admissionSkipCount++
 				continue
 			}
 		}

@@ -128,7 +128,6 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 
 	start := time.Now()
 	retryCount := 0
-	admissionSkipCount := 0
 	var lastResp *octollm.Response
 	var lastErr error
 	for {
@@ -142,12 +141,9 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 
 		selection := l.selectNextEngine(req.Context(), prioritizedBackend, excludeNames)
 		if selection == nil || selection.engine == nil {
-			if lastErr != nil {
+			if retryCount > 0 {
 				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] no backend engine available on failover, returning previous error: %v", lastErr))
 				return lastResp, lastErr
-			}
-			if admissionSkipCount > 0 {
-				return nil, ErrNoBackendPermitted
 			}
 			return nil, fmt.Errorf("no backend engine available")
 		}
@@ -169,15 +165,12 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			var allowed bool
 			done, allowed = l.backendAdmission.BeforeAttempt(req, n)
 			if !allowed {
+				slog.InfoContext(req.Context(),
+					fmt.Sprintf("[ShardKey WRR load balancer] skip backend denied by admission: %s", n),
+					slog.String("backend_name", n),
+				)
 				selection.Rollback()
 				excludeNames[n] = true
-				admissionSkipCount++
-				if len(excludeNames) >= len(l.backends) {
-					if lastErr != nil {
-						return lastResp, lastErr
-					}
-					return nil, ErrNoBackendPermitted
-				}
 				continue
 			}
 		}

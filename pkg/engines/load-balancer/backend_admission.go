@@ -1,8 +1,6 @@
 package loadbalancer
 
 import (
-	"errors"
-
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
@@ -17,7 +15,3 @@ type AttemptDoneFunc func(ok bool)
 type BackendAdmission interface {
 	BeforeAttempt(req *octollm.Request, backendName string) (done AttemptDoneFunc, allowed bool)
 }
-
-// ErrNoBackendPermitted is returned when every candidate backend was rejected by
-// admission and no real backend Engine was invoked in this request.
-var ErrNoBackendPermitted = errors.New("no backend permitted by admission")

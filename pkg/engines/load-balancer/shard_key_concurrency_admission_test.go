@@ -60,7 +60,7 @@ func TestShardKeyConcurrency_Admission_SkipDoesNotConsumeRetry(t *testing.T) {
 	assert.Equal(t, []string{"B"}, hook.doneNames)
 }
 
-func TestShardKeyConcurrency_Admission_AllDeniedReturnsSentinel(t *testing.T) {
+func TestShardKeyConcurrency_Admission_AllDeniedReturnsNoBackendAvailable(t *testing.T) {
 	engineA := &stubEngine{}
 	engineB := &stubEngine{}
 	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}, "B": {}}}
@@ -74,7 +74,7 @@ func TestShardKeyConcurrency_Admission_AllDeniedReturnsSentinel(t *testing.T) {
 	require.NoError(t, err)
 
 	resp, err := lb.Process(testhelper.CreateTestRequest())
-	require.ErrorIs(t, err, ErrNoBackendPermitted)
+	require.EqualError(t, err, "no backend engine available")
 	assert.Nil(t, resp)
 	assert.Equal(t, 0, engineA.callCount)
 	assert.Equal(t, 0, engineB.callCount)
