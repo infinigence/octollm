@@ -641,6 +641,63 @@ func TestShardKeyConcurrency_Headroom(t *testing.T) {
 		assert.Equal(t, "hot", selectedBackend(t, req), "cache-hit backend should be used even over the ceiling")
 	})
 
+	t.Run("leaf mapping without marker does not bypass headroom", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		items := []BackendItem{
+			{Name: "hot", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
+			{Name: "cool", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
+		}
+		seedConcurrency(t, rd, "hot", 10)
+		seedConcurrency(t, rd, "cool", 0)
+
+		const keyPrefix = "hr-leaf-weak"
+		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
+
+		provider := newPrimaryShardKeyProviderWithPolicy(t, func(_ *octollm.Request) []string {
+			return []string{"sk0", "sk1", "sk2"}
+		}, rd, keyPrefix, time.Minute, items, StrongHitPolicyLeaf)
+		lb, err := NewShardKeyConcurrency(items, time.Second, 3, provider, rd, concurrencyKeyFn, nil)
+		require.NoError(t, err)
+
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, "cool", selectedBackend(t, req), "leaf weak hit over ceiling should be skipped")
+	})
+
+	t.Run("leaf mapping and marker bypasses headroom ceiling", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		items := []BackendItem{
+			{Name: "hot", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
+			{Name: "cool", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
+		}
+		seedConcurrency(t, rd, "hot", 10)
+		seedConcurrency(t, rd, "cool", 0)
+
+		const keyPrefix = "hr-leaf-strong"
+		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
+		require.NoError(t, rd.Set(t.Context(), keyPrefix+":is-leaf:sk2", "1", time.Minute).Err())
+
+		provider := newPrimaryShardKeyProviderWithPolicy(t, func(_ *octollm.Request) []string {
+			return []string{"sk0", "sk1", "sk2"}
+		}, rd, keyPrefix, time.Minute, items, StrongHitPolicyLeaf)
+		lb, err := NewShardKeyConcurrency(items, time.Second, 3, provider, rd, concurrencyKeyFn, nil)
+		require.NoError(t, err)
+
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, "hot", selectedBackend(t, req), "leaf strong hit should bypass headroom")
+	})
+
 	t.Run("non-cache-hit prioritized backend over ceiling is skipped", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()

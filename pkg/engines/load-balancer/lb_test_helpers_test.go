@@ -29,10 +29,24 @@ func newPrimaryShardKeyProvider(
 	items []BackendItem,
 ) AffinityProvider {
 	t.Helper()
+	return newPrimaryShardKeyProviderWithPolicy(t, getter, rd, keyPrefix, ttl, items, StrongHitPolicyLastTwo)
+}
+
+func newPrimaryShardKeyProviderWithPolicy(
+	t *testing.T,
+	getter func(req *octollm.Request) []string,
+	rd *redis.Client,
+	keyPrefix string,
+	ttl time.Duration,
+	items []BackendItem,
+	policy string,
+) AffinityProvider {
+	t.Helper()
 	provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
 		Strategies: []ShardKeyStrategySpec{{
 			ShardKeyListGetter: getter,
 			IsPrimary:          true,
+			StrongHitPolicy:    policy,
 		}},
 		RedisClient:  rd,
 		KeyPrefix:    keyPrefix,
