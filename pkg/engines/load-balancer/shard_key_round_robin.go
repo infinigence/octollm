@@ -79,8 +79,8 @@ func NewShardKeyWeightedRoundRobin(
 	}, nil
 }
 
-// resolveAffinity maps provider candidates to the existing WRR backends so currentWeight state
-// remains shared across requests.
+// resolveAffinity maps strong-cache-hit provider candidates to the existing WRR backends so
+// currentWeight state remains shared across requests. Weak hits fall through to normal WRR.
 func (l *ShardKeyWeightedRoundRobin) resolveAffinity(req *octollm.Request) ([]*wrrBackend, AffinityCommitFunc, error) {
 	if l.affinityProvider == nil {
 		return nil, nil, nil
@@ -100,7 +100,7 @@ func (l *ShardKeyWeightedRoundRobin) resolveAffinity(req *octollm.Request) ([]*w
 
 	prioritized := make([]*wrrBackend, 0, len(providerBackends))
 	for _, pb := range providerBackends {
-		if pb == nil {
+		if pb == nil || !pb.StrongCacheHit {
 			continue
 		}
 		backend, ok := backendByName[pb.Name]

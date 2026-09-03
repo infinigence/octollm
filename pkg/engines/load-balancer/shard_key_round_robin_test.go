@@ -158,6 +158,50 @@ func TestResolveAffinity_WithRedisAndTrim(t *testing.T) {
 	assert.LessOrEqual(t, card, int64(3))
 }
 
+func TestResolveAffinity_OnlyStrongCacheHits(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	backends := []BackendItem{
+		{Name: "weak"},
+		{Name: "strong"},
+	}
+	provider := newPrimaryShardKeyProvider(
+		t,
+		func(_ *octollm.Request) []string { return []string{"k1", "k2", "k3"} },
+		client,
+		"",
+		5*time.Minute,
+		backends,
+	)
+	lb, err := NewShardKeyWeightedRoundRobin(backends, 5*time.Second, 5, provider, nil)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	now := float64(time.Now().Unix())
+
+	t.Run("weak hit on first key is not prioritized", func(t *testing.T) {
+		_, zerr := client.ZAdd(ctx, "k1", redis.Z{Score: now, Member: "weak"}).Result()
+		require.NoError(t, zerr)
+
+		prioritized, _, err := lb.resolveAffinity(testhelper.CreateTestRequest())
+		require.NoError(t, err)
+		assert.Empty(t, prioritized)
+	})
+
+	t.Run("strong hits on last two keys are prioritized", func(t *testing.T) {
+		_, zerr := client.ZAdd(ctx, "k3", redis.Z{Score: now, Member: "strong"}).Result()
+		require.NoError(t, zerr)
+
+		prioritized, _, err := lb.resolveAffinity(testhelper.CreateTestRequest())
+		require.NoError(t, err)
+		require.Len(t, prioritized, 1)
+		assert.Equal(t, "strong", prioritized[0].name)
+	})
+}
+
 func TestSelectNextEngine_PrioritizedHit(t *testing.T) {
 	e1 := &stubEngine{}
 	e2 := &stubEngine{}
