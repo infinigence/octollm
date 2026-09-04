@@ -409,6 +409,46 @@ func TestShardKeyAffinityProvider_TrimToThreeMembers(t *testing.T) {
 	assert.Equal(t, int64(3), card)
 }
 
+func TestShardKeyAffinityProvider_LeafTrimToThreeMembers(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	const keyPrefix = "trim-leaf"
+	ctx := context.Background()
+	now := time.Now().Unix()
+	members := make([]redis.Z, 5)
+	for i := range members {
+		members[i] = redis.Z{Score: float64(now - int64(50-i*10)), Member: fmt.Sprintf("b%d", i)}
+	}
+	require.NoError(t, rd.ZAdd(ctx, keyPrefix+":k1", members...).Err())
+
+	provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
+		Strategies: []ShardKeyStrategySpec{{
+			ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"k1"} },
+			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLeaf,
+		}},
+		RedisClient:  rd,
+		KeyPrefix:    keyPrefix,
+		ShardKeyTTL:  time.Minute,
+		BackendNames: []string{"b0", "b1", "b2", "b3", "b4"},
+	})
+	require.NoError(t, err)
+
+	prioritized, _, err := provider.Resolve(testhelper.CreateTestRequest())
+	require.NoError(t, err)
+	require.Len(t, prioritized, 5)
+	assert.Equal(t, []string{"b4", "b3", "b2", "b1", "b0"}, []string{
+		prioritized[0].Name, prioritized[1].Name, prioritized[2].Name,
+		prioritized[3].Name, prioritized[4].Name,
+	})
+
+	card, err := rd.ZCard(ctx, keyPrefix+":k1").Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), card)
+}
+
 func TestShardKeyAffinityProvider_CommitSkippedOnFailureByCaller(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
@@ -891,6 +931,34 @@ func TestShardKeyAffinityProvider_AllowlistAndDedup(t *testing.T) {
 	require.Len(t, prioritized, 1)
 	assert.Equal(t, "hot", prioritized[0].Name)
 	assert.True(t, prioritized[0].StrongCacheHit)
+}
+
+func TestShardKeyAffinityProvider_AllowlistFiltersAll(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+	const keyPrefix = "allow-none"
+
+	require.NoError(t, rd.ZAdd(ctx, keyPrefix+":k1", redis.Z{Score: 1, Member: "unknown"}).Err())
+
+	provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
+		Strategies: []ShardKeyStrategySpec{{
+			ShardKeyListGetter: func(_ *octollm.Request) []string { return []string{"k1"} },
+			IsPrimary:          true,
+			StrongHitPolicy:    StrongHitPolicyLastTwo,
+		}},
+		RedisClient:  rd,
+		KeyPrefix:    keyPrefix,
+		ShardKeyTTL:  time.Minute,
+		BackendNames: []string{"known"},
+	})
+	require.NoError(t, err)
+
+	prioritized, commit, err := provider.Resolve(testhelper.CreateTestRequest())
+	require.NoError(t, err)
+	assert.Empty(t, prioritized)
+	assert.NotNil(t, commit)
 }
 
 func TestFilterKnownBackends(t *testing.T) {
