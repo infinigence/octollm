@@ -157,6 +157,16 @@ func TestNewShardKeyAffinityProvider_Validation(t *testing.T) {
 		}},
 	})
 	assert.NoError(t, err)
+
+	_, err = NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{
+		RedisClient: rd,
+		Strategies: []ShardKeyStrategySpec{
+			{ShardKeyListGetter: getter, IsPrimary: true, StrongHitPolicy: StrongHitPolicyLastTwo},
+			{ShardKeyListGetter: getter, CacheKeyNamespace: "shadow", StrongHitPolicy: "not-a-policy"},
+		},
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not-a-policy")
 }
 
 func TestShardKeyAffinityProvider_EmptyShardKeyList(t *testing.T) {
@@ -881,6 +891,17 @@ func TestShardKeyAffinityProvider_AllowlistAndDedup(t *testing.T) {
 	require.Len(t, prioritized, 1)
 	assert.Equal(t, "hot", prioritized[0].Name)
 	assert.True(t, prioritized[0].StrongCacheHit)
+}
+
+func TestFilterKnownBackends(t *testing.T) {
+	in := []*PrioritizedBackend{{Name: "a"}, {Name: "b"}}
+
+	assert.Equal(t, in, filterKnownBackends(in, nil))
+	assert.Equal(t, in, filterKnownBackends(in, map[string]struct{}{}))
+
+	got := filterKnownBackends(in, map[string]struct{}{"b": {}})
+	require.Len(t, got, 1)
+	assert.Equal(t, "b", got[0].Name)
 }
 
 func TestShardKeyWeightedRoundRobin_AllZeroSkipsAffinityCommit(t *testing.T) {

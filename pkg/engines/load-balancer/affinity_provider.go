@@ -1,7 +1,6 @@
 package loadbalancer
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -58,13 +57,6 @@ type ShardKeyAffinityProviderConfig struct {
 	BackendNames []string
 }
 
-type shardKeyStrategyRuntime struct {
-	getter          func(req *octollm.Request) []string
-	namespace       string
-	isPrimary       bool
-	strongHitPolicy StrongCacheHitPolicy
-}
-
 // ShardKeyAffinityProvider is the built-in Redis-backed affinity provider. It reads routing
 // affinity from the primary strategy and writes successful selections to the primary and all
 // shadow strategies. Redis misses and read errors do not cause Resolve to return an error; when no
@@ -73,7 +65,6 @@ type ShardKeyAffinityProvider struct {
 	primary      shardKeyStrategyRuntime
 	shadows      []shardKeyStrategyRuntime
 	redisClient  *redis.Client
-	keyPrefix    string
 	shardKeyTTL  time.Duration
 	backendNames map[string]struct{}
 }
@@ -96,15 +87,15 @@ func NewShardKeyAffinityProvider(cfg ShardKeyAffinityProviderConfig) (*ShardKeyA
 		if s.ShardKeyListGetter == nil {
 			return nil, fmt.Errorf("strategy %d: ShardKeyListGetter must be provided", i)
 		}
-		policy, err := newStrongCacheHitPolicy(s.StrongHitPolicy, cfg.RedisClient)
-		if err != nil {
-			return nil, fmt.Errorf("strategy %d namespace %q: %w", i, s.CacheKeyNamespace, err)
+		if s.StrongHitPolicy != StrongHitPolicyLastTwo && s.StrongHitPolicy != StrongHitPolicyLeaf {
+			return nil, fmt.Errorf("strategy %d namespace %q: unsupported strong_hit_policy %q", i, s.CacheKeyNamespace, s.StrongHitPolicy)
 		}
 		rt := shardKeyStrategyRuntime{
-			getter:          s.ShardKeyListGetter,
+			getShardKeys:    s.ShardKeyListGetter,
+			keyPrefix:       cfg.KeyPrefix,
 			namespace:       s.CacheKeyNamespace,
-			isPrimary:       s.IsPrimary,
-			strongHitPolicy: policy,
+			strongHitPolicy: s.StrongHitPolicy,
+			redis:           cfg.RedisClient,
 		}
 		if s.IsPrimary {
 			if primary != nil {
@@ -130,7 +121,6 @@ func NewShardKeyAffinityProvider(cfg ShardKeyAffinityProviderConfig) (*ShardKeyA
 		primary:      *primary,
 		shadows:      shadows,
 		redisClient:  cfg.RedisClient,
-		keyPrefix:    cfg.KeyPrefix,
 		shardKeyTTL:  cfg.ShardKeyTTL,
 		backendNames: backendNames,
 	}, nil
@@ -168,38 +158,23 @@ func countNonEmptyShardKeys(shardKeys []string) int {
 	return n
 }
 
-// Resolve reads primary affinity, snapshots this request's primary and shadow keys, and returns a
+// Resolve reads primary affinity, captures this request's primary and shadow keys, and returns a
 // callback for deferred persistence after backend success.
 func (p *ShardKeyAffinityProvider) Resolve(req *octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
 	ctx := req.Context()
-	primaryKeys := p.primary.getter(req)
+	primaryKeys := p.primary.getShardKeys(req)
 
-	var prioritized []*PrioritizedBackend
-	snaps, err := p.primary.strongHitPolicy.ResolveShardKeyAffinity(ctx, StrongHitScope{
-		KeyPrefix: p.keyPrefix,
-		Namespace: p.primary.namespace,
-	}, primaryKeys)
+	prioritized, err := p.primary.lookupAffinity(ctx, primaryKeys)
 	if err != nil {
 		slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to resolve shard key affinity: %v", err))
+		prioritized = nil
 	} else {
-		prioritized = p.prioritizeAffinitySnapshots(ctx, snaps)
+		prioritized = filterKnownBackends(prioritized, p.backendNames)
 	}
 
-	// Capture each request's keys now; commit runs only after a backend succeeds.
-	primarySnapshot := append([]string(nil), primaryKeys...)
-	shadowSnapshots := make([]struct {
-		namespace string
-		keys      []string
-	}, len(p.shadows))
-	for i, shadow := range p.shadows {
-		keys := shadow.getter(req)
-		shadowSnapshots[i] = struct {
-			namespace string
-			keys      []string
-		}{
-			namespace: shadow.namespace,
-			keys:      append([]string(nil), keys...),
-		}
+	shadowKeys := make([][]string, len(p.shadows))
+	for i := range p.shadows {
+		shadowKeys[i] = p.shadows[i].getShardKeys(req)
 	}
 
 	commit := func(selectedBackend string) error {
@@ -207,28 +182,22 @@ func (p *ShardKeyAffinityProvider) Resolve(req *octollm.Request) ([]*Prioritized
 			return nil
 		}
 		pipe := p.redisClient.Pipeline()
-		enqueueSuccessfulPathLearning(pipe, ctx, StrongHitScope{
-			KeyPrefix: p.keyPrefix,
-			Namespace: p.primary.namespace,
-		}, primarySnapshot, selectedBackend, p.shardKeyTTL)
-		for _, shadow := range shadowSnapshots {
-			enqueueSuccessfulPathLearning(pipe, ctx, StrongHitScope{
-				KeyPrefix: p.keyPrefix,
-				Namespace: shadow.namespace,
-			}, shadow.keys, selectedBackend, p.shardKeyTTL)
+		p.primary.enqueueSuccessfulPathLearning(pipe, ctx, primaryKeys, selectedBackend, p.shardKeyTTL)
+		for i := range p.shadows {
+			p.shadows[i].enqueueSuccessfulPathLearning(pipe, ctx, shadowKeys[i], selectedBackend, p.shardKeyTTL)
 		}
 		if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
 			slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to update shard key mapping in Redis: %v", err))
 			return err
 		}
-		if leaf := lastNonEmptyShardKey(primarySnapshot); leaf != "" {
+		if leaf := lastNonEmptyShardKey(primaryKeys); leaf != "" {
 			slog.DebugContext(ctx, "[ShardKey affinity provider] path learning committed",
 				"backend_name", selectedBackend,
-				"namespace", p.primary.namespace,
-				"mapping_key", redisKeyForStrategy(p.keyPrefix, p.primary.namespace, leaf),
-				"marker_key", redisKeyForStrategy(p.keyPrefix, p.primary.namespace, "is-leaf:"+leaf),
-				"hash_count", countNonEmptyShardKeys(primarySnapshot),
-				"shadow_count", len(shadowSnapshots),
+				"namespace", p.primary.keyspace().Namespace,
+				"mapping_key", p.primary.keyspace().mappingKey(leaf),
+				"marker_key", p.primary.keyspace().markerKey(leaf),
+				"hash_count", countNonEmptyShardKeys(primaryKeys),
+				"shadow_count", len(shadowKeys),
 			)
 		}
 		return nil
@@ -237,56 +206,17 @@ func (p *ShardKeyAffinityProvider) Resolve(req *octollm.Request) ([]*Prioritized
 	return prioritized, commit, nil
 }
 
-// prioritizeAffinitySnapshots scans snapshots from last to first, so later keys have higher priority.
-// Only primary mappings affect routing. If a hash's mapping has more than three members, that
-// mapping key is trimmed in Redis; this request still uses the full member list.
-func (p *ShardKeyAffinityProvider) prioritizeAffinitySnapshots(
-	ctx context.Context,
-	snapshots []ShardKeyAffinitySnapshot,
-) []*PrioritizedBackend {
-	if len(snapshots) == 0 {
-		return nil
+// filterKnownBackends drops candidates not in known. An empty known set means
+// no allowlist is configured and all candidates are kept.
+func filterKnownBackends(prioritized []*PrioritizedBackend, known map[string]struct{}) []*PrioritizedBackend {
+	if len(known) == 0 {
+		return prioritized
 	}
-
-	trimPipe := p.redisClient.Pipeline()
-	seen := make(map[string]bool)
-	var prioritized []*PrioritizedBackend
-	queuedTrim := false
-
-	for i := len(snapshots) - 1; i >= 0; i-- {
-		snap := snapshots[i]
-		if snap.ShardKey == "" {
-			continue
-		}
-		if len(snap.BackendNames) > 3 {
-			stop := int64(len(snap.BackendNames) - 4)
-			if stop >= 0 {
-				trimPipe.ZRemRangeByRank(ctx, redisKeyForStrategy(p.keyPrefix, p.primary.namespace, snap.ShardKey), 0, stop)
-				queuedTrim = true
-			}
-		}
-		for _, name := range snap.BackendNames {
-			if name == "" || seen[name] {
-				continue
-			}
-			if len(p.backendNames) > 0 {
-				if _, ok := p.backendNames[name]; !ok {
-					continue
-				}
-			}
-			prioritized = append(prioritized, &PrioritizedBackend{
-				Name:           name,
-				StrongCacheHit: snap.StrongCacheHit,
-			})
-			seen[name] = true
+	out := make([]*PrioritizedBackend, 0, len(prioritized))
+	for _, b := range prioritized {
+		if _, ok := known[b.Name]; ok {
+			out = append(out, b)
 		}
 	}
-
-	if queuedTrim {
-		if _, err := trimPipe.Exec(ctx); err != nil && err != redis.Nil {
-			slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to trim Redis ZSET for shard keys: %v", err))
-		}
-	}
-
-	return prioritized
+	return out
 }
