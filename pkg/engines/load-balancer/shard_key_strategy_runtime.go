@@ -89,15 +89,6 @@ func appendPrioritizedMapping(
 	}
 }
 
-func execQueuedMappingTrim(ctx context.Context, trimPipe redis.Pipeliner, queuedTrim bool) {
-	if !queuedTrim {
-		return
-	}
-	if _, err := trimPipe.Exec(ctx); err != nil && err != redis.Nil {
-		slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to trim Redis ZSET for shard keys: %v", err))
-	}
-}
-
 // lookupAffinityForLastTwoPolicy reads each non-empty shard key's mapping ZSET,
 // then collects candidates from last to first so later keys have higher priority.
 // StrongCacheHit uses original indices: empty strings still occupy a last-two
@@ -124,7 +115,7 @@ func lookupAffinityForLastTwoPolicy(
 	}
 	if queued {
 		if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-			return nil, err
+			slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to exec Redis pipeline for shard keys: %v", err))
 		}
 	}
 
@@ -139,11 +130,16 @@ func lookupAffinityForLastTwoPolicy(
 		}
 		names, err := cmds[i].Result()
 		if err != nil && err != redis.Nil {
-			return nil, err
+			slog.DebugContext(ctx, fmt.Sprintf("[ShardKey affinity provider] Redis ZSET error for shard key %s: %v", shardKeys[i], err))
+			continue
 		}
 		appendPrioritizedMapping(ctx, trimPipe, keyspace, shardKeys[i], names, i >= strongFrom, seen, &prioritized, &queuedTrim)
 	}
-	execQueuedMappingTrim(ctx, trimPipe, queuedTrim)
+	if queuedTrim {
+		if _, err := trimPipe.Exec(ctx); err != nil && err != redis.Nil {
+			slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to trim Redis ZSET for shard keys: %v", err))
+		}
+	}
 	return prioritized, nil
 }
 
@@ -169,7 +165,7 @@ func lookupAffinityForLeafPolicy(
 		existsCmds[i] = pipe.Exists(ctx, keyspace.markerKey(shardKey))
 	}
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-		return nil, err
+		slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to exec Redis pipeline for shard keys: %v", err))
 	}
 
 	trimPipe := rd.Pipeline()
@@ -179,11 +175,13 @@ func lookupAffinityForLeafPolicy(
 	for i := len(valid) - 1; i >= 0; i-- {
 		names, err := rangeCmds[i].Result()
 		if err != nil && err != redis.Nil {
-			return nil, err
+			slog.DebugContext(ctx, fmt.Sprintf("[ShardKey affinity provider] Redis ZSET error for shard key %s: %v", valid[i], err))
+			continue
 		}
 		exists, err := existsCmds[i].Result()
 		if err != nil && err != redis.Nil {
-			return nil, err
+			slog.DebugContext(ctx, fmt.Sprintf("[ShardKey affinity provider] Redis marker error for shard key %s: %v", valid[i], err))
+			continue
 		}
 		appendPrioritizedMapping(
 			ctx, trimPipe, keyspace, valid[i], names,
@@ -191,7 +189,11 @@ func lookupAffinityForLeafPolicy(
 			seen, &prioritized, &queuedTrim,
 		)
 	}
-	execQueuedMappingTrim(ctx, trimPipe, queuedTrim)
+	if queuedTrim {
+		if _, err := trimPipe.Exec(ctx); err != nil && err != redis.Nil {
+			slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to trim Redis ZSET for shard keys: %v", err))
+		}
+	}
 	return prioritized, nil
 }
 
