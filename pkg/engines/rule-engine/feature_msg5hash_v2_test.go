@@ -281,6 +281,34 @@ func TestMessage5HashV2_Features(t *testing.T) {
 	})
 }
 
+// TestMessage5HashV2_MessageTextPostProcessor verifies that setting
+// Msg5HashV2_MessageTextPostProcessor activates text post-processing before hashing.
+func TestMessage5HashV2_MessageTextPostProcessor(t *testing.T) {
+	orig := Msg5HashV2_MessageTextPostProcessor
+	defer func() { Msg5HashV2_MessageTextPostProcessor = orig }()
+
+	mkReq := func(content string) *openai.ChatCompletionRequest {
+		return &openai.ChatCompletionRequest{
+			Model:    "gpt-3.5-turbo",
+			Messages: []*openai.Message{{Role: "user", Content: openai.MessageContentString(content)}},
+		}
+	}
+
+	// Hash of "canonical" with no post-processor.
+	Msg5HashV2_MessageTextPostProcessor = nil
+	reqDirect := testhelper.CreateTestRequest(testhelper.WithBody(mkReq("canonical")))
+	direct, err := (&Message5HashV2Extractor{}).Features(reqDirect)
+	require.NoError(t, err)
+
+	// Hash of "whatever" but post-processor rewrites it to "canonical" → must match direct.
+	Msg5HashV2_MessageTextPostProcessor = func(string) string { return "canonical" }
+	reqHooked := testhelper.CreateTestRequest(testhelper.WithBody(mkReq("whatever")))
+	hooked, err := (&Message5HashV2Extractor{}).Features(reqHooked)
+	require.NoError(t, err)
+
+	assert.Equal(t, direct, hooked, "post-processor should rewrite 'whatever' to 'canonical'")
+}
+
 // TestMessage5Hash_Features_Anthropic mirrors TestMessage5Hash_Features using the Anthropic
 // messages format. Each case is the equivalent of its OpenAI counterpart:
 //   - system field → treated as first message (converter prepend logic)
