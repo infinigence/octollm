@@ -66,7 +66,7 @@ func computeMessage5HashesV2(messages []*openai.Message) []string {
 		if msg == nil {
 			continue
 		}
-		msgTxt := messageTextForHash(msg)
+		msgTxt := chatMessageTextForHashV2(msg)
 		if msgTxt == "" {
 			continue
 		}
@@ -123,7 +123,55 @@ func computeAnthropicMessage5HashesV2(system anthropic.SystemContent, messages [
 		if msg == nil {
 			continue
 		}
-		hashOne(anthropicMessageTextForHash(msg))
+		hashOne(anthropicMessageTextForHashV2(msg))
 	}
 	return hashes
+}
+
+var Msg5HashV2_MessageTextPostProcessor func(string) string = nil
+
+// chatMessageTextForHashV2 returns text from a message for hashing: Content.ExtractText(), or if empty
+// and the message has ToolCalls, the first tool call's Function.Arguments.
+func chatMessageTextForHashV2(msg *openai.Message) string {
+	msgTxt := ""
+	if msg.Content != nil {
+		msgTxt = msg.Content.ExtractText()
+	}
+	if Msg5HashV2_MessageTextPostProcessor != nil {
+		msgTxt = Msg5HashV2_MessageTextPostProcessor(msgTxt)
+	}
+	if strings.TrimSpace(msgTxt) != "" {
+		return msgTxt
+	}
+	if len(msg.ToolCalls) == 0 {
+		return ""
+	}
+	toolcall := msg.ToolCalls[0]
+	if toolcall != nil && toolcall.Function != nil {
+		return toolcall.Function.Arguments
+	}
+	return ""
+}
+
+// anthropicMessageTextForHashV2 returns text for hashing: combined content text, or if empty,
+// the Input JSON of the first tool_use block.
+func anthropicMessageTextForHashV2(msg *anthropic.MessageParam) string {
+	msgTxt := ""
+	if msg.Content != nil {
+		msgTxt = msg.Content.ExtractText()
+	}
+	if Msg5HashV2_MessageTextPostProcessor != nil {
+		msgTxt = Msg5HashV2_MessageTextPostProcessor(msgTxt)
+	}
+	if strings.TrimSpace(msgTxt) != "" {
+		return msgTxt
+	}
+	if arr, ok := msg.Content.(anthropic.MessageContentBlockArray); ok {
+		for _, block := range arr {
+			if b, ok := block.(*anthropic.ToolUseBlockParam); ok {
+				return string(b.Input)
+			}
+		}
+	}
+	return ""
 }
