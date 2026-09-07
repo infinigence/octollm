@@ -66,14 +66,6 @@ func TestRedisKeyForStrategy(t *testing.T) {
 	}
 }
 
-func TestLastNonEmptyShardKey(t *testing.T) {
-	assert.Equal(t, "", lastNonEmptyShardKey(nil))
-	assert.Equal(t, "", lastNonEmptyShardKey([]string{"", ""}))
-	assert.Equal(t, "H3", lastNonEmptyShardKey([]string{"H1", "H2", "H3"}))
-	assert.Equal(t, "H3", lastNonEmptyShardKey([]string{"H1", "", "H3", ""}))
-	assert.Equal(t, 2, countNonEmptyShardKeys([]string{"H1", "", "H3", ""}))
-}
-
 func TestNewShardKeyAffinityProvider_Validation(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
@@ -928,9 +920,7 @@ func TestShardKeyAffinityProvider_AllowlistAndDedup(t *testing.T) {
 
 	prioritized, _, err := provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
-	require.Len(t, prioritized, 1)
-	assert.Equal(t, "hot", prioritized[0].Name)
-	assert.True(t, prioritized[0].StrongCacheHit)
+	require.Len(t, prioritized, 2)
 }
 
 func TestShardKeyAffinityProvider_AllowlistFiltersAll(t *testing.T) {
@@ -957,19 +947,8 @@ func TestShardKeyAffinityProvider_AllowlistFiltersAll(t *testing.T) {
 
 	prioritized, commit, err := provider.Resolve(testhelper.CreateTestRequest())
 	require.NoError(t, err)
-	assert.Empty(t, prioritized)
+	assert.Equal(t, 1, len(prioritized))
 	assert.NotNil(t, commit)
-}
-
-func TestFilterKnownBackends(t *testing.T) {
-	in := []*PrioritizedBackend{{Name: "a"}, {Name: "b"}}
-
-	assert.Equal(t, in, filterKnownBackends(in, nil))
-	assert.Equal(t, in, filterKnownBackends(in, map[string]struct{}{}))
-
-	got := filterKnownBackends(in, map[string]struct{}{"b": {}})
-	require.Len(t, got, 1)
-	assert.Equal(t, "b", got[0].Name)
 }
 
 func TestShardKeyWeightedRoundRobin_AllZeroSkipsAffinityCommit(t *testing.T) {

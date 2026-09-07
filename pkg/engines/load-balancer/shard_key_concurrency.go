@@ -123,7 +123,7 @@ func NewShardKeyConcurrency(
 	}, nil
 }
 
-func (l *ShardKeyConcurrency) resolveAffinity(req *octollm.Request) ([]prioritizedBackend, AffinityCommitFunc, error) {
+func (l *ShardKeyConcurrency) resolveAffinity(req *octollm.Request) ([]*prioritizedBackend, AffinityCommitFunc, error) {
 	if l.affinityProvider == nil {
 		return nil, nil, nil
 	}
@@ -140,7 +140,7 @@ func (l *ShardKeyConcurrency) resolveAffinity(req *octollm.Request) ([]prioritiz
 		}
 	}
 
-	prioritized := make([]prioritizedBackend, 0, len(providerBackends))
+	prioritized := make([]*prioritizedBackend, 0, len(providerBackends))
 	for _, pb := range providerBackends {
 		if pb == nil {
 			continue
@@ -149,7 +149,7 @@ func (l *ShardKeyConcurrency) resolveAffinity(req *octollm.Request) ([]prioritiz
 		if !ok || b == nil {
 			continue
 		}
-		prioritized = append(prioritized, prioritizedBackend{
+		prioritized = append(prioritized, &prioritizedBackend{
 			backend:        b,
 			strongCacheHit: pb.StrongCacheHit,
 		})
@@ -244,9 +244,21 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 		return nil, fmt.Errorf("failed to cache request body for retries: %w", err)
 	}
 
+	modelName, _ := octollm.GetCtxValue[string](req, octollm.ContextKeyModelName)
+
 	prioritized, commit, err := l.resolveAffinity(req)
 	if err != nil {
 		return nil, err
+	}
+
+	weakHits := make(map[string]bool)
+	for _, pb := range prioritized {
+		if pb == nil || pb.backend == nil {
+			continue
+		}
+		if !pb.isStrongCacheHit() {
+			weakHits[pb.backend.name] = true
+		}
 	}
 
 	prioritizedIndex := 0
@@ -257,14 +269,19 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 	headroomSkipCount := 0
 	var lastResp *octollm.Response
 	var lastErr error
+	var lastN, lastKind string
 	for {
 		var n string
 		var eng octollm.Engine
+		kind := affinityKindMiss
 
 		if prioritizedIndex < len(prioritized) {
 			pb := prioritized[prioritizedIndex]
-			b := pb.backend
 			prioritizedIndex++
+			if pb == nil || pb.backend == nil {
+				continue
+			}
+			b := pb.backend
 			if excludeNames[b.name] {
 				continue
 			}
@@ -288,6 +305,11 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 				continue
 			}
 			n, eng = b.name, b.engine
+			if strongCacheHit {
+				kind = affinityKindStrongHitCacheAware
+			} else {
+				kind = affinityKindWeakHitCacheAware
+			}
 			slog.InfoContext(req.Context(),
 				fmt.Sprintf("[ShardKey Concurrency load balancer] prioritized backend hit (strongCacheHit=%t): %s (index %d/%d)", strongCacheHit, n, prioritizedIndex, len(prioritized)),
 				slog.String("backend_name", n),
@@ -300,9 +322,6 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 				}
 			}
 			selected, ratio := l.selectByConcurrency(req, excludeNames)
-			if selected != nil {
-				n, eng = selected.name, selected.engine
-			}
 			// Headroom is per backend, so exclude an over-limit cache miss and try the next candidate.
 			if selected != nil && selected.headroomEnabled() && ratio > selected.cacheMissMaxUtilization {
 				slog.InfoContext(req.Context(),
@@ -312,6 +331,12 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 				excludeNames[selected.name] = true
 				headroomSkipCount++
 				continue
+			}
+			if selected != nil {
+				n, eng = selected.name, selected.engine
+				if weakHits[n] {
+					kind = affinityKindWeakHitFallback
+				}
 			}
 			slog.InfoContext(req.Context(),
 				fmt.Sprintf("[ShardKey Concurrency load balancer] no prioritized backend available (exhausted %d), fallback to concurrency-based selection: %s, candidates: %v", len(prioritized), n, candidates),
@@ -327,6 +352,7 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			// occurred; otherwise a generic selection failure.
 			if retryCount > 0 {
 				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no backend engine available on failover, returning previous error: %v", lastErr))
+				cacheAwareRouteCounter.WithLabelValues(lastKind, modelName, lastN).Inc()
 				return lastResp, lastErr
 			}
 
@@ -362,33 +388,40 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] failed to commit shard key mapping: %v", commitErr))
 				}
 			}
+			cacheAwareRouteCounter.WithLabelValues(kind, modelName, n).Inc()
 			return resp, nil
 		}
+
 		if isNotRetriableError(err) {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] error is not retriable, return without retry: %v", err))
+			cacheAwareRouteCounter.WithLabelValues(kind, modelName, n).Inc()
 			return resp, err
 		}
 		excludeNames[n] = true
 		lastResp, lastErr = resp, err
+		lastN, lastKind = n, kind
 		retryCount++
 		if req.Context().Err() != nil {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] request context error: %v", req.Context().Err()))
+			cacheAwareRouteCounter.WithLabelValues(kind, modelName, n).Inc()
 			return resp, err
 		}
 		if time.Since(start) >= l.retryTimeout {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] retry period %v reached, return last resp and err", l.retryTimeout))
+			cacheAwareRouteCounter.WithLabelValues(kind, modelName, n).Inc()
 			return resp, err
 		}
 		if retryCount >= l.retryMaxCount {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] retry max count %d reached, return last resp and err", l.retryMaxCount))
+			cacheAwareRouteCounter.WithLabelValues(kind, modelName, n).Inc()
 			return resp, err
 		}
 		if len(excludeNames) >= len(l.backends) {
 			slog.WarnContext(req.Context(), "[ShardKey Concurrency load balancer] all backends have been tried, return last resp and err")
+			cacheAwareRouteCounter.WithLabelValues(kind, modelName, n).Inc()
 			return resp, err
 		}
 		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] will retry, count %d, time %v", retryCount, time.Since(start)))
-		modelName, _ := octollm.GetCtxValue[string](req, octollm.ContextKeyModelName)
 		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
 	}
 }

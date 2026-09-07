@@ -93,7 +93,7 @@ func (l *ShardKeyWeightedRoundRobin) resolveAffinity(req *octollm.Request) ([]*w
 
 	backendByName := make(map[string]*wrrBackend, len(l.backends))
 	for _, b := range l.backends {
-		if b.name != "" {
+		if b != nil && b.name != "" {
 			backendByName[b.name] = b
 		}
 	}
