@@ -93,9 +93,9 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 
 func TestResolveAffinity_NilProvider(t *testing.T) {
 	lb := &ShardKeyWeightedRoundRobin{}
-	prioritized, commit, err := lb.resolveAffinity(testhelper.CreateTestRequest())
+	mapped, commit, err := lb.resolveAffinity(testhelper.CreateTestRequest())
 	require.NoError(t, err)
-	assert.Nil(t, prioritized)
+	assert.Nil(t, mapped)
 	assert.Nil(t, commit)
 }
 
@@ -142,7 +142,8 @@ func TestResolveAffinity_WithRedisAndTrim(t *testing.T) {
 	).Result()
 	assert.NoError(t, zerr)
 
-	prioritized, _, err := lb.resolveAffinity(testhelper.CreateTestRequest())
+	req := testhelper.CreateTestRequest()
+	prioritized, _, err := lb.resolveAffinity(req)
 	require.NoError(t, err)
 	if assert.NotEmpty(t, prioritized) {
 		wantOrderPrefix := []string{"b5", "b4", "b3"}
@@ -186,7 +187,8 @@ func TestResolveAffinity_OnlyStrongCacheHits(t *testing.T) {
 		_, zerr := client.ZAdd(ctx, "k1", redis.Z{Score: now, Member: "weak"}).Result()
 		require.NoError(t, zerr)
 
-		prioritized, _, err := lb.resolveAffinity(testhelper.CreateTestRequest())
+		req := testhelper.CreateTestRequest()
+		prioritized, _, err := lb.resolveAffinity(req)
 		require.NoError(t, err)
 		assert.Empty(t, prioritized)
 	})
@@ -195,7 +197,8 @@ func TestResolveAffinity_OnlyStrongCacheHits(t *testing.T) {
 		_, zerr := client.ZAdd(ctx, "k3", redis.Z{Score: now, Member: "strong"}).Result()
 		require.NoError(t, zerr)
 
-		prioritized, _, err := lb.resolveAffinity(testhelper.CreateTestRequest())
+		req := testhelper.CreateTestRequest()
+		prioritized, _, err := lb.resolveAffinity(req)
 		require.NoError(t, err)
 		require.Len(t, prioritized, 1)
 		assert.Equal(t, "strong", prioritized[0].name)

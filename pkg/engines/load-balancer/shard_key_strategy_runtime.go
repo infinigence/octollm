@@ -200,8 +200,9 @@ func lookupAffinityForLeafPolicy(
 // lookupAffinity returns routing candidates for this strategy. It reads Redis
 // under strongHitPolicy, then scans from last to first so later keys have
 // higher priority. Mappings with more than three members are trimmed in Redis
-// after this request has already used the full member list. BackendNames
-// allowlisting is applied by the caller, not here.
+// after this request has already used the full member list. Unknown backend
+// names are dropped later when the load balancer maps candidates onto its
+// own backends.
 func (s *shardKeyStrategyRuntime) lookupAffinity(
 	ctx context.Context,
 	shardKeys []string,

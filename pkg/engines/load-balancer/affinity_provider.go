@@ -139,25 +139,6 @@ func redisKeyForStrategy(keyPrefix, namespace, shardKey string) string {
 	return keyPrefix + ":" + namespace + ":" + shardKey
 }
 
-func lastNonEmptyShardKey(shardKeys []string) string {
-	for i := len(shardKeys) - 1; i >= 0; i-- {
-		if shardKeys[i] != "" {
-			return shardKeys[i]
-		}
-	}
-	return ""
-}
-
-func countNonEmptyShardKeys(shardKeys []string) int {
-	n := 0
-	for _, k := range shardKeys {
-		if k != "" {
-			n++
-		}
-	}
-	return n
-}
-
 // Resolve reads primary affinity, captures this request's primary and shadow keys, and returns a
 // callback for deferred persistence after backend success.
 func (p *ShardKeyAffinityProvider) Resolve(req *octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
@@ -168,8 +149,6 @@ func (p *ShardKeyAffinityProvider) Resolve(req *octollm.Request) ([]*Prioritized
 	if err != nil {
 		slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to resolve shard key affinity: %v", err))
 		prioritized = nil
-	} else {
-		prioritized = filterKnownBackends(prioritized, p.backendNames)
 	}
 
 	shadowKeys := make([][]string, len(p.shadows))
@@ -190,33 +169,13 @@ func (p *ShardKeyAffinityProvider) Resolve(req *octollm.Request) ([]*Prioritized
 			slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to update shard key mapping in Redis: %v", err))
 			return err
 		}
-		if leaf := lastNonEmptyShardKey(primaryKeys); leaf != "" {
-			slog.DebugContext(ctx, "[ShardKey affinity provider] path learning committed",
-				"backend_name", selectedBackend,
-				"namespace", p.primary.keyspace().Namespace,
-				"mapping_key", p.primary.keyspace().mappingKey(leaf),
-				"marker_key", p.primary.keyspace().markerKey(leaf),
-				"hash_count", countNonEmptyShardKeys(primaryKeys),
-				"shadow_count", len(shadowKeys),
-			)
-		}
+		slog.DebugContext(ctx, "[ShardKey affinity provider] path learning committed",
+			"backend_name", selectedBackend,
+			"namespace", p.primary.keyspace().Namespace,
+			"shadow_count", len(shadowKeys),
+		)
 		return nil
 	}
 
 	return prioritized, commit, nil
-}
-
-// filterKnownBackends drops candidates not in known. An empty known set means
-// no allowlist is configured and all candidates are kept.
-func filterKnownBackends(prioritized []*PrioritizedBackend, known map[string]struct{}) []*PrioritizedBackend {
-	if len(known) == 0 {
-		return prioritized
-	}
-	out := make([]*PrioritizedBackend, 0, len(prioritized))
-	for _, b := range prioritized {
-		if _, ok := known[b.Name]; ok {
-			out = append(out, b)
-		}
-	}
-	return out
 }
