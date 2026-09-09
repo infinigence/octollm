@@ -507,13 +507,10 @@ func TestShardKeyConcurrency_WithAffinityProvider(t *testing.T) {
 	require.NoError(t, err)
 
 	lb, err := NewShardKeyConcurrency(
-		items,
+		withTestConcurrencyKeys(items),
 		time.Second, 3,
 		provider,
 		rd,
-		func(_ *octollm.Request, backendName string) string {
-			return "concurrency:" + backendName
-		},
 		nil,
 	)
 	require.NoError(t, err)
@@ -558,12 +555,11 @@ func TestShardKeyConcurrency_WithAffinityProvider_RequestFailureDoesNotCommit(t 
 		return nil, errors.New("upstream failure")
 	})
 	lb, err := NewShardKeyConcurrency(
-		[]BackendItem{{Name: "svc-a", Weight: 1, Engine: failingEngine}},
+		withTestConcurrencyKeys([]BackendItem{{Name: "svc-a", Weight: 1, Engine: failingEngine}}),
 		time.Second,
 		1,
 		provider,
 		rd,
-		func(_ *octollm.Request, backendName string) string { return "concurrency:" + backendName },
 		nil,
 	)
 	require.NoError(t, err)
@@ -610,14 +606,13 @@ func TestShardKeyWeightedRoundRobin_WithAffinityProvider(t *testing.T) {
 	require.NoError(t, err)
 
 	lb, err := NewShardKeyWeightedRoundRobin(
-		[]BackendItem{
+		withTestConcurrencyKeys([]BackendItem{
 			{Name: "A", Weight: 10, Engine: engineA},
 			{Name: "B", Weight: 5, Engine: engineB},
-		},
-		time.Second, 3,
+		}),
+		time.Second, 3, 0,
 		provider,
-		nil,
-	)
+		nil, newTestRedis(t))
 	require.NoError(t, err)
 
 	req := testhelper.CreateTestRequest()
@@ -653,17 +648,17 @@ func TestShardKeyWeightedRoundRobin_WithAffinityProvider_RequestFailureDoesNotCo
 	require.NoError(t, err)
 
 	lb, err := NewShardKeyWeightedRoundRobin(
-		[]BackendItem{{
+		withTestConcurrencyKeys([]BackendItem{{
 			Name: "svc-a", Weight: 1,
 			Engine: octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
 				return nil, errors.New("upstream failure")
 			}),
-		}},
+		}}),
 		time.Second,
 		1,
+		0,
 		provider,
-		nil,
-	)
+		nil, newTestRedis(t))
 	require.NoError(t, err)
 
 	_, err = lb.Process(testhelper.CreateTestRequest())
@@ -687,17 +682,16 @@ func TestShardKeyLoadBalancers_AffinityProviderErrors(t *testing.T) {
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 		calls := 0
 		lb, err := NewShardKeyConcurrency(
-			[]BackendItem{{Name: "svc-a", Weight: 1, Engine: octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+			withTestConcurrencyKeys([]BackendItem{{Name: "svc-a", Weight: 1, Engine: octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
 				calls++
 				return &octollm.Response{StatusCode: 200}, nil
-			})}},
+			})}}),
 			time.Second,
 			1,
 			affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
 				return nil, nil, providerErr
 			}),
 			rd,
-			func(_ *octollm.Request, backendName string) string { return "concurrency:" + backendName },
 			nil,
 		)
 		require.NoError(t, err)
@@ -710,17 +704,17 @@ func TestShardKeyLoadBalancers_AffinityProviderErrors(t *testing.T) {
 	t.Run("weighted round robin does not invoke backend", func(t *testing.T) {
 		calls := 0
 		lb, err := NewShardKeyWeightedRoundRobin(
-			[]BackendItem{{Name: "svc-a", Weight: 1, Engine: octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+			withTestConcurrencyKeys([]BackendItem{{Name: "svc-a", Weight: 1, Engine: octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
 				calls++
 				return &octollm.Response{StatusCode: 200}, nil
-			})}},
+			})}}),
 			time.Second,
 			1,
+			0,
 			affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
 				return nil, nil, providerErr
 			}),
-			nil,
-		)
+			nil, newTestRedis(t))
 		require.NoError(t, err)
 
 		_, err = lb.Process(testhelper.CreateTestRequest())
@@ -740,14 +734,13 @@ func TestShardKeyLoadBalancers_AffinityCommitErrorDoesNotFailRequest(t *testing.
 		defer mr.Close()
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 		lb, err := NewShardKeyConcurrency(
-			[]BackendItem{{Name: "svc-a", Weight: 1, Engine: octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+			withTestConcurrencyKeys([]BackendItem{{Name: "svc-a", Weight: 1, Engine: octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
 				return &octollm.Response{StatusCode: 200}, nil
-			})}},
+			})}}),
 			time.Second,
 			1,
 			provider,
 			rd,
-			func(_ *octollm.Request, backendName string) string { return "concurrency:" + backendName },
 			nil,
 		)
 		require.NoError(t, err)
@@ -759,14 +752,14 @@ func TestShardKeyLoadBalancers_AffinityCommitErrorDoesNotFailRequest(t *testing.
 
 	t.Run("weighted round robin", func(t *testing.T) {
 		lb, err := NewShardKeyWeightedRoundRobin(
-			[]BackendItem{{Name: "svc-a", Weight: 1, Engine: octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+			withTestConcurrencyKeys([]BackendItem{{Name: "svc-a", Weight: 1, Engine: octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
 				return &octollm.Response{StatusCode: 200}, nil
-			})}},
+			})}}),
 			time.Second,
 			1,
+			0,
 			provider,
-			nil,
-		)
+			nil, newTestRedis(t))
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -973,7 +966,7 @@ func TestShardKeyWeightedRoundRobin_AllZeroSkipsAffinityCommit(t *testing.T) {
 		return &octollm.Response{StatusCode: 200}, nil
 	})
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*wrrBackend{
+		backends: []*sharedKeyRoundRobinBackend{
 			{name: "svc-a", weight: 0, engine: okEngine},
 		},
 		affinityProvider: provider,

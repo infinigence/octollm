@@ -18,13 +18,16 @@ type BackendItem struct {
 	Name   string // optional
 	Weight int
 	Engine octollm.Engine
-	// MaxConcurrencyFn is optional; ShardKeyConcurrency uses it as the request-time ratio denominator.
-	// When nil, ShardKeyConcurrency wraps Weight as a static denominator.
+	// MaxConcurrencyFn is optional; shard-key LBs use it as the request-time ratio denominator.
+	// When nil, newBackendHeadroom wraps Weight as a static denominator.
 	MaxConcurrencyFn ShardMaxConcurrencyFn
 	// CacheMissMaxUtilization is the per-backend concurrency utilization (count/maxConcurrency) ceiling
 	// above which non-strong-cache-hit requests are denied headroom on this backend. A value >= 1.0
-	// (or <= 0) disables the headroom reservation for the backend. Only ShardKeyConcurrency uses it.
+	// (or <= 0) disables the headroom reservation for the backend.
 	CacheMissMaxUtilization float64
+	// ConcurrencyKeyFn returns this backend's in-flight Redis ZSET key for the request.
+	// Required by shard-key LBs that read concurrency for selection or cache-miss headroom.
+	ConcurrencyKeyFn func(*octollm.Request) string
 }
 
 type wrrBackend struct {
