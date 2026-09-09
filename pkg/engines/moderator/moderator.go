@@ -196,6 +196,13 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 				if errors.Is(err, octollm.ErrStreamDone) {
 					chunkBuffer = append(chunkBuffer, chunk)
 					streamChunkCount++
+					// Release the producer before the buffered tail goes downstream:
+					// once the consumer finishes the response it cancels ctx, which
+					// would cut the drain short.
+					// See [octollm.StreamChan.DrainRemaining].
+					drainCtx, cancelDrain := context.WithTimeout(context.WithoutCancel(ctx), octollm.DefaultDrainTimeout)
+					originalChunks.DrainRemaining(drainCtx)
+					cancelDrain()
 					break
 				}
 				moderationFailedErr = fmt.Errorf("%w: %w", ErrModeratorInternalError, err)
