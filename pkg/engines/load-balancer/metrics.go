@@ -5,10 +5,9 @@ import (
 )
 
 const (
-	affinityKindStrongHitCacheAware = "strong_hit_cache_aware"
-	affinityKindWeakHitCacheAware   = "weak_hit_cache_aware"
-	affinityKindWeakHitFallback     = "weak_hit_fallback"
-	affinityKindMiss                = "miss"
+	affinityKindStrongCacheAware = "strong_cache"
+	affinityKindWeakCacheAware   = "weak_cache"
+	affinityKindMiss             = "miss"
 )
 
 var (
@@ -20,7 +19,7 @@ var (
 	cacheAwareRouteCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "octollm_cache_aware_route_total",
 		Help: "cache-aware LB outbound attempts by hit kind",
-	}, []string{"kind", "model_name", "backend_name"})
+	}, []string{"expect", "actual", "model_name", "backend_name"})
 )
 
 func init() {
