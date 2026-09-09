@@ -434,6 +434,14 @@ func (e *ChatCompletionToClaudeMessages) convertStreamResponse(req *octollm.Requ
 
 				// [DONE]
 
+				// The loop stops reading here, so release the producer before the
+				// terminal events go downstream: forwarding them first lets the
+				// consumer finish the response and cancel ctx, which would cut the
+				// drain short. See [octollm.StreamChan.DrainRemaining].
+				drainCtx, cancelDrain := context.WithTimeout(context.WithoutCancel(ctx), octollm.DefaultDrainTimeout)
+				src.DrainRemaining(drainCtx)
+				cancelDrain()
+
 				// Send content_block_stop for current block if one exists
 				if currentBlockType != blockTypeNone {
 					blockStop := &anthropic.ClaudeMessagesStreamEvent{

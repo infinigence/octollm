@@ -3,6 +3,7 @@ package octollm_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -94,5 +95,101 @@ func TestRequestOriginalFormat(t *testing.T) {
 		v, ok := octollm.GetCtxValue[octollm.APIFormat](req, octollm.ContextKeyOriginalFormat)
 		assert.True(t, ok)
 		assert.Equal(t, octollm.APIFormatClaudeMessages, v, "original format must not follow Format mutations")
+	})
+}
+
+func TestStreamChanDrainRemaining(t *testing.T) {
+	// drainContext mirrors how callers are expected to bound the drain.
+	drainContext := func(ctx context.Context) (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(ctx), octollm.DefaultDrainTimeout)
+	}
+
+	t.Run("returns when producer closes the channel", func(t *testing.T) {
+		ch := make(chan *octollm.StreamChunk)
+		sc := octollm.NewStreamChan(ch, nil)
+
+		go func() {
+			defer close(ch)
+			for range 3 {
+				ch <- &octollm.StreamChunk{}
+			}
+		}()
+
+		ctx, cancel := drainContext(context.Background())
+		defer cancel()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			sc.DrainRemaining(ctx)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(octollm.DefaultDrainTimeout / 2):
+			t.Fatal("drain did not return after the producer closed the channel")
+		}
+	})
+
+	t.Run("gives up on a producer that never closes", func(t *testing.T) {
+		ch := make(chan *octollm.StreamChunk)
+		sc := octollm.NewStreamChan(ch, nil)
+
+		ctx, cancel := drainContext(context.Background())
+		defer cancel()
+
+		start := time.Now()
+		sc.DrainRemaining(ctx)
+		elapsed := time.Since(start)
+
+		assert.GreaterOrEqual(t, elapsed, octollm.DefaultDrainTimeout)
+		assert.Less(t, elapsed, octollm.DefaultDrainTimeout*3)
+	})
+
+	t.Run("keeps draining after the request context is canceled", func(t *testing.T) {
+		ch := make(chan *octollm.StreamChunk)
+		sc := octollm.NewStreamChan(ch, nil)
+
+		reqCtx, cancelReq := context.WithCancel(context.Background())
+		ctx, cancel := drainContext(reqCtx)
+		defer cancel()
+		// The client goes away mid-drain; the producer must still be released.
+		cancelReq()
+
+		released := make(chan struct{})
+		go func() {
+			defer close(released)
+			sc.DrainRemaining(ctx)
+		}()
+
+		select {
+		case <-released:
+			t.Fatal("drain gave up when the request context was canceled")
+		case <-time.After(octollm.DefaultDrainTimeout / 2):
+		}
+
+		close(ch)
+		select {
+		case <-released:
+		case <-time.After(octollm.DefaultDrainTimeout):
+			t.Fatal("drain did not return after the producer closed the channel")
+		}
+	})
+
+	t.Run("stops when the drain context is done", func(t *testing.T) {
+		ch := make(chan *octollm.StreamChunk)
+		sc := octollm.NewStreamChan(ch, nil)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		start := time.Now()
+		sc.DrainRemaining(ctx)
+		assert.Less(t, time.Since(start), octollm.DefaultDrainTimeout)
+	})
+
+	t.Run("nil receiver is a no-op", func(t *testing.T) {
+		var sc *octollm.StreamChan
+		assert.NotPanics(t, func() { sc.DrainRemaining(context.Background()) })
 	})
 }

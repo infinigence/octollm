@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
@@ -247,6 +249,60 @@ func (sc *StreamChan) Chan() <-chan *StreamChunk {
 func (sc *StreamChan) Close() {
 	if sc.closeFunc != nil {
 		sc.closeFunc()
+	}
+}
+
+// DefaultDrainTimeout is the budget callers should give
+// [StreamChan.DrainRemaining]. A producer that has not finished within this
+// window after the terminal chunk is not going to, and the end-of-stream
+// bookkeeping it would run is not worth stalling the client's response.
+const DefaultDrainTimeout = time.Second
+
+// DrainRemaining discards every chunk left on the stream until the producer
+// closes the channel or ctx is done, whichever comes first. The chunks are
+// dropped; only the channel's end matters.
+//
+// A wrapping engine that stops reading early — typically on [ErrStreamDone] —
+// leaves its producer blocked on a send that nobody will receive. Draining
+// releases that producer and lets the engines between it and here run their
+// own end-of-stream logic (usage reporting, prompt logging) instead of being
+// abandoned mid-send.
+//
+// Drain before handing the terminal chunk downstream. Once the terminal chunk
+// is forwarded, the consumer finishes the response and the request context is
+// canceled, which would end the drain before it has done anything.
+//
+// ctx must carry a deadline, and callers build it themselves:
+//
+//	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), octollm.DefaultDrainTimeout)
+//	defer cancel()
+//	src.DrainRemaining(drainCtx)
+//
+// Both halves matter. The deadline is not optional: draining before the
+// terminal chunk puts the producer's shutdown on the response's critical path,
+// and cancellation cannot get it back, because a producer parked in a body
+// read is released only by cancellation of the *request* context, which cannot
+// fire while the handler is still waiting on the chunks this drain precedes.
+// Without a deadline an upstream that is merely slow to close after its
+// terminal marker — buffering proxy, silently dropped connection — hangs the
+// response outright. [context.WithoutCancel] is what makes the drain worth
+// doing at all: the bookkeeping it exists to permit is exactly the bookkeeping
+// that must still run when the client has disconnected, so the drain gets its
+// own budget rather than inheriting a context that is about to be canceled.
+func (sc *StreamChan) DrainRemaining(ctx context.Context) {
+	if sc == nil {
+		return
+	}
+	for {
+		select {
+		case _, ok := <-sc.ch:
+			if !ok {
+				return
+			}
+		case <-ctx.Done():
+			slog.DebugContext(ctx, "[stream] drain aborted before upstream closed", "err", ctx.Err())
+			return
+		}
 	}
 }
 
