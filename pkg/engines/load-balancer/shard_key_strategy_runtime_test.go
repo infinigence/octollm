@@ -191,7 +191,7 @@ func TestLeafEmptyKeysDropped(t *testing.T) {
 
 	got, err := rt.lookupAffinity(context.Background(), []string{"", "H", ""})
 	require.NoError(t, err)
-	requirePrioritized(t, got, []string{"svc-h"}, []bool{true})
+	requirePrioritized(t, got, []string{"svc-h"}, []bool{false})
 }
 
 func TestLeafNoValidKeys(t *testing.T) {
@@ -219,7 +219,64 @@ func TestLeafLearnThenResolve(t *testing.T) {
 	rt := testRuntime(StrongHitPolicyLeaf, rd, scope)
 	got, err := rt.lookupAffinity(context.Background(), []string{"A", "B", "C"})
 	require.NoError(t, err)
-	requirePrioritized(t, got, []string{"svc-1"}, []bool{true})
+	requirePrioritized(t, got, []string{"svc-1"}, []bool{false})
+}
+
+func TestLeafStrongHitOnFifthOrNonLast(t *testing.T) {
+	t.Run("fifth key is last", func(t *testing.T) {
+		rd := testRuntimeRedis(t)
+		scope := testRuntimeScope()
+		rt := testRuntime(StrongHitPolicyLeaf, rd, scope)
+		hashes := []string{"H1", "H2", "H3", "H4", "H5"}
+		execPathLearning(t, rd, scope, hashes, "svc-1", time.Minute)
+		got, err := rt.lookupAffinity(context.Background(), hashes)
+		require.NoError(t, err)
+		requirePrioritized(t, got, []string{"svc-1"}, []bool{true})
+	})
+
+	t.Run("prefix continue past learned leaf", func(t *testing.T) {
+		rd := testRuntimeRedis(t)
+		scope := testRuntimeScope()
+		rt := testRuntime(StrongHitPolicyLeaf, rd, scope)
+		execPathLearning(t, rd, scope, []string{"A", "B", "C"}, "svc-3", time.Minute)
+		got, err := rt.lookupAffinity(context.Background(), []string{"A", "B", "C", "D", "E"})
+		require.NoError(t, err)
+		requirePrioritized(t, got, []string{"svc-3"}, []bool{true})
+	})
+
+	t.Run("last of four is not strong", func(t *testing.T) {
+		rd := testRuntimeRedis(t)
+		scope := testRuntimeScope()
+		rt := testRuntime(StrongHitPolicyLeaf, rd, scope)
+		hashes := []string{"H1", "H2", "H3", "H4"}
+		execPathLearning(t, rd, scope, hashes, "svc-1", time.Minute)
+		got, err := rt.lookupAffinity(context.Background(), hashes)
+		require.NoError(t, err)
+		requirePrioritized(t, got, []string{"svc-1"}, []bool{false})
+	})
+
+	t.Run("fifth last without marker is not strong", func(t *testing.T) {
+		rd := testRuntimeRedis(t)
+		scope := testRuntimeScope()
+		rt := testRuntime(StrongHitPolicyLeaf, rd, scope)
+		hashes := []string{"H1", "H2", "H3", "H4", "H5"}
+		for _, hash := range hashes {
+			seedMapping(t, rd, scope, hash, "svc-1")
+		}
+		got, err := rt.lookupAffinity(context.Background(), hashes)
+		require.NoError(t, err)
+		requirePrioritized(t, got, []string{"svc-1"}, []bool{false})
+	})
+
+	t.Run("fifth last marker without mapping is not a hit", func(t *testing.T) {
+		rd := testRuntimeRedis(t)
+		scope := testRuntimeScope()
+		rt := testRuntime(StrongHitPolicyLeaf, rd, scope)
+		seedMarker(t, rd, scope, "H5")
+		got, err := rt.lookupAffinity(context.Background(), []string{"H1", "H2", "H3", "H4", "H5"})
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
 }
 
 func TestEnqueueSuccessfulPathLearning_ABC(t *testing.T) {

@@ -682,11 +682,11 @@ func TestShardKeyConcurrency_Headroom(t *testing.T) {
 		seedConcurrency(t, rd, "cool", 0)
 
 		const keyPrefix = "hr-leaf-strong"
-		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
-		require.NoError(t, rd.Set(t.Context(), keyPrefix+":is-leaf:sk2", "1", time.Minute).Err())
+		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk4", redis.Z{Score: 1, Member: "hot"}).Err())
+		require.NoError(t, rd.Set(t.Context(), keyPrefix+":is-leaf:sk4", "1", time.Minute).Err())
 
 		provider := newPrimaryShardKeyProviderWithPolicy(t, func(_ *octollm.Request) []string {
-			return []string{"sk0", "sk1", "sk2"}
+			return []string{"sk0", "sk1", "sk2", "sk3", "sk4"}
 		}, rd, keyPrefix, time.Minute, items, StrongHitPolicyLeaf)
 		lb, err := NewShardKeyConcurrency(items, time.Second, 3, provider, rd, concurrencyKeyFn, nil)
 		require.NoError(t, err)
