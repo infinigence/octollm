@@ -14,6 +14,10 @@ import (
 const (
 	StrongHitPolicyLastTwo = "last_two"
 	StrongHitPolicyLeaf    = "leaf"
+
+	// leafStrongHitIndex is 1-based. message5HashArray emits at most 5 hashes;
+	// a hit at this depth is still a prefix even when it is the last key.
+	leafStrongHitIndex = 5
 )
 
 // shardKeyStrategyRuntime is one strategy's key space: extract keys, resolve mappings, and
@@ -145,7 +149,8 @@ func lookupAffinityForLastTwoPolicy(
 
 // lookupAffinityForLeafPolicy reads mappings and leaf markers for non-empty shard
 // keys only, then collects candidates from last to first. StrongCacheHit is true
-// only when the mapping has members and the leaf marker exists.
+// when the mapping has members, the leaf marker exists, and the key is the
+// 1-based leafStrongHitIndex-th key or is not the last key.
 func lookupAffinityForLeafPolicy(
 	ctx context.Context,
 	rd *redis.Client,
@@ -185,7 +190,7 @@ func lookupAffinityForLeafPolicy(
 		}
 		appendPrioritizedMapping(
 			ctx, trimPipe, keyspace, valid[i], names,
-			len(names) > 0 && exists == 1,
+			len(names) > 0 && exists == 1 && (i+1 == leafStrongHitIndex || i != len(valid)-1),
 			seen, &prioritized, &queuedTrim,
 		)
 	}
