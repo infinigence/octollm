@@ -10,15 +10,17 @@ import (
 	"github.com/infinigence/octollm/pkg/types/openai"
 )
 
-// Message5HashV2Extractor produces a composite hash of the first 5 non-empty messages: for each
+// MessageNHashV2Extractor produces a composite hash of the first N non-empty messages: for each
 // message it feeds the first 75 bytes and the last 75 bytes of text (from Content or first tool
 // call's Arguments) into a single cumulative FNV-32a hasher. One hex hash is recorded per message,
 // taken right after the 75-byte prefix is written; the 75-byte suffix is then written to seed the
 // next message's hash (for messages ≤75 bytes the prefix and suffix overlap, i.e. the whole text
 // is written twice). Returns the hex hashes joined by "-" (e.g. "a1b2c3d4-e5f6a7b8-...").
-type Message5HashV2Extractor struct{}
+type MessageNHashV2Extractor struct {
+	N int
+}
 
-func (e *Message5HashV2Extractor) Features(req *octollm.Request) (any, error) {
+func (e *MessageNHashV2Extractor) Features(req *octollm.Request) (any, error) {
 	reqBody, err := req.Body.Parsed()
 	if err != nil {
 		return nil, fmt.Errorf("parse request body failed: %w", err)
@@ -26,19 +28,22 @@ func (e *Message5HashV2Extractor) Features(req *octollm.Request) (any, error) {
 
 	switch v := reqBody.(type) {
 	case *openai.ChatCompletionRequest:
-		return strings.Join(computeMessage5HashesV2(v.Messages), "-"), nil
+		return strings.Join(computeMessageNHashesV2(v.Messages, e.N), "-"), nil
 	case *anthropic.ClaudeMessagesRequest:
-		return strings.Join(computeAnthropicMessage5HashesV2(v.System, v.Messages), "-"), nil
+		return strings.Join(computeAnthropicMessageNHashesV2(v.System, v.Messages, e.N), "-"), nil
 	default:
 		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
 	}
 }
 
-// Message5HashArrayV2Extractor produces the same hashes as Message5HashV2Extractor but returns
-// []string instead of a joined string.
-type Message5HashArrayV2Extractor struct{}
+// MessageNHashArrayV2Extractor produces the same hashes as MessageNHashV2Extractor but returns
+// []string instead of a joined string. Short lists are padded with trailing "" to length N so
+// leaf strong-hit can treat N as the complete-prefix depth. Join extractors are not padded.
+type MessageNHashArrayV2Extractor struct {
+	N int
+}
 
-func (e *Message5HashArrayV2Extractor) Features(req *octollm.Request) (any, error) {
+func (e *MessageNHashArrayV2Extractor) Features(req *octollm.Request) (any, error) {
 	reqBody, err := req.Body.Parsed()
 	if err != nil {
 		return nil, fmt.Errorf("parse request body failed: %w", err)
@@ -46,22 +51,36 @@ func (e *Message5HashArrayV2Extractor) Features(req *octollm.Request) (any, erro
 
 	switch v := reqBody.(type) {
 	case *openai.ChatCompletionRequest:
-		return computeMessage5HashesV2(v.Messages), nil
+		return padHashListToN(computeMessageNHashesV2(v.Messages, e.N), e.N), nil
 	case *anthropic.ClaudeMessagesRequest:
-		return computeAnthropicMessage5HashesV2(v.System, v.Messages), nil
+		return padHashListToN(computeAnthropicMessageNHashesV2(v.System, v.Messages, e.N), e.N), nil
 	default:
 		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
 	}
 }
 
-// computeMessage5HashesV2 computes cumulative FNV-32a hashes over the first 5 non-empty messages.
+// padHashListToN appends trailing empty strings so a short hash list has length n.
+// Empty input is left empty (no hashes means no shard keys). n<=0 or len>=n is a no-op.
+func padHashListToN(hashes []string, n int) []string {
+	if n <= 0 || len(hashes) == 0 || len(hashes) >= n {
+		return hashes
+	}
+	out := make([]string, n)
+	copy(out, hashes)
+	return out
+}
+
+// computeMessageNHashesV2 computes cumulative FNV-32a hashes over the first n non-empty messages.
 // For each message it writes the first 75 bytes of the message's text into the hasher, records the
 // current hash, then writes the last 75 bytes so it seeds the following message's hash. Returns hex
 // hash strings in order.
-func computeMessage5HashesV2(messages []*openai.Message) []string {
+func computeMessageNHashesV2(messages []*openai.Message, n int) []string {
+	if n <= 0 {
+		return nil
+	}
 	hasher := fnv.New32a()
-	hashes := make([]string, 0, 5)
-	for i := 0; i < len(messages) && len(hashes) < 5; i++ {
+	hashes := make([]string, 0, n)
+	for i := 0; i < len(messages) && len(hashes) < n; i++ {
 		msg := messages[i]
 		if msg == nil {
 			continue
@@ -86,16 +105,19 @@ func computeMessage5HashesV2(messages []*openai.Message) []string {
 	return hashes
 }
 
-// computeAnthropicMessage5HashesV2 computes cumulative FNV-32a hashes over the first 5 non-empty
+// computeAnthropicMessageNHashesV2 computes cumulative FNV-32a hashes over the first n non-empty
 // entries (system prompt first, then messages), applying the same first-75 + last-75 byte strategy
-// as computeMessage5HashesV2 (one hash recorded per entry, prefix-then-suffix into the shared hasher).
+// as computeMessageNHashesV2 (one hash recorded per entry, prefix-then-suffix into the shared hasher).
 // This mirrors the converter which prepends the system prompt as the first OpenAI message.
-func computeAnthropicMessage5HashesV2(system anthropic.SystemContent, messages []*anthropic.MessageParam) []string {
+func computeAnthropicMessageNHashesV2(system anthropic.SystemContent, messages []*anthropic.MessageParam, n int) []string {
+	if n <= 0 {
+		return nil
+	}
 	hasher := fnv.New32a()
-	hashes := make([]string, 0, 5)
+	hashes := make([]string, 0, n)
 
 	hashOne := func(txt string) {
-		if len(hashes) >= 5 || strings.TrimSpace(txt) == "" {
+		if len(hashes) >= n || strings.TrimSpace(txt) == "" {
 			return
 		}
 		b := []byte(txt)
@@ -118,7 +140,7 @@ func computeAnthropicMessage5HashesV2(system anthropic.SystemContent, messages [
 		hashOne(sysTxt)
 	}
 
-	for i := 0; i < len(messages) && len(hashes) < 5; i++ {
+	for i := 0; i < len(messages) && len(hashes) < n; i++ {
 		msg := messages[i]
 		if msg == nil {
 			continue
