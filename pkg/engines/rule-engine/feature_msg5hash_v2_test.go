@@ -250,7 +250,7 @@ func TestMessage5HashV2_Features(t *testing.T) {
 	}
 
 	t.Run("string", func(t *testing.T) {
-		extractor := &Message5HashV2Extractor{}
+		extractor := &MessageNHashV2Extractor{N: 5}
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -264,7 +264,7 @@ func TestMessage5HashV2_Features(t *testing.T) {
 	})
 
 	t.Run("array", func(t *testing.T) {
-		extractor := &Message5HashArrayV2Extractor{}
+		extractor := &MessageNHashArrayV2Extractor{N: 5}
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				req := testhelper.CreateTestRequest(testhelper.WithBody(tc.req))
@@ -273,7 +273,7 @@ func TestMessage5HashV2_Features(t *testing.T) {
 				if tc.expected == "" {
 					assert.Empty(t, val, "message5HashArray should be empty")
 				} else {
-					expectedArray := strings.Split(tc.expected, "-")
+					expectedArray := padHashListToN(strings.Split(tc.expected, "-"), 5)
 					assert.Equal(t, expectedArray, val, "message5HashArray mismatch")
 				}
 			})
@@ -297,13 +297,13 @@ func TestMessage5HashV2_MessageTextPostProcessor(t *testing.T) {
 	// Hash of "canonical" with no post-processor.
 	Msg5HashV2_MessageTextPostProcessor = nil
 	reqDirect := testhelper.CreateTestRequest(testhelper.WithBody(mkReq("canonical")))
-	direct, err := (&Message5HashV2Extractor{}).Features(reqDirect)
+	direct, err := (&MessageNHashV2Extractor{N: 5}).Features(reqDirect)
 	require.NoError(t, err)
 
 	// Hash of "whatever" but post-processor rewrites it to "canonical" → must match direct.
 	Msg5HashV2_MessageTextPostProcessor = func(string) string { return "canonical" }
 	reqHooked := testhelper.CreateTestRequest(testhelper.WithBody(mkReq("whatever")))
-	hooked, err := (&Message5HashV2Extractor{}).Features(reqHooked)
+	hooked, err := (&MessageNHashV2Extractor{N: 5}).Features(reqHooked)
 	require.NoError(t, err)
 
 	assert.Equal(t, direct, hooked, "post-processor should rewrite 'whatever' to 'canonical'")
@@ -509,7 +509,7 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 	}
 
 	t.Run("string", func(t *testing.T) {
-		extractor := &Message5HashV2Extractor{}
+		extractor := &MessageNHashV2Extractor{N: 5}
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				req := testhelper.CreateTestRequest(testhelper.WithBody(tc.req))
@@ -522,7 +522,7 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 	})
 
 	t.Run("array", func(t *testing.T) {
-		extractor := &Message5HashArrayV2Extractor{}
+		extractor := &MessageNHashArrayV2Extractor{N: 5}
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				req := testhelper.CreateTestRequest(testhelper.WithBody(tc.req))
@@ -531,10 +531,45 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 				if tc.expected == "" {
 					assert.Empty(t, val, "message5HashArray should be empty")
 				} else {
-					expectedArray := strings.Split(tc.expected, "-")
+					expectedArray := padHashListToN(strings.Split(tc.expected, "-"), 5)
 					assert.Equal(t, expectedArray, val, "message5HashArray mismatch")
 				}
 			})
 		}
 	})
+}
+
+func TestMessageNHashV2_RespectsN(t *testing.T) {
+	req := testhelper.CreateTestRequest(testhelper.WithBody(&openai.ChatCompletionRequest{
+		Model: "gpt-3.5-turbo",
+		Messages: []*openai.Message{
+			{Role: "system", Content: openai.MessageContentString("系统消息")},
+			{Role: "_input", Content: openai.MessageContentString("一23四五6七89十1二三45六7八九")},
+			{Role: "user", Content: openai.MessageContentString("下一个数字是多少？")},
+		},
+	}))
+
+	full, err := (&MessageNHashV2Extractor{N: 5}).Features(req)
+	require.NoError(t, err)
+	assert.Equal(t, "8dca59b1-63eabcfe-9c7b2b78", full)
+
+	capped, err := (&MessageNHashV2Extractor{N: 2}).Features(req)
+	require.NoError(t, err)
+	assert.Equal(t, "8dca59b1-63eabcfe", capped)
+
+	none, err := (&MessageNHashV2Extractor{N: 0}).Features(req)
+	require.NoError(t, err)
+	assert.Equal(t, "", none)
+
+	arr5, err := (&MessageNHashArrayV2Extractor{N: 5}).Features(req)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"8dca59b1", "63eabcfe", "9c7b2b78", "", ""}, arr5)
+
+	arr2, err := (&MessageNHashArrayV2Extractor{N: 2}).Features(req)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"8dca59b1", "63eabcfe"}, arr2)
+
+	arr0, err := (&MessageNHashArrayV2Extractor{N: 0}).Features(req)
+	require.NoError(t, err)
+	assert.Empty(t, arr0)
 }

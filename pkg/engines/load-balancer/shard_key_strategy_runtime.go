@@ -14,10 +14,6 @@ import (
 const (
 	StrongHitPolicyLastTwo = "last_two"
 	StrongHitPolicyLeaf    = "leaf"
-
-	// leafStrongHitIndex is 1-based. message5HashArray emits at most 5 hashes;
-	// a hit at this depth is still a prefix even when it is the last key.
-	leafStrongHitIndex = 5
 )
 
 // shardKeyStrategyRuntime is one strategy's key space: extract keys, resolve mappings, and
@@ -93,51 +89,41 @@ func appendPrioritizedMapping(
 	}
 }
 
-// lookupAffinityForLastTwoPolicy reads each non-empty shard key's mapping ZSET,
-// then collects candidates from last to first so later keys have higher priority.
-// StrongCacheHit uses original indices: empty strings still occupy a last-two
-// slot but do not contribute backends.
+// lookupAffinityForLastTwoPolicy drops empty shard keys first, then reads each
+// remaining key's mapping ZSET and collects candidates from last to first so
+// later keys have higher priority. StrongCacheHit is the last two non-empty keys.
 func lookupAffinityForLastTwoPolicy(
 	ctx context.Context,
 	rd *redis.Client,
 	keyspace affinityKeyspace,
 	shardKeys []string,
 ) ([]*PrioritizedBackend, error) {
-	if len(shardKeys) == 0 {
+	valid := nonEmptyShardKeys(shardKeys)
+	if len(valid) == 0 {
 		return nil, nil
 	}
 
 	pipe := rd.Pipeline()
-	cmds := make([]*redis.StringSliceCmd, len(shardKeys))
-	queued := false
-	for i, shardKey := range shardKeys {
-		if shardKey == "" {
-			continue
-		}
+	cmds := make([]*redis.StringSliceCmd, len(valid))
+	for i, shardKey := range valid {
 		cmds[i] = pipe.ZRevRange(ctx, keyspace.mappingKey(shardKey), 0, -1)
-		queued = true
 	}
-	if queued {
-		if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-			slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to exec Redis pipeline for shard keys: %v", err))
-		}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		slog.WarnContext(ctx, fmt.Sprintf("[ShardKey affinity provider] failed to exec Redis pipeline for shard keys: %v", err))
 	}
 
 	trimPipe := rd.Pipeline()
 	seen := make(map[string]bool)
 	var prioritized []*PrioritizedBackend
 	queuedTrim := false
-	strongFrom := len(shardKeys) - 2
-	for i := len(shardKeys) - 1; i >= 0; i-- {
-		if cmds[i] == nil {
-			continue
-		}
+	strongFrom := len(valid) - 2
+	for i := len(valid) - 1; i >= 0; i-- {
 		names, err := cmds[i].Result()
 		if err != nil && err != redis.Nil {
-			slog.DebugContext(ctx, fmt.Sprintf("[ShardKey affinity provider] Redis ZSET error for shard key %s: %v", shardKeys[i], err))
+			slog.DebugContext(ctx, fmt.Sprintf("[ShardKey affinity provider] Redis ZSET error for shard key %s: %v", valid[i], err))
 			continue
 		}
-		appendPrioritizedMapping(ctx, trimPipe, keyspace, shardKeys[i], names, i >= strongFrom, seen, &prioritized, &queuedTrim)
+		appendPrioritizedMapping(ctx, trimPipe, keyspace, valid[i], names, i >= strongFrom, seen, &prioritized, &queuedTrim)
 	}
 	if queuedTrim {
 		if _, err := trimPipe.Exec(ctx); err != nil && err != redis.Nil {
@@ -149,14 +135,17 @@ func lookupAffinityForLastTwoPolicy(
 
 // lookupAffinityForLeafPolicy reads mappings and leaf markers for non-empty shard
 // keys only, then collects candidates from last to first. StrongCacheHit is true
-// when the mapping has members, the leaf marker exists, and the key is the
-// 1-based leafStrongHitIndex-th key or is not the last key.
+// when the mapping has members, the leaf marker exists, and the key is the last
+// slot of the incoming list (1-based len(shardKeys), including empty pads) or is
+// not the last non-empty key. Callers that pad the list to a configured N make
+// that N the complete-prefix depth; octollm does not hardcode 5.
 func lookupAffinityForLeafPolicy(
 	ctx context.Context,
 	rd *redis.Client,
 	keyspace affinityKeyspace,
 	shardKeys []string,
 ) ([]*PrioritizedBackend, error) {
+	fullLen := len(shardKeys)
 	valid := nonEmptyShardKeys(shardKeys)
 	if len(valid) == 0 {
 		return nil, nil
@@ -190,7 +179,7 @@ func lookupAffinityForLeafPolicy(
 		}
 		appendPrioritizedMapping(
 			ctx, trimPipe, keyspace, valid[i], names,
-			len(names) > 0 && exists == 1 && (i+1 == leafStrongHitIndex || i != len(valid)-1),
+			len(names) > 0 && exists == 1 && (i+1 == fullLen || i != len(valid)-1),
 			seen, &prioritized, &queuedTrim,
 		)
 	}
