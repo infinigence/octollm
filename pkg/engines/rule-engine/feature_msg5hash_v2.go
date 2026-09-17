@@ -3,6 +3,7 @@ package ruleengine
 import (
 	"fmt"
 	"hash/fnv"
+	"strconv"
 	"strings"
 
 	"github.com/infinigence/octollm/pkg/octollm"
@@ -15,7 +16,8 @@ import (
 // call's Arguments) into a single cumulative FNV-32a hasher. One hex hash is recorded per message,
 // taken right after the 75-byte prefix is written; the 75-byte suffix is then written to seed the
 // next message's hash (for messages ≤75 bytes the prefix and suffix overlap, i.e. the whole text
-// is written twice). Returns the hex hashes joined by "-" (e.g. "a1b2c3d4-e5f6a7b8-...").
+// is written twice). Returns "{N}/{h1}/{h2}/..." with no empty trailing slots
+// (e.g. "5/a1b2c3d4/e5f6a7b8").
 type MessageNHashV2Extractor struct {
 	N int
 }
@@ -28,9 +30,9 @@ func (e *MessageNHashV2Extractor) Features(req *octollm.Request) (any, error) {
 
 	switch v := reqBody.(type) {
 	case *openai.ChatCompletionRequest:
-		return strings.Join(computeMessageNHashesV2(v.Messages, e.N), "-"), nil
+		return formatMessageNHashString(e.N, computeMessageNHashesV2(v.Messages, e.N)), nil
 	case *anthropic.ClaudeMessagesRequest:
-		return strings.Join(computeAnthropicMessageNHashesV2(v.System, v.Messages, e.N), "-"), nil
+		return formatMessageNHashString(e.N, computeAnthropicMessageNHashesV2(v.System, v.Messages, e.N)), nil
 	default:
 		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
 	}
@@ -68,6 +70,15 @@ func padHashListToN(hashes []string, n int) []string {
 	out := make([]string, n)
 	copy(out, hashes)
 	return out
+}
+
+// formatMessageNHashString builds "{n}/{h1}/{h2}/..." from real hashes only.
+// Empty hashes or n<=0 return "". Trailing empty slots are not added.
+func formatMessageNHashString(n int, hashes []string) string {
+	if n <= 0 || len(hashes) == 0 {
+		return ""
+	}
+	return strconv.Itoa(n) + "/" + strings.Join(hashes, "/")
 }
 
 // computeMessageNHashesV2 computes cumulative FNV-32a hashes over the first n non-empty messages.

@@ -2,7 +2,6 @@ package ruleengine
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
@@ -12,11 +11,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestFormatMessageNHashString(t *testing.T) {
+	assert.Equal(t, "", formatMessageNHashString(0, []string{"h1"}))
+	assert.Equal(t, "", formatMessageNHashString(-1, []string{"h1"}))
+	assert.Equal(t, "", formatMessageNHashString(5, nil))
+	assert.Equal(t, "", formatMessageNHashString(5, []string{}))
+	assert.Equal(t, "5/aaaaaa/bbbbbb", formatMessageNHashString(5, []string{"aaaaaa", "bbbbbb"}))
+	assert.Equal(t, "2/aaaaaa/bbbbbb", formatMessageNHashString(2, []string{"aaaaaa", "bbbbbb"}))
+	assert.Equal(t, "5/a/b/c/d/e", formatMessageNHashString(5, []string{"a", "b", "c", "d", "e"}))
+	assert.Equal(t, "5/a/b/c", formatMessageNHashString(5, []string{"a", "b", "c"}))
+}
+
 func TestMessage5HashV2_Features(t *testing.T) {
 	type testCase struct {
-		name     string
-		req      *openai.ChatCompletionRequest
-		expected string
+		name          string
+		req           *openai.ChatCompletionRequest
+		expected      string
+		expectedArray []string
 	}
 
 	testCases := []testCase{
@@ -35,7 +46,8 @@ func TestMessage5HashV2_Features(t *testing.T) {
 					},
 				},
 			},
-			expected: "8dca59b1-63eabcfe",
+			expected:      "5/8dca59b1/63eabcfe",
+			expectedArray: []string{"8dca59b1", "63eabcfe", "", "", ""},
 		},
 		{
 			name: "ABC",
@@ -56,7 +68,8 @@ func TestMessage5HashV2_Features(t *testing.T) {
 					},
 				},
 			},
-			expected: "8dca59b1-63eabcfe-9c7b2b78",
+			expected:      "5/8dca59b1/63eabcfe/9c7b2b78",
+			expectedArray: []string{"8dca59b1", "63eabcfe", "9c7b2b78", "", ""},
 		},
 		{
 			name: "ADC",
@@ -77,7 +90,8 @@ func TestMessage5HashV2_Features(t *testing.T) {
 					},
 				},
 			},
-			expected: "8dca59b1-c4b4682d-8821a028",
+			expected:      "5/8dca59b1/c4b4682d/8821a028",
+			expectedArray: []string{"8dca59b1", "c4b4682d", "8821a028", "", ""},
 		},
 		{
 			name: "assistant_toolcall",
@@ -104,7 +118,8 @@ func TestMessage5HashV2_Features(t *testing.T) {
 					},
 				},
 			},
-			expected: "8dca59b1-47f14d2e",
+			expected:      "5/8dca59b1/47f14d2e",
+			expectedArray: []string{"8dca59b1", "47f14d2e", "", "", ""},
 		},
 		{
 			name: "empty-content",
@@ -124,7 +139,8 @@ func TestMessage5HashV2_Features(t *testing.T) {
 					},
 				},
 			},
-			expected: "8dca59b1-63eabcfe",
+			expected:      "5/8dca59b1/63eabcfe",
+			expectedArray: []string{"8dca59b1", "63eabcfe", "", "", ""},
 		},
 		{
 			name: "nil-message",
@@ -142,7 +158,8 @@ func TestMessage5HashV2_Features(t *testing.T) {
 					},
 				},
 			},
-			expected: "8dca59b1-63eabcfe",
+			expected:      "5/8dca59b1/63eabcfe",
+			expectedArray: []string{"8dca59b1", "63eabcfe", "", "", ""},
 		},
 		{
 			name: "image",
@@ -170,7 +187,8 @@ func TestMessage5HashV2_Features(t *testing.T) {
 					},
 				},
 			},
-			expected: "8dca59b1-7b9ba2cb-2278ed02",
+			expected:      "5/8dca59b1/7b9ba2cb/2278ed02",
+			expectedArray: []string{"8dca59b1", "7b9ba2cb", "2278ed02", "", ""},
 		},
 		{
 			name: "empty",
@@ -211,7 +229,8 @@ func TestMessage5HashV2_Features(t *testing.T) {
 					},
 				},
 			},
-			expected: "8dca59b1-63eabcfe-9c7b2b78-8496f220-e9a09d82",
+			expected:      "5/8dca59b1/63eabcfe/9c7b2b78/8496f220/e9a09d82",
+			expectedArray: []string{"8dca59b1", "63eabcfe", "9c7b2b78", "8496f220", "e9a09d82"},
 		},
 		{
 			name: "long_AB",
@@ -228,7 +247,8 @@ func TestMessage5HashV2_Features(t *testing.T) {
 					},
 				},
 			},
-			expected: "7c82df29-890113f1",
+			expected:      "5/7c82df29/890113f1",
+			expectedArray: []string{"7c82df29", "890113f1", "", "", ""},
 		},
 		{
 			name: "long_A'B",
@@ -245,7 +265,8 @@ func TestMessage5HashV2_Features(t *testing.T) {
 					},
 				},
 			},
-			expected: "7c82df29-6001372a",
+			expected:      "5/7c82df29/6001372a",
+			expectedArray: []string{"7c82df29", "6001372a", "", "", ""},
 		},
 	}
 
@@ -273,8 +294,7 @@ func TestMessage5HashV2_Features(t *testing.T) {
 				if tc.expected == "" {
 					assert.Empty(t, val, "message5HashArray should be empty")
 				} else {
-					expectedArray := padHashListToN(strings.Split(tc.expected, "-"), 5)
-					assert.Equal(t, expectedArray, val, "message5HashArray mismatch")
+					assert.Equal(t, tc.expectedArray, val, "message5HashArray mismatch")
 				}
 			})
 		}
@@ -317,9 +337,10 @@ func TestMessage5HashV2_MessageTextPostProcessor(t *testing.T) {
 // Expected hash values are identical to the OpenAI cases.
 func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 	type testCase struct {
-		name     string
-		req      anthropic.ClaudeMessagesRequest
-		expected string
+		name          string
+		req           anthropic.ClaudeMessagesRequest
+		expected      string
+		expectedArray []string
 	}
 
 	testCases := []testCase{
@@ -332,7 +353,8 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 					{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
 				},
 			},
-			expected: "8dca59b1-63eabcfe",
+			expected:      "5/8dca59b1/63eabcfe",
+			expectedArray: []string{"8dca59b1", "63eabcfe", "", "", ""},
 		},
 		{
 			name: "ABC",
@@ -344,7 +366,8 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 					{Role: "user", Content: anthropic.MessageContentString("下一个数字是多少？")},
 				},
 			},
-			expected: "8dca59b1-63eabcfe-9c7b2b78",
+			expected:      "5/8dca59b1/63eabcfe/9c7b2b78",
+			expectedArray: []string{"8dca59b1", "63eabcfe", "9c7b2b78", "", ""},
 		},
 		{
 			name: "ADC",
@@ -356,7 +379,8 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 					{Role: "user", Content: anthropic.MessageContentString("下一个数字是多少？")},
 				},
 			},
-			expected: "8dca59b1-c4b4682d-8821a028",
+			expected:      "5/8dca59b1/c4b4682d/8821a028",
+			expectedArray: []string{"8dca59b1", "c4b4682d", "8821a028", "", ""},
 		},
 		{
 			// assistant message with tool_use block; Input JSON is used as hash text
@@ -378,7 +402,8 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 					},
 				},
 			},
-			expected: "8dca59b1-47f14d2e",
+			expected:      "5/8dca59b1/47f14d2e",
+			expectedArray: []string{"8dca59b1", "47f14d2e", "", "", ""},
 		},
 		{
 			// empty-content: message with empty string is skipped
@@ -391,7 +416,8 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 					{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
 				},
 			},
-			expected: "8dca59b1-63eabcfe",
+			expected:      "5/8dca59b1/63eabcfe",
+			expectedArray: []string{"8dca59b1", "63eabcfe", "", "", ""},
 		},
 		{
 			// nil-message: nil entry in slice is skipped
@@ -404,7 +430,8 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 					{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
 				},
 			},
-			expected: "8dca59b1-63eabcfe",
+			expected:      "5/8dca59b1/63eabcfe",
+			expectedArray: []string{"8dca59b1", "63eabcfe", "", "", ""},
 		},
 		{
 			name: "image",
@@ -424,7 +451,8 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 					{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
 				},
 			},
-			expected: "8dca59b1-7b9ba2cb-2278ed02",
+			expected:      "5/8dca59b1/7b9ba2cb/2278ed02",
+			expectedArray: []string{"8dca59b1", "7b9ba2cb", "2278ed02", "", ""},
 		},
 		{
 			name: "empty",
@@ -448,7 +476,8 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 					{Role: "assistant", Content: anthropic.MessageContentString("11")},
 				},
 			},
-			expected: "8dca59b1-63eabcfe-9c7b2b78-8496f220-e9a09d82",
+			expected:      "5/8dca59b1/63eabcfe/9c7b2b78/8496f220/e9a09d82",
+			expectedArray: []string{"8dca59b1", "63eabcfe", "9c7b2b78", "8496f220", "e9a09d82"},
 		},
 		{
 			name: "ignore_anthropic_header",
@@ -472,7 +501,8 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 					{Role: "user", Content: anthropic.MessageContentString("hello")},
 				},
 			},
-			expected: "d6a59d1f-8aec8d16-26c64232",
+			expected:      "5/d6a59d1f/8aec8d16/26c64232",
+			expectedArray: []string{"d6a59d1f", "8aec8d16", "26c64232", "", ""},
 		},
 		{
 			name: "long_AB",
@@ -488,7 +518,8 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 					{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
 				},
 			},
-			expected: "7c82df29-890113f1",
+			expected:      "5/7c82df29/890113f1",
+			expectedArray: []string{"7c82df29", "890113f1", "", "", ""},
 		},
 		{
 			name: "long_A'B",
@@ -504,7 +535,8 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 					{Role: "user", Content: anthropic.MessageContentString("一23四五6七89十1二三45六7八九")},
 				},
 			},
-			expected: "7c82df29-6001372a",
+			expected:      "5/7c82df29/6001372a",
+			expectedArray: []string{"7c82df29", "6001372a", "", "", ""},
 		},
 	}
 
@@ -531,8 +563,7 @@ func TestMessage5HashV2_Features_Anthropic(t *testing.T) {
 				if tc.expected == "" {
 					assert.Empty(t, val, "message5HashArray should be empty")
 				} else {
-					expectedArray := padHashListToN(strings.Split(tc.expected, "-"), 5)
-					assert.Equal(t, expectedArray, val, "message5HashArray mismatch")
+					assert.Equal(t, tc.expectedArray, val, "message5HashArray mismatch")
 				}
 			})
 		}
@@ -551,11 +582,11 @@ func TestMessageNHashV2_RespectsN(t *testing.T) {
 
 	full, err := (&MessageNHashV2Extractor{N: 5}).Features(req)
 	require.NoError(t, err)
-	assert.Equal(t, "8dca59b1-63eabcfe-9c7b2b78", full)
+	assert.Equal(t, "5/8dca59b1/63eabcfe/9c7b2b78", full)
 
 	capped, err := (&MessageNHashV2Extractor{N: 2}).Features(req)
 	require.NoError(t, err)
-	assert.Equal(t, "8dca59b1-63eabcfe", capped)
+	assert.Equal(t, "2/8dca59b1/63eabcfe", capped)
 
 	none, err := (&MessageNHashV2Extractor{N: 0}).Features(req)
 	require.NoError(t, err)
