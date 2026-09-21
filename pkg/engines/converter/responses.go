@@ -200,8 +200,12 @@ func convertResponsesInputMessage(src *openai.ResponsesInputMessage) *openai.Mes
 				continue
 			}
 			switch part.Type {
-			case "input_text":
+			case "input_text", "output_text":
+				// output_text is what an assistant turn replayed from a previous
+				// response carries; both map onto a chat text part.
 				parts = append(parts, &openai.MessageContentItem{Type: "text", Text: part.Text})
+			case "refusal":
+				parts = append(parts, &openai.MessageContentItem{Type: "text", Text: part.Refusal})
 			case "input_image":
 				if part.ImageURL != nil {
 					parts = append(parts, &openai.MessageContentItem{

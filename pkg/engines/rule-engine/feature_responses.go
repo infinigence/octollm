@@ -83,8 +83,8 @@ func replayResponsesMessages(r *openai.ResponsesRequest) []replayedMessage {
 
 // responsesMessageIsConverted reports whether the converter would turn this message item into
 // a chat message. It drops a message whose content is neither a string nor an array, and one
-// whose content array holds no part it can map (only input_text and input_image are mapped,
-// and an input_image without an image_url is skipped).
+// whose content array holds no part it can map (input_text, output_text and refusal map to a
+// text part, input_image to an image part, and an input_image without an image_url is skipped).
 func responsesMessageIsConverted(msg *openai.ResponsesInputMessage) bool {
 	if msg == nil {
 		return false
@@ -98,7 +98,7 @@ func responsesMessageIsConverted(msg *openai.ResponsesInputMessage) bool {
 				continue
 			}
 			switch part.Type {
-			case "input_text":
+			case "input_text", "output_text", "refusal":
 				return true
 			case "input_image":
 				if part.ImageURL != nil {

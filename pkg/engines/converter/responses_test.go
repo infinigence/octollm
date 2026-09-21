@@ -93,6 +93,31 @@ func testChatCompletionToResponses_convertRequestBody(t *testing.T, responsesReq
 	assert.JSONEq(t, expectedChatReqJSON, string(bytes))
 }
 
+// TestChatCompletionToResponses_convertRequestBody_ReplayedOutput covers the stateless
+// multi-turn pattern: the client appends the previous response's output items to `input`.
+// An assistant message there carries output_text parts, which must survive the conversion
+// rather than dropping the whole turn.
+func TestChatCompletionToResponses_convertRequestBody_ReplayedOutput(t *testing.T) {
+	responsesReqJSON := `{
+		"model": "gpt-4o",
+		"input": [
+			{"role": "user", "content": [{"type": "input_text", "text": "What is the weather?"}]},
+			{"type": "message", "id": "msg_1", "role": "assistant", "content": [{"type": "output_text", "annotations": [], "text": "It is sunny in Beijing."}]},
+			{"role": "user", "content": [{"type": "input_text", "text": "Thanks!"}]}
+		]
+	}`
+	expectedChatReqJSON := `{
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "What is the weather?"}]},
+			{"role": "assistant", "content": [{"type": "text", "text": "It is sunny in Beijing."}]},
+			{"role": "user", "content": [{"type": "text", "text": "Thanks!"}]}
+		]
+	}`
+
+	testChatCompletionToResponses_convertRequestBody(t, responsesReqJSON, expectedChatReqJSON)
+}
+
 func TestChatCompletionToResponses_convertRequestBody_FunctionCallAndOutput(t *testing.T) {
 	responsesReqJSON := `{
 		"model": "gpt-4o",

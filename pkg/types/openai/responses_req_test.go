@@ -226,6 +226,16 @@ func TestResponsesInputMessageContent_ExtractText(t *testing.T) {
 			ExtractedText: "[img:https://example.com/b.jpg]",
 		},
 		{
+			Name:          "AssistantOutputTextPart",
+			JSON:          `[{"type":"output_text","annotations":[],"text":"It is sunny."}]`,
+			ExtractedText: "It is sunny.",
+		},
+		{
+			Name:          "AssistantRefusalPart",
+			JSON:          `[{"type":"refusal","refusal":"I can't help with that."}]`,
+			ExtractedText: "I can't help with that.",
+		},
+		{
 			Name:          "ArrayUnsupportedPart",
 			JSON:          `[{"type":"input_file","file_url":"https://example.com/a.pdf"}]`,
 			ExtractedText: "",
