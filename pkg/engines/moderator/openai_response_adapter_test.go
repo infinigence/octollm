@@ -44,7 +44,9 @@ func TestOpenAIResponseAdapter_ExtractTextFromResponsesRequest(t *testing.T) {
 					}
 				]
 			}`,
-			want:    "what is in this image?https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
+			// An image renders as [img:<url>], the same way the chat-completions adapter
+			// renders one, so both protocols send moderation the same text.
+			want:    "what is in this image?[img:https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg]",
 			wantErr: false,
 		},
 	}

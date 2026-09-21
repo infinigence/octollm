@@ -396,3 +396,165 @@ func (r ResponsesResponse) String() string {
 	}
 	return fmt.Sprintf("(ResponsesResponse) {\n%s}", w.String())
 }
+
+// responsesInputContentPartString formats one Responses input content part
+// safely for logging.
+func responsesInputContentPartString(p *ResponsesInputMessageContentPart) string {
+	if p == nil {
+		return "nil"
+	}
+	switch p.Type {
+	case "input_text":
+		return fmt.Sprintf("input_text(len=%d)", len(p.Text))
+	case "input_image":
+		if p.ImageURL == nil {
+			return "input_image(nil)"
+		}
+		return fmt.Sprintf("input_image(len=%d)", len(p.ImageURL.GetImageUrl()))
+	case "input_file":
+		w := &strings.Builder{}
+		w.WriteString("input_file(")
+		if p.FileID != "" {
+			fmt.Fprintf(w, "file_id=%s", p.FileID)
+		} else {
+			fmt.Fprintf(w, "file_url_len=%d", len(p.FileURL))
+		}
+		if p.Filename != "" {
+			fmt.Fprintf(w, ", filename=%s", p.Filename)
+		}
+		w.WriteString(")")
+		return w.String()
+	default:
+		return p.Type
+	}
+}
+
+// responsesInputContentPartsString formats a slice of Responses input content
+// parts safely for logging.
+func responsesInputContentPartsString(parts []*ResponsesInputMessageContentPart) string {
+	w := &strings.Builder{}
+	w.WriteString("[")
+	for _, p := range parts {
+		if p == nil {
+			continue
+		}
+		fmt.Fprintf(w, "%s, ", responsesInputContentPartString(p))
+	}
+	w.WriteString("]")
+	return w.String()
+}
+
+// responsesInputItemString formats one Responses input item safely for logging.
+func responsesInputItemString(item ResponsesInputItem) string {
+	w := &strings.Builder{}
+	switch v := item.(type) {
+	case *ResponsesInputMessage:
+		fmt.Fprintf(w, "{type=message, role=%s", v.Role)
+		switch c := v.Content.(type) {
+		case ResponsesInputMessageContentString:
+			fmt.Fprintf(w, ", content=string(len=%d)", len(c))
+		case ResponsesInputMessageContentArray:
+			fmt.Fprintf(w, ", content=%s", responsesInputContentPartsString(c))
+		}
+		w.WriteString("}")
+	case *ResponsesInputFunctionCall:
+		fmt.Fprintf(w, "{type=function_call, call_id=%s, name=%s, args_len=%d}", v.CallID, v.Name, len(v.Arguments))
+	case *ResponsesInputFunctionCallOutput:
+		fmt.Fprintf(w, "{type=function_call_output, call_id=%s", v.CallID)
+		switch o := v.Output.(type) {
+		case ResponsesFunctionCallOutputString:
+			fmt.Fprintf(w, ", output=string(len=%d)", len(o))
+		case ResponsesFunctionCallOutputArray:
+			fmt.Fprintf(w, ", output=%s", responsesInputContentPartsString(o))
+		}
+		w.WriteString("}")
+	case *ResponsesInputReasoning:
+		fmt.Fprintf(w, "{type=reasoning, id=%s", v.ID)
+		if len(v.Summary) > 0 {
+			w.WriteString(", summary=[")
+			for _, part := range v.Summary {
+				if part == nil {
+					continue
+				}
+				fmt.Fprintf(w, "%s(len=%d), ", part.Type, len(part.Text))
+			}
+			w.WriteString("]")
+		}
+		if v.EncryptedContent != "" {
+			fmt.Fprintf(w, ", encrypted_len=%d", len(v.EncryptedContent))
+		}
+		w.WriteString("}")
+	case *ResponsesInputRawItem:
+		fmt.Fprintf(w, "{type=raw, len=%d}", len(v.Raw))
+	default:
+		fmt.Fprintf(w, "{type=unknown}")
+	}
+	return w.String()
+}
+
+// responsesToolChoiceString formats a Responses tool_choice safely for logging.
+func responsesToolChoiceString(tc ResponsesToolChoiceValue) string {
+	switch v := tc.(type) {
+	case ResponsesToolChoiceString:
+		return string(v)
+	case ResponsesToolChoiceObject:
+		if v.Name != "" {
+			return fmt.Sprintf("%s(%s)", v.Type, v.Name)
+		}
+		return v.Type
+	default:
+		return "unknown"
+	}
+}
+
+// String formats ResponsesRequest safely for logging (no sensitive data).
+func (r ResponsesRequest) String() string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "  Model: %q\n", r.Model)
+	if r.Stream != nil {
+		fmt.Fprintf(w, "  Stream: %t\n", *r.Stream)
+	}
+	if r.Instructions != "" {
+		fmt.Fprintf(w, "  Instructions: len(%d)\n", len(r.Instructions))
+	}
+	switch in := r.Input.(type) {
+	case ResponsesInputString:
+		fmt.Fprintf(w, "  Input: string(len=%d)\n", len(in))
+	case ResponsesInputItemArray:
+		fmt.Fprintf(w, "  Input: len(%d)\n", len(in))
+		for _, item := range in {
+			if item == nil {
+				continue
+			}
+			fmt.Fprintf(w, "    %s\n", responsesInputItemString(item))
+		}
+	}
+	if len(r.Tools) > 0 {
+		fmt.Fprintf(w, "  Tools: len(%d)\n", len(r.Tools))
+		for _, t := range r.Tools {
+			if t == nil {
+				continue
+			}
+			fmt.Fprintf(w, "    Tool{type=%s, name=%s}\n", t.Type, t.Name)
+		}
+	}
+	if r.ToolChoice != nil {
+		fmt.Fprintf(w, "  ToolChoice: %s\n", responsesToolChoiceString(r.ToolChoice))
+	}
+	if r.MaxOutputTokens != nil {
+		fmt.Fprintf(w, "  MaxOutputTokens: %d\n", *r.MaxOutputTokens)
+	}
+	if r.Temperature != nil {
+		fmt.Fprintf(w, "  Temperature: %.6f\n", *r.Temperature)
+	}
+	if r.TopP != nil {
+		fmt.Fprintf(w, "  TopP: %.6f\n", *r.TopP)
+	}
+	if r.Reasoning != nil {
+		fmt.Fprintf(w, "  Reasoning: effort=%s\n", r.Reasoning.Effort)
+	}
+	if r.ParallelToolCalls != nil {
+		fmt.Fprintf(w, "  ParallelToolCalls: %t\n", *r.ParallelToolCalls)
+	}
+	return fmt.Sprintf("(ResponsesRequest) {\n%s}", w.String())
+}

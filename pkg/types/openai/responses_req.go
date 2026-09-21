@@ -1,6 +1,9 @@
 package openai
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // ResponsesRequest is the request body of POST /v1/responses (Responses API).
 //
@@ -438,8 +441,11 @@ func (i *ResponsesInputMessageContentPart) ExtractText() string {
 	case "input_text":
 		return i.Text
 	case "input_image":
+		// Rendered the same way MessageContentArray.ExtractText renders a chat
+		// image_url item, so text derived from a Responses request matches text
+		// derived from the chat request the converter builds out of it.
 		if i.ImageURL != nil {
-			return i.ImageURL.GetImageUrl()
+			return fmt.Sprintf("[img:%s]", i.ImageURL.GetImageUrl())
 		}
 	}
 	return ""

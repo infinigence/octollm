@@ -641,3 +641,133 @@ func TestResponsesResponse_String(t *testing.T) {
 		})
 	}
 }
+
+func mustUnmarshalResponsesReq(t *testing.T, jsonStr string) ResponsesRequest {
+	t.Helper()
+	var req ResponsesRequest
+	require.NoError(t, json.Unmarshal([]byte(jsonStr), &req))
+	return req
+}
+
+func TestResponsesRequest_String(t *testing.T) {
+	tests := []struct {
+		name     string
+		json     string
+		expected string
+	}{
+		{
+			name: "string input with scalar params",
+			json: `{
+				"model": "gpt-5",
+				"stream": true,
+				"instructions": "be brief",
+				"input": "Hello",
+				"max_output_tokens": 100,
+				"temperature": 0.5,
+				"top_p": 0.9,
+				"reasoning": {"effort": "high"},
+				"parallel_tool_calls": false
+			}`,
+			// "be brief" = 8, "Hello" = 5
+			expected: `(ResponsesRequest) {
+  Model: "gpt-5"
+  Stream: true
+  Instructions: len(8)
+  Input: string(len=5)
+  MaxOutputTokens: 100
+  Temperature: 0.500000
+  TopP: 0.900000
+  Reasoning: effort=high
+  ParallelToolCalls: false
+}`,
+		},
+		{
+			name: "message items with string and array content",
+			json: `{
+				"model": "gpt-5",
+				"input": [
+					{"role": "system", "content": "sys"},
+					{"type": "message", "role": "user", "content": [
+						{"type": "input_text", "text": "hi"},
+						{"type": "input_image", "image_url": "http://x/y.png"},
+						{"type": "input_file", "file_id": "file_1", "filename": "a.pdf"},
+						{"type": "input_audio"}
+					]}
+				]
+			}`,
+			// "sys" = 3, "hi" = 2, "http://x/y.png" = 14
+			expected: `(ResponsesRequest) {
+  Model: "gpt-5"
+  Input: len(2)
+    {type=message, role=system, content=string(len=3)}
+    {type=message, role=user, content=[input_text(len=2), input_image(len=14), input_file(file_id=file_1, filename=a.pdf), input_audio, ]}
+}`,
+		},
+		{
+			name: "function call, output and reasoning items",
+			json: `{
+				"model": "gpt-5",
+				"input": [
+					{"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{\"city\":\"SF\"}"},
+					{"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+					{"type": "function_call_output", "call_id": "call_2", "output": [{"type": "input_text", "text": "rainy"}]},
+					{"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "think"}], "encrypted_content": "abcd"},
+					{"type": "web_search_call", "id": "ws_1"}
+				]
+			}`,
+			// arguments = 13, "sunny" = 5, "rainy" = 5, "think" = 5, "abcd" = 4
+			expected: `(ResponsesRequest) {
+  Model: "gpt-5"
+  Input: len(5)
+    {type=function_call, call_id=call_1, name=get_weather, args_len=13}
+    {type=function_call_output, call_id=call_1, output=string(len=5)}
+    {type=function_call_output, call_id=call_2, output=[input_text(len=5), ]}
+    {type=reasoning, id=rs_1, summary=[summary_text(len=5), ], encrypted_len=4}
+    {type=raw, len=41}
+}`,
+		},
+		{
+			name: "tools with string tool_choice",
+			json: `{
+				"model": "gpt-5",
+				"input": "hi",
+				"tools": [{"type": "function", "name": "get_weather", "parameters": {"type": "object"}}],
+				"tool_choice": "auto"
+			}`,
+			expected: `(ResponsesRequest) {
+  Model: "gpt-5"
+  Input: string(len=2)
+  Tools: len(1)
+    Tool{type=function, name=get_weather}
+  ToolChoice: auto
+}`,
+		},
+		{
+			name: "forced function tool_choice",
+			json: `{
+				"model": "gpt-5",
+				"input": "hi",
+				"tool_choice": {"type": "function", "name": "get_weather"}
+			}`,
+			expected: `(ResponsesRequest) {
+  Model: "gpt-5"
+  Input: string(len=2)
+  ToolChoice: function(get_weather)
+}`,
+		},
+		{
+			name: "empty request",
+			json: `{}`,
+			expected: `(ResponsesRequest) {
+  Model: ""
+}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := mustUnmarshalResponsesReq(t, tt.json)
+			assert.Equal(t, tt.expected, req.String())
+		})
+	}
+}
