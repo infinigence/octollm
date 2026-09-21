@@ -62,6 +62,13 @@ func TestReplayResponsesMessages(t *testing.T) {
 			expected: []replayedMessage{{contentText: "[img:https://example.com/a.png]"}},
 		},
 		{
+			// A client replaying a previous response's output sends the assistant turn back
+			// as output_text parts, which the converter maps like any other text part.
+			name:     "AssistantOutputTextPartKeepsTheMessage",
+			body:     `{"input":[{"role":"user","content":"q"},{"type":"message","role":"assistant","content":[{"type":"output_text","annotations":[],"text":"a"}]},{"role":"user","content":"thanks"}]}`,
+			expected: []replayedMessage{{contentText: "q"}, {contentText: "a"}, {contentText: "thanks"}},
+		},
+		{
 			name:     "MessageWithNoConvertiblePartsIsDropped",
 			body:     `{"input":[{"role":"user","content":[{"type":"input_file","file_url":"u"}]},{"role":"user","content":"after"}]}`,
 			expected: []replayedMessage{{contentText: "after"}},

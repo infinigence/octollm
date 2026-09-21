@@ -368,7 +368,8 @@ type ResponsesReasoningSummaryPart struct {
 
 // ResponsesInputMessageContent supports Responses input item `content`
 // polymorphism: a string or an array of content parts (input_text, input_image,
-// input_file, ...).
+// input_file, ...). Assistant turns replayed from a previous response use
+// output_text and refusal instead of input_text.
 type ResponsesInputMessageContent interface {
 	ExtractText() string
 }
@@ -411,6 +412,7 @@ func (f *responsesInputMessageContentField) UnmarshalJSON(data []byte) error {
 type ResponsesInputMessageContentPart struct {
 	Type     string          `json:"type"`
 	Text     string          `json:"text,omitempty"`
+	Refusal  string          `json:"refusal,omitempty"`
 	ImageURL ImageURLContent `json:"image_url,omitempty"`
 	FileURL  string          `json:"file_url,omitempty"`
 	FileID   string          `json:"file_id,omitempty"`
@@ -438,8 +440,13 @@ func (i *ResponsesInputMessageContentPart) ExtractText() string {
 	}
 
 	switch i.Type {
-	case "input_text":
+	case "input_text", "output_text":
+		// output_text is the assistant-role counterpart of input_text: it is what the
+		// API emits in a response's output[] and what a client sends back when it
+		// replays that output as input. Both carry their text in the same field.
 		return i.Text
+	case "refusal":
+		return i.Refusal
 	case "input_image":
 		// Rendered the same way MessageContentArray.ExtractText renders a chat
 		// image_url item, so text derived from a Responses request matches text
