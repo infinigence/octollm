@@ -63,6 +63,12 @@ func (e *ChatCompletionToResponses) Process(req *octollm.Request) (*octollm.Resp
 	return resp, nil
 }
 
+// convertRequestBody flattens a Responses request into a Chat Completions request.
+//
+// The message-flattening rules here are replayed by replayResponsesMessages in
+// pkg/engines/rule-engine/feature_responses.go so that features computed before conversion
+// (a cache-aware shard key, say) match the ones a downstream service computes from the
+// converted body. KEEP THE TWO IN SYNC: nothing checks it automatically.
 func (e *ChatCompletionToResponses) convertRequestBody(ctx context.Context, srcBody *octollm.UnifiedBody) (*octollm.UnifiedBody, error) {
 	parsed, err := srcBody.Parsed()
 	if err != nil {

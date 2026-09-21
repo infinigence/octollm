@@ -218,7 +218,17 @@ func TestResponsesInputMessageContent_ExtractText(t *testing.T) {
 		{
 			Name:          "Array",
 			JSON:          `[{"type":"input_text","text":"hi"},{"type":"input_image","image_url":"https://example.com/x.png"}]`,
-			ExtractedText: "hihttps://example.com/x.png",
+			ExtractedText: "hi[img:https://example.com/x.png]",
+		},
+		{
+			Name:          "ArrayImageURLObject",
+			JSON:          `[{"type":"input_image","image_url":{"url":"https://example.com/b.jpg","detail":"high"}}]`,
+			ExtractedText: "[img:https://example.com/b.jpg]",
+		},
+		{
+			Name:          "ArrayUnsupportedPart",
+			JSON:          `[{"type":"input_file","file_url":"https://example.com/a.pdf"}]`,
+			ExtractedText: "",
 		},
 	}
 

@@ -2,6 +2,7 @@ package ruleengine
 
 import (
 	"fmt"
+	"hash"
 	"hash/fnv"
 	"strings"
 
@@ -84,19 +85,15 @@ func anthropicMessageTextForHash(msg *anthropic.MessageParam) string {
 // entries (system prompt first, then messages), taking the first 100 bytes of each text.
 // This mirrors the converter which prepends the system prompt as the first OpenAI message.
 func computeAnthropicMessage5Hashes(system anthropic.SystemContent, messages []*anthropic.MessageParam) []string {
-	hasher := fnv.New32a()
-	hashes := make([]string, 0, 5)
+	hasher := newMessage5HasherV1()
 
+	// Note the blank check differs from the chat-completions path, which skips on == "".
+	// Changing it would reshuffle existing shard keys, so it is left as is.
 	hashOne := func(txt string) {
-		if len(hashes) >= 5 || strings.TrimSpace(txt) == "" {
+		if hasher.count() >= 5 || strings.TrimSpace(txt) == "" {
 			return
 		}
-		b := []byte(txt)
-		if len(b) > 100 {
-			b = b[:100]
-		}
-		hasher.Write(b)
-		hashes = append(hashes, fmt.Sprintf("%08x", hasher.Sum32()))
+		hasher.add(txt)
 	}
 
 	// System prompt counts as the first message (matches converter prepend logic).
@@ -104,14 +101,14 @@ func computeAnthropicMessage5Hashes(system anthropic.SystemContent, messages []*
 		hashOne(sysTxt)
 	}
 
-	for i := 0; i < len(messages) && len(hashes) < 5; i++ {
+	for i := 0; i < len(messages) && hasher.count() < 5; i++ {
 		msg := messages[i]
 		if msg == nil {
 			continue
 		}
 		hashOne(anthropicMessageTextForHash(msg))
 	}
-	return hashes
+	return hasher.hashes
 }
 
 // PromptTextLenExtractor extracts the total length of all message texts
@@ -137,6 +134,12 @@ func (e *PromptTextLenExtractor) Features(req *octollm.Request) (any, error) {
 		}
 		for _, msg := range v.Messages {
 			allMsgTextLen += len([]rune(combinedTextForAnthropicMessage(msg)))
+		}
+		return allMsgTextLen, nil
+	case *openai.ResponsesRequest:
+		allMsgTextLen := 0
+		for _, msg := range replayResponsesMessages(v) {
+			allMsgTextLen += len([]rune(msg.contentText))
 		}
 		return allMsgTextLen, nil
 	default:
@@ -178,6 +181,23 @@ func (e *PrefixHashExtractor) Features(req *octollm.Request) (any, error) {
 		if msg0txt == "" {
 			return "", nil
 		}
+		prefix := []rune(msg0txt)
+		if len(prefix) > e.Length {
+			prefix = prefix[:e.Length]
+		}
+
+		hasher := fnv.New32a()
+		hasher.Write([]byte(v.Model))
+		hasher.Write([]byte(string(prefix)))
+
+		return fmt.Sprintf("%08x", hasher.Sum32()), nil
+	case *openai.ResponsesRequest:
+		msgs := replayResponsesMessages(v)
+		if len(msgs) == 0 {
+			return "", nil
+		}
+		msg0txt := strings.TrimSpace(msgs[0].contentText)
+		// first l runes
 		prefix := []rune(msg0txt)
 		if len(prefix) > e.Length {
 			prefix = prefix[:e.Length]
@@ -237,6 +257,23 @@ func (e *SuffixHashExtractor) Features(req *octollm.Request) (any, error) {
 		hasher.Write([]byte(string(suffix)))
 
 		return fmt.Sprintf("%08x", hasher.Sum32()), nil
+	case *openai.ResponsesRequest:
+		msgs := replayResponsesMessages(v)
+		if len(msgs) == 0 {
+			return "", nil
+		}
+		msg0txt := strings.TrimSpace(msgs[0].contentText)
+		// last l runes
+		suffix := []rune(msg0txt)
+		if len(suffix) > e.Length {
+			suffix = suffix[len(suffix)-e.Length:]
+		}
+
+		hasher := fnv.New32a()
+		hasher.Write([]byte(v.Model))
+		hasher.Write([]byte(string(suffix)))
+
+		return fmt.Sprintf("%08x", hasher.Sum32()), nil
 	default:
 		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
 	}
@@ -258,6 +295,8 @@ func (e *Message5HashExtractor) Features(req *octollm.Request) (any, error) {
 		return strings.Join(computeMessage5Hashes(v.Messages), "-"), nil
 	case *anthropic.ClaudeMessagesRequest:
 		return strings.Join(computeAnthropicMessage5Hashes(v.System, v.Messages), "-"), nil
+	case *openai.ResponsesRequest:
+		return strings.Join(computeResponsesMessage5Hashes(v), "-"), nil
 	default:
 		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
 	}
@@ -278,6 +317,8 @@ func (e *Message5HashArrayExtractor) Features(req *octollm.Request) (any, error)
 		return computeMessage5Hashes(v.Messages), nil
 	case *anthropic.ClaudeMessagesRequest:
 		return computeAnthropicMessage5Hashes(v.System, v.Messages), nil
+	case *openai.ResponsesRequest:
+		return computeResponsesMessage5Hashes(v), nil
 	default:
 		return nil, fmt.Errorf("unsupported request body type %T", reqBody)
 	}
@@ -286,40 +327,57 @@ func (e *Message5HashArrayExtractor) Features(req *octollm.Request) (any, error)
 // messageTextForHash returns text from a message for hashing: Content.ExtractText(), or if empty
 // and the message has ToolCalls, the first tool call's Function.Arguments.
 func messageTextForHash(msg *openai.Message) string {
-	msgTxt := combinedTextForChatCompletionsMessage(msg)
-	if strings.TrimSpace(msgTxt) != "" {
-		return msgTxt
+	return textForHash(combinedTextForChatCompletionsMessage(msg), firstToolCallArgs(msg.ToolCalls))
+}
+
+// textForHash picks the text a message contributes to the v1 hash: its content text, or the
+// first tool call's arguments when the content text is blank. Shared by the chat-completions
+// path and the Responses replay. Unlike messageTextForHashV2 it applies no post-processor.
+func textForHash(contentText, firstToolCallArgs string) string {
+	if strings.TrimSpace(contentText) != "" {
+		return contentText
 	}
-	if len(msg.ToolCalls) == 0 {
-		return ""
+	return firstToolCallArgs
+}
+
+// message5HasherV1 accumulates the cumulative FNV-32a hashes described on
+// Message5HashExtractor. Every request format folds its messages in through this type so they
+// all hash identically.
+type message5HasherV1 struct {
+	hasher hash.Hash32
+	hashes []string
+}
+
+func newMessage5HasherV1() *message5HasherV1 {
+	return &message5HasherV1{hasher: fnv.New32a(), hashes: make([]string, 0, 5)}
+}
+
+func (h *message5HasherV1) count() int { return len(h.hashes) }
+
+// add folds one message's text in: the first 100 bytes are written and the resulting hash is
+// recorded. Empty text records nothing.
+func (h *message5HasherV1) add(text string) {
+	if text == "" {
+		return
 	}
-	toolcall := msg.ToolCalls[0]
-	if toolcall != nil && toolcall.Function != nil {
-		return toolcall.Function.Arguments
+	b := []byte(text)
+	if len(b) > 100 {
+		b = b[:100]
 	}
-	return ""
+	h.hasher.Write(b)
+	h.hashes = append(h.hashes, fmt.Sprintf("%08x", h.hasher.Sum32()))
 }
 
 // computeMessage5Hashes computes cumulative FNV-32a hashes over the first 5 non-empty messages,
 // taking the first 100 bytes of each message's text. Returns hex hash strings in order.
 func computeMessage5Hashes(messages []*openai.Message) []string {
-	hasher := fnv.New32a()
-	hashes := make([]string, 0, 5)
-	for i := 0; i < len(messages) && len(hashes) < 5; i++ {
+	hasher := newMessage5HasherV1()
+	for i := 0; i < len(messages) && hasher.count() < 5; i++ {
 		msg := messages[i]
 		if msg == nil {
 			continue
 		}
-		msgTxt := messageTextForHash(msg)
-		if msgTxt == "" {
-			continue
-		}
-		prefix := []byte(msgTxt)
-		if len(prefix) > 100 {
-			prefix = prefix[:100]
-		}
-		hasher.Write(prefix)
-		hashes = append(hashes, fmt.Sprintf("%08x", hasher.Sum32()))
+		hasher.add(messageTextForHash(msg))
 	}
-	return hashes
+	return hasher.hashes
 }
