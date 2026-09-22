@@ -118,6 +118,30 @@ func TestChatCompletionToResponses_convertRequestBody_ReplayedOutput(t *testing.
 	testChatCompletionToResponses_convertRequestBody(t, responsesReqJSON, expectedChatReqJSON)
 }
 
+// TestChatCompletionToResponses_convertRequestBody_DeveloperRole covers the higher-precedence
+// instruction role: a "developer" input item folds onto "system" so that it lands in the same
+// chat role as the "instructions" field, which the converter also renders as a system message.
+func TestChatCompletionToResponses_convertRequestBody_DeveloperRole(t *testing.T) {
+	responsesReqJSON := `{
+		"model": "gpt-4o",
+		"instructions": "Be terse.",
+		"input": [
+			{"role": "developer", "content": [{"type": "input_text", "text": "Permissions block"}]},
+			{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}
+		]
+	}`
+	expectedChatReqJSON := `{
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "system", "content": "Be terse."},
+			{"role": "system", "content": [{"type": "text", "text": "Permissions block"}]},
+			{"role": "user", "content": [{"type": "text", "text": "Hi"}]}
+		]
+	}`
+
+	testChatCompletionToResponses_convertRequestBody(t, responsesReqJSON, expectedChatReqJSON)
+}
+
 func TestChatCompletionToResponses_convertRequestBody_FunctionCallAndOutput(t *testing.T) {
 	responsesReqJSON := `{
 		"model": "gpt-4o",
