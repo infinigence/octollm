@@ -189,7 +189,16 @@ func (e *ChatCompletionToResponses) convertRequestBody(ctx context.Context, srcB
 }
 
 func convertResponsesInputMessage(src *openai.ResponsesInputMessage) *openai.Message {
-	msg := &openai.Message{Role: src.Role}
+	// "developer" is the Responses API's higher-precedence instruction role. Chat
+	// Completions defines it too, but most OpenAI-compatible backends accept only
+	// "system", and convertRequestBody already renders Responses "instructions" as a
+	// system message. Fold developer into system so both spellings of developer-authored
+	// instructions land in the same chat role.
+	role := src.Role
+	if role == "developer" {
+		role = "system"
+	}
+	msg := &openai.Message{Role: role}
 	switch content := src.Content.(type) {
 	case openai.ResponsesInputMessageContentString:
 		msg.Content = openai.MessageContentString(content)
