@@ -118,6 +118,19 @@ func TestResponsesRequest_Marshal_UnmarshalJSON(t *testing.T) {
 				ToolChoice: ResponsesToolChoiceObject{Type: "function", Name: "get_weather"},
 			},
 		},
+		{
+			Name: "ScalarParams",
+			JSON: `{"model":"gpt-5.4","input":"hi","max_output_tokens":100,"temperature":0.5,"top_p":0.9,"reasoning":{"effort":"high"},"parallel_tool_calls":true}`,
+			Object: ResponsesRequest{
+				Model:             "gpt-5.4",
+				Input:             ResponsesInputString("hi"),
+				MaxOutputTokens:   intPtr(100),
+				Temperature:       floatPtr(0.5),
+				TopP:              floatPtr(0.9),
+				Reasoning:         &ResponseReasoning{Effort: "high"},
+				ParallelToolCalls: boolPtr(true),
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -126,6 +139,44 @@ func TestResponsesRequest_Marshal_UnmarshalJSON(t *testing.T) {
 			err := json.Unmarshal([]byte(tc.JSON), &req)
 			require.NoError(t, err)
 			assert.Equal(t, tc.Object, req)
+		})
+		t.Run("Marshal_"+tc.Name, func(t *testing.T) {
+			data, err := json.Marshal(tc.Object)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.JSON, string(data))
+		})
+	}
+}
+
+func TestResponsesToolChoiceValue_Marshal_UnmarshalJSON(t *testing.T) {
+	testCases := []struct {
+		Name   string
+		JSON   string
+		Object ResponsesToolChoiceValue
+	}{
+		{
+			Name:   "String",
+			JSON:   `"auto"`,
+			Object: ResponsesToolChoiceString("auto"),
+		},
+		{
+			Name:   "Object",
+			JSON:   `{"type":"function","name":"get_weather"}`,
+			Object: ResponsesToolChoiceObject{Type: "function", Name: "get_weather"},
+		},
+		{
+			Name:   "Null",
+			JSON:   `null`,
+			Object: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run("Unmarshal_"+tc.Name, func(t *testing.T) {
+			var sf responsesToolChoiceField
+			err := json.Unmarshal([]byte(tc.JSON), &sf)
+			require.NoError(t, err)
+			assert.Equal(t, tc.Object, sf.Value)
 		})
 		t.Run("Marshal_"+tc.Name, func(t *testing.T) {
 			data, err := json.Marshal(tc.Object)
@@ -151,6 +202,11 @@ func TestResponsesInputValue_Marshal_UnmarshalJSON(t *testing.T) {
 			JSON:   `[{"role":"user","content":"hi"}]`,
 			Object: ResponsesInputItemArray{&ResponsesInputMessage{Role: "user", Content: ResponsesInputMessageContentString("hi")}},
 		},
+		{
+			Name:   "Null",
+			JSON:   `null`,
+			Object: nil,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -164,6 +220,137 @@ func TestResponsesInputValue_Marshal_UnmarshalJSON(t *testing.T) {
 			data, err := json.Marshal(tc.Object)
 			require.NoError(t, err)
 			assert.JSONEq(t, tc.JSON, string(data))
+		})
+	}
+}
+
+func TestResponsesInputValue_ExtractText(t *testing.T) {
+	testCases := []struct {
+		Name          string
+		JSON          string
+		ExtractedText string
+	}{
+		{
+			Name:          "String",
+			JSON:          `"hello"`,
+			ExtractedText: "hello",
+		},
+		{
+			Name:          "MixedItemArray",
+			JSON:          `[{"role":"user","content":"hi "},{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Tokyo\"}"},{"type":"function_call_output","call_id":"call_1","output":"Sunny"},{"type":"web_search_call","id":"ws_1"}]`,
+			ExtractedText: `hi {"city":"Tokyo"}Sunny`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run("ExtractText_"+tc.Name, func(t *testing.T) {
+			var sf responsesInputField
+			err := json.Unmarshal([]byte(tc.JSON), &sf)
+			require.NoError(t, err)
+			assert.Equal(t, tc.ExtractedText, sf.Value.ExtractText())
+		})
+	}
+}
+
+func TestResponsesInputItem_Marshal_UnmarshalJSON(t *testing.T) {
+	testCases := []struct {
+		Name          string
+		JSON          string
+		Object        ResponsesInputItem
+		UnmarshalOnly bool
+	}{
+		{
+			Name:   "MessageWithoutType",
+			JSON:   `{"role":"user","content":"hi"}`,
+			Object: &ResponsesInputMessage{Role: "user", Content: ResponsesInputMessageContentString("hi")},
+		},
+		{
+			Name:          "MessageWithType",
+			JSON:          `{"type":"message","role":"user","content":"hi"}`,
+			Object:        &ResponsesInputMessage{Role: "user", Content: ResponsesInputMessageContentString("hi")},
+			UnmarshalOnly: true, // ResponsesInputMessage has no Type field, so "type" is dropped on marshal
+		},
+		{
+			Name:   "FunctionCall",
+			JSON:   `{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Tokyo\"}"}`,
+			Object: &ResponsesInputFunctionCall{Type: "function_call", CallID: "call_1", Name: "get_weather", Arguments: `{"city":"Tokyo"}`},
+		},
+		{
+			Name:   "FunctionCallOutput",
+			JSON:   `{"type":"function_call_output","call_id":"call_1","output":"Sunny"}`,
+			Object: &ResponsesInputFunctionCallOutput{Type: "function_call_output", CallID: "call_1", Output: ResponsesFunctionCallOutputString("Sunny")},
+		},
+		{
+			Name: "Reasoning",
+			JSON: `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"think"}],"encrypted_content":"enc"}`,
+			Object: &ResponsesInputReasoning{
+				Type:             "reasoning",
+				ID:               "rs_1",
+				Summary:          []*ResponsesReasoningSummaryPart{{Type: "summary_text", Text: "think"}},
+				EncryptedContent: "enc",
+			},
+		},
+		{
+			Name:   "UnknownTypePreservedRaw",
+			JSON:   `{"type":"web_search_call","id":"ws_1","status":"completed"}`,
+			Object: &ResponsesInputRawItem{Raw: json.RawMessage(`{"type":"web_search_call","id":"ws_1","status":"completed"}`)},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run("Unmarshal_"+tc.Name, func(t *testing.T) {
+			item, err := unmarshalResponsesInputItem([]byte(tc.JSON))
+			require.NoError(t, err)
+			assert.Equal(t, tc.Object, item)
+		})
+		if !tc.UnmarshalOnly {
+			t.Run("Marshal_"+tc.Name, func(t *testing.T) {
+				data, err := json.Marshal(tc.Object)
+				require.NoError(t, err)
+				assert.JSONEq(t, tc.JSON, string(data))
+			})
+		}
+	}
+}
+
+func TestResponsesInputItem_ExtractText(t *testing.T) {
+	testCases := []struct {
+		Name          string
+		JSON          string
+		ExtractedText string
+	}{
+		{
+			Name:          "Message",
+			JSON:          `{"role":"user","content":[{"type":"input_text","text":"hi"}]}`,
+			ExtractedText: "hi",
+		},
+		{
+			Name:          "FunctionCall",
+			JSON:          `{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Tokyo\"}"}`,
+			ExtractedText: `{"city":"Tokyo"}`,
+		},
+		{
+			Name:          "FunctionCallOutput",
+			JSON:          `{"type":"function_call_output","call_id":"call_1","output":"Sunny"}`,
+			ExtractedText: "Sunny",
+		},
+		{
+			Name:          "Reasoning",
+			JSON:          `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"step one; "},{"type":"summary_text","text":"step two"}],"encrypted_content":"enc"}`,
+			ExtractedText: "step one; step two",
+		},
+		{
+			Name:          "UnknownType",
+			JSON:          `{"type":"web_search_call","id":"ws_1"}`,
+			ExtractedText: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run("ExtractText_"+tc.Name, func(t *testing.T) {
+			item, err := unmarshalResponsesInputItem([]byte(tc.JSON))
+			require.NoError(t, err)
+			assert.Equal(t, tc.ExtractedText, item.ExtractText())
 		})
 	}
 }
@@ -186,6 +373,11 @@ func TestResponsesInputMessageContent_Marshal_UnmarshalJSON(t *testing.T) {
 				{Type: "input_text", Text: "hi"},
 				{Type: "input_image", ImageURL: MessageContentItemImageURLString("https://example.com/x.png")},
 			},
+		},
+		{
+			Name:   "Null",
+			JSON:   `null`,
+			Object: nil,
 		},
 	}
 
@@ -284,11 +476,6 @@ func TestResponsesInputMessage_Marshal_UnmarshalJSON(t *testing.T) {
 				},
 			},
 		},
-		{
-			Name:   "StringContentInArrayInput",
-			JSON:   `{"role":"user","content":"plain text message"}`,
-			Object: ResponsesInputMessage{Role: "user", Content: ResponsesInputMessageContentString("plain text message")},
-		},
 	}
 
 	for _, tc := range testCases {
@@ -306,7 +493,7 @@ func TestResponsesInputMessage_Marshal_UnmarshalJSON(t *testing.T) {
 	}
 }
 
-func TestResponsesFunctionCallOutput_Marshal_UnmarshalJSON(t *testing.T) {
+func TestResponsesInputFunctionCallOutput_Marshal_UnmarshalJSON(t *testing.T) {
 	testCases := []struct {
 		Name   string
 		JSON   string
@@ -347,7 +534,76 @@ func TestResponsesFunctionCallOutput_Marshal_UnmarshalJSON(t *testing.T) {
 	}
 }
 
-func TestResponsesResponse_UnmarshalJSON(t *testing.T) {
+func TestResponsesFunctionCallOutputValue_Marshal_UnmarshalJSON(t *testing.T) {
+	testCases := []struct {
+		Name   string
+		JSON   string
+		Object ResponsesFunctionCallOutputValue
+	}{
+		{
+			Name:   "String",
+			JSON:   `"Sunny"`,
+			Object: ResponsesFunctionCallOutputString("Sunny"),
+		},
+		{
+			Name: "Array",
+			JSON: `[{"type":"input_text","text":"Sunny"},{"type":"input_image","image_url":"https://example.com/w.png"}]`,
+			Object: ResponsesFunctionCallOutputArray{
+				{Type: "input_text", Text: "Sunny"},
+				{Type: "input_image", ImageURL: MessageContentItemImageURLString("https://example.com/w.png")},
+			},
+		},
+		{
+			Name:   "Null",
+			JSON:   `null`,
+			Object: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run("Unmarshal_"+tc.Name, func(t *testing.T) {
+			var sf responsesFunctionCallOutputField
+			err := json.Unmarshal([]byte(tc.JSON), &sf)
+			require.NoError(t, err)
+			assert.Equal(t, tc.Object, sf.Value)
+		})
+		t.Run("Marshal_"+tc.Name, func(t *testing.T) {
+			data, err := json.Marshal(tc.Object)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.JSON, string(data))
+		})
+	}
+}
+
+func TestResponsesFunctionCallOutputValue_ExtractText(t *testing.T) {
+	testCases := []struct {
+		Name          string
+		JSON          string
+		ExtractedText string
+	}{
+		{
+			Name:          "String",
+			JSON:          `"Sunny"`,
+			ExtractedText: "Sunny",
+		},
+		{
+			Name:          "Array",
+			JSON:          `[{"type":"input_text","text":"Sunny"},{"type":"input_image","image_url":"https://example.com/w.png"}]`,
+			ExtractedText: "Sunny[img:https://example.com/w.png]",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run("ExtractText_"+tc.Name, func(t *testing.T) {
+			var sf responsesFunctionCallOutputField
+			err := json.Unmarshal([]byte(tc.JSON), &sf)
+			require.NoError(t, err)
+			assert.Equal(t, tc.ExtractedText, sf.Value.ExtractText())
+		})
+	}
+}
+
+func TestResponsesResponse_Marshal_UnmarshalJSON(t *testing.T) {
 	testCases := []struct {
 		Name   string
 		JSON   string
@@ -423,6 +679,11 @@ func TestResponsesResponse_UnmarshalJSON(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.Object, resp)
 		})
+		t.Run("Marshal_"+tc.Name, func(t *testing.T) {
+			data, err := json.Marshal(tc.Object)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.JSON, string(data))
+		})
 	}
 }
 
@@ -448,11 +709,11 @@ func TestResponseStreamChunk_Marshal_UnmarshalJSON(t *testing.T) {
 		},
 		{
 			Name: "FunctionCallArgumentsDelta",
-			JSON: `{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"city\":\"Tokyo\"}"}`,
+			JSON: `{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":1,"delta":"{\"city\":\"Tokyo\"}"}`,
 			Object: ResponseStreamChunk{
 				Type:      "response.function_call_arguments.delta",
 				ItemID:    "fc_1",
-				OutputIdx: intPtr(0),
+				OutputIdx: intPtr(1),
 				Delta:     `{"city":"Tokyo"}`,
 			},
 		},
