@@ -12,7 +12,7 @@ TestResponsesInputValue_Marshal_UnmarshalJSON    ← interface + field helper
 TestResponsesInputMessageContent_Marshal_UnmarshalJSON  ← nested interface
 TestResponsesInputMessageContent_ExtractText      ← business method
 TestResponsesInputMessage_Marshal_UnmarshalJSON   ← mid-level struct
-TestResponsesResponse_UnmarshalJSON               ← response struct
+TestResponsesResponse_Marshal_UnmarshalJSON       ← response struct
 ```
 
 ### testCases table-driven

@@ -79,6 +79,9 @@ type responsesToolChoiceField struct {
 }
 
 func (t *responsesToolChoiceField) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" || len(data) == 0 {
+		return nil
+	}
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		t.Value = ResponsesToolChoiceString(s)
@@ -396,6 +399,9 @@ type responsesInputMessageContentField struct {
 }
 
 func (f *responsesInputMessageContentField) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" || len(data) == 0 {
+		return nil
+	}
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		f.Value = ResponsesInputMessageContentString(s)
