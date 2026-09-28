@@ -482,8 +482,8 @@ func TestShardKeyConcurrency_WithAffinityProvider(t *testing.T) {
 		return &octollm.Response{StatusCode: 200}, nil
 	})
 	items := []BackendItem{
-		{Name: "hot", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-		{Name: "cool", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
+		{Name: "hot", Weight: 10, Engine: okEngine},
+		{Name: "cool", Weight: 10, Engine: okEngine},
 	}
 
 	provider, err := NewShardKeyAffinityProvider(ShardKeyAffinityProviderConfig{

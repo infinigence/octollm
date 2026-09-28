@@ -1,7 +1,8 @@
 package loadbalancer
 
 import (
-	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,14 +11,56 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/infinigence/octollm/pkg/engines/limiter"
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
-func TestShardKeyWRR_Headroom(t *testing.T) {
-	okEngine := octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
-		return &octollm.Response{StatusCode: 200}, nil
+type captureHitKindEngine struct {
+	mu    sync.Mutex
+	kinds []octollm.CacheHitKind
+	err   error
+}
+
+func (e *captureHitKindEngine) Process(req *octollm.Request) (*octollm.Response, error) {
+	kind, ok := octollm.GetCtxValue[octollm.CacheHitKind](req, octollm.ContextKeyCacheHitKind)
+	if !ok {
+		kind = octollm.CacheMiss
+	}
+	e.mu.Lock()
+	e.kinds = append(e.kinds, kind)
+	e.mu.Unlock()
+	if e.err != nil {
+		return nil, e.err
+	}
+	return &octollm.Response{StatusCode: 200}, nil
+}
+
+func (e *captureHitKindEngine) kindsCopy() []octollm.CacheHitKind {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]octollm.CacheHitKind, len(e.kinds))
+	copy(out, e.kinds)
+	return out
+}
+
+func rejectUnlessStrong(e *captureHitKindEngine) octollm.Engine {
+	return octollm.EngineFunc(func(req *octollm.Request) (*octollm.Response, error) {
+		kind, ok := octollm.GetCtxValue[octollm.CacheHitKind](req, octollm.ContextKeyCacheHitKind)
+		if !ok {
+			kind = octollm.CacheMiss
+		}
+		e.mu.Lock()
+		e.kinds = append(e.kinds, kind)
+		e.mu.Unlock()
+		if kind == octollm.CacheHitStrong {
+			return &octollm.Response{StatusCode: 200}, nil
+		}
+		return nil, limiter.ErrRateLimitReached
 	})
+}
+
+func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 	selectedBackend := func(t *testing.T, req *octollm.Request) string {
 		t.Helper()
 		mv, ok := req.GetMetadataValue(backendName)
@@ -33,16 +76,18 @@ func TestShardKeyWRR_Headroom(t *testing.T) {
 		return lb
 	}
 
-	t.Run("cache hit on last-two shard key bypasses headroom ceiling", func(t *testing.T) {
+	t.Run("strong affinity is tried even when busy and writes strong", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		hot := &captureHitKindEngine{}
+		cool := &captureHitKindEngine{}
 		items := []BackendItem{
-			{Name: "hot", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-			{Name: "cool", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
+			{Name: "hot", Weight: 10, Engine: hot},
+			{Name: "cool", Weight: 10, Engine: cool},
 		}
 		seedConcurrency(t, rd, "hot", 10)
 
-		const keyPrefix = "wrr-hr-a"
+		const keyPrefix = "wrr-hk-strong"
 		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
 		provider := newPrimaryShardKeyProvider(t, func(_ *octollm.Request) []string {
 			return []string{"sk0", "sk1", "sk2"}
@@ -52,20 +97,22 @@ func TestShardKeyWRR_Headroom(t *testing.T) {
 		resp, err := newWRR(t, items, provider, rd).Process(req)
 		require.NoError(t, err)
 		require.NotNil(t, resp)
-		assert.Equal(t, "hot", selectedBackend(t, req), "cache-hit backend should be used even over the ceiling")
+		assert.Equal(t, "hot", selectedBackend(t, req))
+		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheHitStrong}, hot.kindsCopy())
+		assert.Empty(t, cool.kindsCopy())
 	})
 
-	t.Run("leaf mapping without marker does not bypass headroom", func(t *testing.T) {
+	t.Run("weak affinity limiter reject failovers and second attempt is not strong", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		hotCap := &captureHitKindEngine{}
+		cool := &captureHitKindEngine{}
 		items := []BackendItem{
-			{Name: "hot", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-			{Name: "cool", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
+			{Name: "hot", Weight: 10, Engine: rejectUnlessStrong(hotCap)},
+			{Name: "cool", Weight: 10, Engine: cool},
 		}
-		seedConcurrency(t, rd, "hot", 10)
-		seedConcurrency(t, rd, "cool", 0)
 
-		const keyPrefix = "wrr-hr-leaf-weak"
+		const keyPrefix = "wrr-hk-weak"
 		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
 		provider := newPrimaryShardKeyProviderWithPolicy(t, func(_ *octollm.Request) []string {
 			return []string{"sk0", "sk1", "sk2"}
@@ -75,95 +122,39 @@ func TestShardKeyWRR_Headroom(t *testing.T) {
 		resp, err := newWRR(t, items, provider, rd).Process(req)
 		require.NoError(t, err)
 		require.NotNil(t, resp)
-		assert.Equal(t, "cool", selectedBackend(t, req), "leaf weak hit over ceiling should be skipped")
+		assert.Equal(t, "cool", selectedBackend(t, req))
+		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheHitWeak}, hotCap.kindsCopy())
+		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheMiss}, cool.kindsCopy())
 	})
 
-	t.Run("leaf mapping and marker bypasses headroom ceiling", func(t *testing.T) {
+	t.Run("all limiter rejects return last limiter error", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		reject := octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+			return nil, limiter.ErrRateLimitReached
+		})
 		items := []BackendItem{
-			{Name: "hot", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-			{Name: "cool", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
+			{Name: "a", Weight: 10, Engine: reject},
+			{Name: "b", Weight: 10, Engine: reject},
 		}
-		seedConcurrency(t, rd, "hot", 10)
-		seedConcurrency(t, rd, "cool", 0)
-
-		const keyPrefix = "wrr-hr-leaf-strong"
-		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
-		require.NoError(t, rd.Set(t.Context(), keyPrefix+":is-leaf:sk2", "1", time.Minute).Err())
-		provider := newPrimaryShardKeyProviderWithPolicy(t, func(_ *octollm.Request) []string {
-			return []string{"sk0", "sk1", "sk2"}
-		}, rd, keyPrefix, time.Minute, items, StrongHitPolicyLeaf)
-
-		req := testhelper.CreateTestRequest()
-		resp, err := newWRR(t, items, provider, rd).Process(req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		assert.Equal(t, "hot", selectedBackend(t, req), "leaf strong hit should bypass headroom")
-	})
-
-	t.Run("non-cache-hit prioritized backend over ceiling is skipped", func(t *testing.T) {
-		mr := miniredis.RunT(t)
-		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-		items := []BackendItem{
-			{Name: "hot", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-			{Name: "cool", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-		}
-		seedConcurrency(t, rd, "hot", 10)
-		seedConcurrency(t, rd, "cool", 0)
-
-		const keyPrefix = "wrr-hr-b"
-		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk0", redis.Z{Score: 1, Member: "hot"}).Err())
-		provider := newPrimaryShardKeyProvider(t, func(_ *octollm.Request) []string {
-			return []string{"sk0", "sk1", "sk2"}
-		}, rd, keyPrefix, time.Minute, items)
-
-		req := testhelper.CreateTestRequest()
-		resp, err := newWRR(t, items, provider, rd).Process(req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		assert.Equal(t, "cool", selectedBackend(t, req), "over-ceiling non-cache-hit backend should be skipped for the under-ceiling one")
-	})
-
-	t.Run("full miss with all backends over ceiling returns headroom error", func(t *testing.T) {
-		mr := miniredis.RunT(t)
-		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-		items := []BackendItem{
-			{Name: "a", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-			{Name: "b", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-		}
-		seedConcurrency(t, rd, "a", 10)
-		seedConcurrency(t, rd, "b", 10)
-
 		resp, err := newWRR(t, items, nil, rd).Process(testhelper.CreateTestRequest())
-		require.ErrorIs(t, err, ErrCacheMissHeadroom)
+		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
 		assert.Nil(t, resp)
 	})
 
-	t.Run("full miss under ceiling is allowed", func(t *testing.T) {
+	t.Run("limiter reject does not roll back WRR weights", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		okEngine := octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+			return &octollm.Response{StatusCode: 200}, nil
+		})
+		reject := octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+			return nil, limiter.ErrRateLimitReached
+		})
 		items := []BackendItem{
-			{Name: "a", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-			{Name: "b", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
+			{Name: "a", Weight: 10, Engine: reject},
+			{Name: "b", Weight: 1, Engine: okEngine},
 		}
-		seedConcurrency(t, rd, "a", 5)
-		seedConcurrency(t, rd, "b", 5)
-
-		resp, err := newWRR(t, items, nil, rd).Process(testhelper.CreateTestRequest())
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-	})
-
-	t.Run("full miss skips over-ceiling backend for one under a higher ceiling", func(t *testing.T) {
-		mr := miniredis.RunT(t)
-		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-		items := []BackendItem{
-			{Name: "a", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.5},
-			{Name: "b", Weight: 1, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-		}
-		seedConcurrency(t, rd, "a", 6) // 0.6 > 0.5
-		seedConcurrency(t, rd, "b", 0) // 0 < 0.9
 		lb := newWRR(t, items, nil, rd)
 		lb.backends[0].currentWeight = 100
 		lb.backends[1].currentWeight = 0
@@ -174,62 +165,26 @@ func TestShardKeyWRR_Headroom(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 		assert.Equal(t, "b", selectedBackend(t, req))
-		assert.Equal(t, beforeA, lb.backends[0].currentWeight, "over-ceiling WRR pick must roll back")
+		assert.NotEqual(t, beforeA, lb.backends[0].currentWeight)
 	})
 
-	t.Run("disabled headroom (1.0) serves over-ceiling miss", func(t *testing.T) {
+	t.Run("real upstream error wins over later limiter rejects", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-		items := []BackendItem{
-			{Name: "a", Weight: 10, Engine: okEngine},
-			{Name: "b", Weight: 10, Engine: okEngine},
-		}
-		seedConcurrency(t, rd, "a", 10)
-		seedConcurrency(t, rd, "b", 10)
-
-		resp, err := newWRR(t, items, nil, rd).Process(testhelper.CreateTestRequest())
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-	})
-
-	t.Run("all weak cache hits over ceiling returns headroom error", func(t *testing.T) {
-		mr := miniredis.RunT(t)
-		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-		items := []BackendItem{
-			{Name: "a", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-			{Name: "b", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-		}
-		seedConcurrency(t, rd, "a", 10)
-		seedConcurrency(t, rd, "b", 10)
-
-		const keyPrefix = "wrr-hr-f"
-		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk0",
-			redis.Z{Score: 1, Member: "a"}, redis.Z{Score: 2, Member: "b"}).Err())
-		provider := newPrimaryShardKeyProvider(t, func(_ *octollm.Request) []string {
-			return []string{"sk0", "sk1", "sk2"}
-		}, rd, keyPrefix, time.Minute, items)
-
-		resp, err := newWRR(t, items, provider, rd).Process(testhelper.CreateTestRequest())
-		require.ErrorIs(t, err, ErrCacheMissHeadroom)
-		assert.Nil(t, resp)
-	})
-
-	t.Run("strong cache hit fails then weak hits over ceiling returns previous error", func(t *testing.T) {
-		mr := miniredis.RunT(t)
-		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-		upstreamErr := errors.New("upstream temporarily unavailable")
+		upstreamErr := assert.AnError
 		failEngine := octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
 			return nil, upstreamErr
 		})
+		reject := octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+			return nil, limiter.ErrRateLimitReached
+		})
 		items := []BackendItem{
-			{Name: "strong", Weight: 10, Engine: failEngine, CacheMissMaxUtilization: 0.9},
-			{Name: "weak1", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-			{Name: "weak2", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
+			{Name: "strong", Weight: 10, Engine: failEngine},
+			{Name: "weak1", Weight: 10, Engine: reject},
+			{Name: "weak2", Weight: 10, Engine: reject},
 		}
-		seedConcurrency(t, rd, "weak1", 10)
-		seedConcurrency(t, rd, "weak2", 10)
 
-		const keyPrefix = "wrr-hr-g"
+		const keyPrefix = "wrr-hk-real"
 		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "strong"}).Err())
 		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk0",
 			redis.Z{Score: 1, Member: "weak1"}, redis.Z{Score: 2, Member: "weak2"}).Err())
@@ -238,66 +193,70 @@ func TestShardKeyWRR_Headroom(t *testing.T) {
 		}, rd, keyPrefix, time.Minute, items)
 
 		resp, err := newWRR(t, items, provider, rd).Process(testhelper.CreateTestRequest())
-		require.ErrorIs(t, err, upstreamErr, "failover should surface the upstream error, not the headroom sentinel")
-		require.NotErrorIs(t, err, ErrCacheMissHeadroom)
+		require.ErrorIs(t, err, upstreamErr)
+		require.NotErrorIs(t, err, limiter.ErrRateLimitReached)
 		assert.Nil(t, resp)
 	})
 
-	t.Run("enabled headroom skips zero denom including strong hit", func(t *testing.T) {
+	t.Run("limiter reject after retry timeout does not call the next backend", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		var calls atomic.Int32
+		eng := octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
+			if calls.Add(1) == 1 {
+				time.Sleep(30 * time.Millisecond)
+				return nil, limiter.ErrRateLimitReached
+			}
+			return &octollm.Response{StatusCode: 200}, nil
+		})
 		items := []BackendItem{
-			{Name: "hot", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9, MaxConcurrencyFn: func(*octollm.Request) int { return 0 }},
-			{Name: "cool", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
+			{Name: "a", Weight: 10, Engine: eng},
+			{Name: "b", Weight: 10, Engine: eng},
 		}
-
-		const keyPrefix = "wrr-hr-zero-denom"
-		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
-		provider := newPrimaryShardKeyProvider(t, func(_ *octollm.Request) []string {
-			return []string{"sk0", "sk1", "sk2"}
-		}, rd, keyPrefix, time.Minute, items)
-
-		req := testhelper.CreateTestRequest()
-		resp, err := newWRR(t, items, provider, rd).Process(req)
+		lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(items), 5*time.Millisecond, 10, 0, nil, nil, rd)
 		require.NoError(t, err)
-		require.NotNil(t, resp)
-		assert.Equal(t, "cool", selectedBackend(t, req), "zero-denom strong hit should be skipped when headroom is on")
-	})
-
-	t.Run("disabled headroom does not skip zero denom", func(t *testing.T) {
-		mr := miniredis.RunT(t)
-		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-		items := []BackendItem{
-			{Name: "hot", Weight: 10, Engine: okEngine, MaxConcurrencyFn: func(*octollm.Request) int { return 0 }},
-		}
-
-		const keyPrefix = "wrr-hr-zero-denom-off"
-		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
-		provider := newPrimaryShardKeyProvider(t, func(_ *octollm.Request) []string {
-			return []string{"sk0", "sk1", "sk2"}
-		}, rd, keyPrefix, time.Minute, items)
-
-		req := testhelper.CreateTestRequest()
-		resp, err := newWRR(t, items, provider, rd).Process(req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		assert.Equal(t, "hot", selectedBackend(t, req), "zero denom is not a cap when headroom is off")
-	})
-
-	t.Run("redis failure fail-opens over-ceiling miss", func(t *testing.T) {
-		mr := miniredis.RunT(t)
-		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-		items := []BackendItem{
-			{Name: "a", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-			{Name: "b", Weight: 10, Engine: okEngine, CacheMissMaxUtilization: 0.9},
-		}
-		seedConcurrency(t, rd, "a", 10)
-		seedConcurrency(t, rd, "b", 10)
-		lb := newWRR(t, items, nil, rd)
-		mr.Close()
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
+		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
+		assert.Nil(t, resp)
+		assert.Equal(t, int32(1), calls.Load())
+	})
+
+	t.Run("limiter timeout keeps an earlier upstream error", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		upstreamErr := assert.AnError
+		var cCalls atomic.Int32
+		items := []BackendItem{
+			{Name: "a", Weight: 10, Engine: octollm.EngineFunc(func(*octollm.Request) (*octollm.Response, error) {
+				return nil, upstreamErr
+			})},
+			{Name: "b", Weight: 10, Engine: octollm.EngineFunc(func(*octollm.Request) (*octollm.Response, error) {
+				time.Sleep(30 * time.Millisecond)
+				return nil, limiter.ErrRateLimitReached
+			})},
+			{Name: "c", Weight: 10, Engine: octollm.EngineFunc(func(*octollm.Request) (*octollm.Response, error) {
+				cCalls.Add(1)
+				return &octollm.Response{StatusCode: 200}, nil
+			})},
+		}
+		lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(items), 5*time.Millisecond, 10, 0, nil, nil, rd)
 		require.NoError(t, err)
-		require.NotNil(t, resp)
+		for _, backend := range lb.backends {
+			switch backend.name {
+			case "a":
+				backend.currentWeight = 1000
+			case "b":
+				backend.currentWeight = 100
+			case "c":
+				backend.currentWeight = 0
+			}
+		}
+
+		resp, err := lb.Process(testhelper.CreateTestRequest())
+		require.ErrorIs(t, err, upstreamErr)
+		require.NotErrorIs(t, err, limiter.ErrRateLimitReached)
+		assert.Nil(t, resp)
+		assert.Equal(t, int32(0), cCalls.Load())
 	})
 }

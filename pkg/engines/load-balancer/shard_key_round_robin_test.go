@@ -60,7 +60,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 	_, err := NewShardKeyWeightedRoundRobin(nil, time.Second, 1, 0, nil, nil, nil)
 	assert.Error(t, err)
 
-	// missing concurrency key function
+	// concurrency key is unused by WRR selection
 	_, err = NewShardKeyWeightedRoundRobin(
 		[]BackendItem{
 			{Name: "b1", Weight: 1, Engine: backendEngine},
@@ -69,7 +69,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 		nil,
 		newTestRedis(t),
 	)
-	assert.Error(t, err)
+	assert.NoError(t, err)
 
 	// negative weight
 	_, err = NewShardKeyWeightedRoundRobin(
@@ -305,7 +305,6 @@ func TestSelectNextEngine_AllBelowThresholdPicksLeastOverdrawn(t *testing.T) {
 	require.NotNil(t, sel.sharedKeyRoundRobinBackend)
 	assert.Equal(t, "A", sel.sharedKeyRoundRobinBackend.name)
 	assert.Equal(t, eA, sel.sharedKeyRoundRobinBackend.engine)
-	assert.NotNil(t, sel.rollback)
 }
 
 func TestSelectNextEngine_StickySmallWeightHitsThreshold(t *testing.T) {

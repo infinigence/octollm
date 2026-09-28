@@ -16,7 +16,7 @@ func testConcurrencyKey(backendName string) string {
 }
 
 func gpt4ConcurrencyKey(backendName string) string {
-	return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
+	return "concurrency_rate:service:gpt-4:" + backendName + ":public"
 }
 
 func withConcurrencyKeys(items []BackendItem, keyFor func(string) string) []BackendItem {

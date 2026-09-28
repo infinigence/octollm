@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/infinigence/octollm/pkg/engines/limiter"
 	"github.com/infinigence/octollm/pkg/errutils"
 )
 
@@ -30,4 +31,6 @@ func TestIsIgnoredAttemptError(t *testing.T) {
 	assert.False(t, isIgnoredAttemptError(errutils.NewHandlerError(nil, 502, "bad gateway", "server_error", "gateway_internal_error")))
 	assert.False(t, isIgnoredAttemptError(&errutils.UpstreamHTTPError{StatusCode: 504, Err: io.EOF}))
 	assert.False(t, isIgnoredAttemptError(&net.OpError{Op: "dial", Err: errors.New("connection refused")}))
+	assert.True(t, isIgnoredAttemptError(limiter.ErrRateLimitReached))
+	assert.True(t, isIgnoredAttemptError(fmt.Errorf("outer: %w", limiter.ErrRateLimitReached)))
 }

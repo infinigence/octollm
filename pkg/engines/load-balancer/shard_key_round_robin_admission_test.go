@@ -1,7 +1,6 @@
 package loadbalancer
 
 import (
-	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -89,7 +88,7 @@ func TestShardKeyWRR_Admission_AllDeniedReturnsNoBackendAvailable(t *testing.T) 
 	assert.Equal(t, 0, engineA.callCount)
 	assert.Equal(t, 0, engineB.callCount)
 	assert.Empty(t, hook.doneNames)
-	assert.Equal(t, before, snapshotCurrentWeights(lb))
+	assert.NotEqual(t, before, snapshotCurrentWeights(lb), "admission denies still consume WRR state")
 }
 
 func TestShardKeyWRR_Admission_PreservesRealErrorWhenRemainingDenied(t *testing.T) {
@@ -171,7 +170,7 @@ func TestShardKeyWRR_Admission_NilAdmissionKeepsCurrentBehavior(t *testing.T) {
 	assert.Equal(t, 1, engineA.callCount)
 }
 
-func TestShardKeyWRR_Admission_RollbackRestoresAllCandidateWeights(t *testing.T) {
+func TestShardKeyWRR_Admission_DenyKeepsAllCandidateWeightUpdates(t *testing.T) {
 	engineA := &stubEngine{}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	engineC := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
@@ -194,12 +193,12 @@ func TestShardKeyWRR_Admission_RollbackRestoresAllCandidateWeights(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, 0, engineA.callCount)
 	assert.Equal(t, 1, engineB.callCount+engineC.callCount)
-	assert.Equal(t, beforeA, lb.backends[0].currentWeight, "denied backend must be fully restored")
+	assert.NotEqual(t, beforeA, lb.backends[0].currentWeight, "denied backend keeps the WRR update")
 	afterRemaining := []int{lb.backends[1].currentWeight, lb.backends[2].currentWeight}
 	assert.NotEqual(t, beforeRemaining, afterRemaining, "remaining candidates keep the committed WRR update")
 }
 
-func TestShardKeyWRR_Admission_AffinityDenyAlsoRollsBack(t *testing.T) {
+func TestShardKeyWRR_Admission_AffinityDenyDoesNotRollback(t *testing.T) {
 	engineA := &stubEngine{}
 	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	engineC := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
@@ -222,7 +221,7 @@ func TestShardKeyWRR_Admission_AffinityDenyAlsoRollsBack(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.Equal(t, 0, engineA.callCount)
 	assert.Equal(t, 1, engineB.callCount+engineC.callCount)
-	assert.Equal(t, before[0], lb.backends[0].currentWeight)
+	assert.NotEqual(t, before[0], lb.backends[0].currentWeight)
 	assert.NotEqual(t, before[1:], snapshotCurrentWeights(lb)[1:])
 }
 
@@ -269,22 +268,24 @@ func TestShardKeyWRR_Admission_FailoverAfterAllowedDoesNotRollback(t *testing.T)
 	assert.NotEqual(t, before[1], lb.backends[1].currentWeight)
 }
 
-func TestShardKeyWRR_Admission_RollbackRestoresWeights(t *testing.T) {
-	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
-			{name: "A", weight: 5, engine: &stubEngine{}, currentWeight: 10},
-			{name: "B", weight: 5, engine: &stubEngine{}, currentWeight: 2},
-		},
-	}
-	before := snapshotCurrentWeights(lb)
-	selection := lb.selectNextEngine(context.Background(), "", nil)
-	require.NotNil(t, selection)
-	require.NotNil(t, selection.rollback)
-	afterSelect := snapshotCurrentWeights(lb)
-	assert.NotEqual(t, before, afterSelect)
+func TestShardKeyWRR_Admission_DenyDoesNotRollback(t *testing.T) {
+	engineB := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
+	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}}}
+	lb, err := NewShardKeyWeightedRoundRobin(
+		withTestConcurrencyKeys([]BackendItem{
+			{Name: "A", Weight: 5, Engine: &stubEngine{}},
+			{Name: "B", Weight: 5, Engine: engineB},
+		}),
+		time.Second, 3, 0, nil, hook, newTestRedis(t))
+	require.NoError(t, err)
+	lb.backends[0].currentWeight = 40
+	lb.backends[1].currentWeight = 0
+	beforeA := lb.backends[0].currentWeight
 
-	selection.Rollback()
-	assert.Equal(t, before, snapshotCurrentWeights(lb))
+	_, err = lb.Process(testhelper.CreateTestRequest())
+	require.NoError(t, err)
+	assert.Equal(t, 1, engineB.callCount)
+	assert.NotEqual(t, beforeA, lb.backends[0].currentWeight, "admission deny must keep the WRR update")
 }
 
 func TestShardKeyWRR_Admission_AllZeroRollbackIsNoop(t *testing.T) {
