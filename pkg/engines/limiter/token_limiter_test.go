@@ -12,7 +12,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/infinigence/octollm/pkg/engines/usage"
 	"github.com/infinigence/octollm/pkg/octollm"
+	"github.com/infinigence/octollm/pkg/types/openai"
 )
 
 type nextStubEngine struct {
@@ -269,114 +271,106 @@ func TestTokenLimiter_Process_RequestLimitReachedAndInternalError(t *testing.T) 
 	assert.Error(t, err)
 }
 
-func TestTokenLimiter_Process_SuccessAndDeduction(t *testing.T) {
-	mr := miniredis.RunT(t)
-	defer mr.Close()
+// usageEngine returns a chat completion reporting the given total tokens, with
+// a usage collector in front of it as a real chain would have.
+func usageEngine(totalTokens int, stream bool) octollm.Engine {
+	return usage.NewCollectorEngine(octollm.EngineFunc(func(req *octollm.Request) (*octollm.Response, error) {
+		data := fmt.Sprintf(`{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":%d}}`, totalTokens)
+		if !stream {
+			return octollm.NewNonStreamResponse(http.StatusOK, http.Header{},
+				octollm.NewBodyFromBytes([]byte(data), &octollm.JSONParser[openai.ChatCompletionResponse]{})), nil
+		}
+		ch := make(chan *octollm.StreamChunk, 1)
+		ch <- &octollm.StreamChunk{Body: octollm.NewBodyFromBytes([]byte(data), &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})}
+		close(ch)
+		return octollm.NewStreamResponse(http.StatusOK, http.Header{}, octollm.NewStreamChan(ch, nil)), nil
+	}))
+}
 
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	next := &nextStubEngine{
-		resp: &octollm.Response{StatusCode: 201},
+func bucketTokens(t *testing.T, client *redis.Client, key string) int64 {
+	t.Helper()
+	tokensStr, err := client.HGet(context.Background(), key, "tokens").Result()
+	assert.NoError(t, err)
+	var tokens int64
+	_, err = fmt.Sscan(tokensStr, &tokens)
+	assert.NoError(t, err)
+	return tokens
+}
+
+func TestTokenLimiter_Process_DeductsUsageOnClose(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			mr := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+			e, err := NewTokenLimiterEngine(client, "bucket", 10, 10, time.Second, usageEngine(4, stream))
+			assert.NoError(t, err)
+
+			resp, err := e.Process(newLimiterTestRequest(t))
+			assert.NoError(t, err)
+			if !assert.NotNil(t, resp) {
+				return
+			}
+
+			// Nothing is deducted until the response is closed.
+			assert.False(t, mr.Exists("bucket"))
+
+			if stream {
+				for range resp.Stream.Chan() {
+				}
+				resp.Stream.Close()
+			} else {
+				assert.NoError(t, resp.Body.Close())
+			}
+			assert.Equal(t, int64(10-4), bucketTokens(t, client, "bucket"))
+		})
 	}
+}
+
+func TestTokenLimiter_Process_WithoutCollectorSkipsDeduction(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 201}}
 
 	e, err := NewTokenLimiterEngine(client, "bucket", 10, 10, time.Second, next)
 	assert.NoError(t, err)
 
-	// Initialize bucket so that allow() passes easily
-	ctx := context.Background()
-	now := time.Now().Unix()
-	err = client.HSet(ctx, "bucket",
-		"tokens", fmt.Sprintf("%d", e.burst),
-		"lastRefill", fmt.Sprintf("%d", now),
-	).Err()
-	assert.NoError(t, err)
-
-	err = client.Expire(ctx, "bucket", time.Hour).Err()
-	assert.NoError(t, err)
-
-	req := newLimiterTestRequest(t)
-
-	resp, err := e.Process(req)
+	resp, err := e.Process(newLimiterTestRequest(t))
 	assert.NoError(t, err)
 	if assert.NotNil(t, resp) {
 		assert.Equal(t, 201, resp.StatusCode)
 	}
-	assert.Equal(t, 1, next.callCount)
-
-	// Process sets DeductionCallback in metadata; simulate downstream calling DoDeduction with used=4
-	assert.NoError(t, DoDeduction(ctx, req, 4))
-
-	// Deduction callback should have persisted updated tokens (burst - 4)
-	tokensStr, err := client.HGet(ctx, "bucket", "tokens").Result()
-	assert.NoError(t, err)
-
-	var tokens int64
-	_, err = fmt.Sscan(tokensStr, &tokens)
-	assert.NoError(t, err)
-	assert.Equal(t, int64(e.burst)-4, tokens)
+	assert.False(t, mr.Exists("bucket"))
 }
 
-func TestDoDeduction_WithoutCallbackIsNoOp(t *testing.T) {
-	// When no TokenLimiterEngine is in the chain, no callbacks are registered.
-	// This is expected: deduction should be a no-op and return nil.
-	req := newLimiterTestRequest(t)
-	err := DoDeduction(context.Background(), req, 10)
+func TestTokenLimiter_Process_DisabledLimiterSkipsDeduction(t *testing.T) {
+	// A disabled limiter has no Redis client; closing the response must not touch it.
+	e, err := NewTokenLimiterEngine(nil, "bucket", 0, 0, time.Second, usageEngine(4, false))
 	assert.NoError(t, err)
+
+	resp, err := e.Process(newLimiterTestRequest(t))
+	assert.NoError(t, err)
+	assert.NoError(t, resp.Body.Close())
 }
 
 func TestTokenLimiter_Process_StackedEnginesBothKeysDeducted(t *testing.T) {
 	mr := miniredis.RunT(t)
-	defer mr.Close()
-
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	next := &nextStubEngine{
-		resp: &octollm.Response{StatusCode: 201},
-	}
 
-	inner, err := NewTokenLimiterEngine(client, "bucket-inner", 10, 10, time.Second, next)
+	const used = 4
+	inner, err := NewTokenLimiterEngine(client, "bucket-inner", 10, 10, time.Second, usageEngine(used, false))
 	assert.NoError(t, err)
 	outer, err := NewTokenLimiterEngine(client, "bucket-outer", 10, 10, time.Second, inner)
 	assert.NoError(t, err)
 
-	req := newLimiterTestRequest(t)
-	resp, err := outer.Process(req)
+	resp, err := outer.Process(newLimiterTestRequest(t))
 	assert.NoError(t, err)
-	if assert.NotNil(t, resp) {
-		assert.Equal(t, 201, resp.StatusCode)
+	assert.NoError(t, resp.Body.Close())
+
+	for _, key := range []string{"bucket-outer", "bucket-inner"} {
+		assert.Equal(t, int64(10-used), bucketTokens(t, client, key), key)
+		ttl, err := client.TTL(context.Background(), key).Result()
+		assert.NoError(t, err)
+		assert.Greater(t, ttl, time.Duration(0), key)
 	}
-	assert.Equal(t, 1, next.callCount)
-
-	// Ensure both limiters appended their callbacks to the same request metadata.
-	raw, ok := req.GetMetadataValue(deductionCallbackKey{})
-	assert.True(t, ok)
-	callbacks, ok := raw.(DeductionCallbacks)
-	assert.True(t, ok)
-	assert.Len(t, callbacks.callbacks, 2)
-
-	// Trigger post-response deduction. Both keys should be created/updated independently.
-	const used int64 = 4
-	assert.NoError(t, DoDeduction(context.Background(), req, used))
-
-	ctx := context.Background()
-
-	tokensOuterStr, err := client.HGet(ctx, "bucket-outer", "tokens").Result()
-	assert.NoError(t, err)
-	var tokensOuter int64
-	_, err = fmt.Sscan(tokensOuterStr, &tokensOuter)
-	assert.NoError(t, err)
-	assert.Equal(t, int64(10)-used, tokensOuter)
-
-	tokensInnerStr, err := client.HGet(ctx, "bucket-inner", "tokens").Result()
-	assert.NoError(t, err)
-	var tokensInner int64
-	_, err = fmt.Sscan(tokensInnerStr, &tokensInner)
-	assert.NoError(t, err)
-	assert.Equal(t, int64(10)-used, tokensInner)
-
-	ttlOuter, err := client.TTL(ctx, "bucket-outer").Result()
-	assert.NoError(t, err)
-	assert.Greater(t, ttlOuter, time.Duration(0))
-
-	ttlInner, err := client.TTL(ctx, "bucket-inner").Result()
-	assert.NoError(t, err)
-	assert.Greater(t, ttlInner, time.Duration(0))
 }

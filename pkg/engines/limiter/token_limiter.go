@@ -2,23 +2,23 @@ package limiter
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/infinigence/octollm/pkg/engines/usage"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
-var ErrLimiterInternalError = errors.New("limiter internal error")
-
 // TokenLimiterEngine is a token-bucket-based limiter that supports negative balances
-// and post-response token deduction based on request metadata.
+// and post-response token deduction.
 //
 // It is designed for token-style limits (e.g., TPM) where the exact deduction amount
-// is only known after processing the request (e.g., used tokens).
+// is only known after processing the request. When the response is closed, it
+// deducts the total tokens recorded by a usage.CollectorEngine, which must sit
+// below it in the chain; without one nothing is deducted.
 type TokenLimiterEngine struct {
 	redisClient *redis.Client
 	key         string
@@ -29,46 +29,6 @@ type TokenLimiterEngine struct {
 	ttl    time.Duration // Redis key TTL; chosen so that when expired, bucket is guaranteed full
 
 	next octollm.Engine
-}
-
-type DeductionCallback func(ctx context.Context, used int64) error
-
-type DeductionCallbacks struct {
-	callbacks []DeductionCallback
-}
-
-// deductionCallbackKey is a strongly-typed metadata key used for token deduction.
-// The corresponding metadata value MUST be an int (number of tokens to deduct).
-type deductionCallbackKey struct{}
-
-// DoDeduction performs the token deduction based on the value in request metadata.
-// The deduction amount is read from req.GetMetadataValue(deductionCallbackKey{}) as int (if present).
-//
-// The ctx parameter is separate from req's context so that deduction can still run when
-// the request context is canceled (e.g., client disconnect, timeout). In such cases,
-// we must still persist token usage to avoid quota leakage.
-func DoDeduction(ctx context.Context, req *octollm.Request, used int64) (err error) {
-	defer func() {
-		if err != nil {
-			slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] deduction error: %v", err))
-		}
-	}()
-	deductionCallbacks, ok := req.GetMetadataValue(deductionCallbackKey{})
-	if !ok {
-		// No deduction callbacks registered. This is expected when no TokenLimiterEngine
-		// is present in the engine chain, so there is nothing to deduct: treat as a no-op.
-		slog.DebugContext(ctx, "[TokenLimiterEngine] no deduction callbacks registered, skipping deduction")
-		return nil
-	}
-	callbacks, ok := deductionCallbacks.(DeductionCallbacks)
-	if !ok {
-		slog.ErrorContext(ctx, "[TokenLimiterEngine] DeductionCallbacks type assertion failed")
-		return fmt.Errorf("DeductionCallbacks type assertion failed")
-	}
-	for _, callback := range callbacks.callbacks {
-		err = errors.Join(err, callback(ctx, used))
-	}
-	return err
 }
 
 var _ octollm.Engine = (*TokenLimiterEngine)(nil)
@@ -142,7 +102,7 @@ func NewTokenLimiterEngine(
 //   - "lastRefill": last refill timestamp (Unix seconds)
 func (e *TokenLimiterEngine) allow(ctx context.Context) error {
 	// If configuration is invalid or Redis is not set, directly pass through.
-	if e.burst <= 0 || e.rate <= 0 || e.redisClient == nil {
+	if !e.enabled() {
 		return nil
 	}
 
@@ -212,8 +172,7 @@ func (e *TokenLimiterEngine) allow(ctx context.Context) error {
 	return nil
 }
 
-// deduction performs post-response token deduction based on the value in request metadata.
-// The deduction amount is read from req.GetMetadataValue(tokenDeductionKey{}) as int (if present).
+// deduction subtracts used tokens from the bucket, refilling it first.
 func (e *TokenLimiterEngine) deduction(ctx context.Context, used int64) error {
 	if used <= 0 {
 		slog.WarnContext(ctx, fmt.Sprintf("[TokenLimiterEngine] token deduction value is less than or equal to 0, key: %s, used: %d", e.key, used))
@@ -301,28 +260,39 @@ func (e *TokenLimiterEngine) Process(req *octollm.Request) (*octollm.Response, e
 		return nil, err
 	}
 
-	// Add deduction callback to request metadata
-	deductionCallbacks, ok := req.GetMetadataValue(deductionCallbackKey{})
-	if !ok {
-		deductionCallbacks = DeductionCallbacks{callbacks: []DeductionCallback{func(ctx context.Context, used int64) error {
-			return e.deduction(ctx, used)
-		}}}
-		req.SetMetadataValue(deductionCallbackKey{}, deductionCallbacks)
-	} else {
-		callbacks, ok := deductionCallbacks.(DeductionCallbacks)
-		if !ok {
-			slog.ErrorContext(ctx, "[TokenLimiterEngine] DeductionCallbacks type assertion failed in token limiter engine")
-			return nil, fmt.Errorf("%w: DeductionCallbacks type assertion failed", ErrLimiterInternalError)
-		}
-		callbacks.callbacks = append(callbacks.callbacks, func(ctx context.Context, used int64) error {
-			return e.deduction(ctx, used)
-		})
-		req.SetMetadataValue(deductionCallbackKey{}, callbacks)
+	resp, err := e.next.Process(req)
+	if err != nil || resp == nil || !e.enabled() {
+		return resp, err
 	}
 
-	// Process request
-	resp, err := e.next.Process(req)
-	return resp, err
+	// Deduct once the response is fully consumed, when the usage is final.
+	deduct := func() { e.deductUsage(req) }
+	if resp.Stream != nil {
+		resp.Stream.OnClose(deduct)
+	} else if resp.Body != nil {
+		resp.Body.OnClose(deduct)
+	} else {
+		deduct()
+	}
+	return resp, nil
+}
+
+func (e *TokenLimiterEngine) enabled() bool {
+	return e.burst > 0 && e.rate > 0 && e.redisClient != nil
+}
+
+// deductUsage deducts the usage recorded on req. It runs on a context detached
+// from req's, so the usage is still persisted when the client has disconnected.
+func (e *TokenLimiterEngine) deductUsage(req *octollm.Request) {
+	ctx := context.WithoutCancel(req.Context())
+	u := usage.Get(req)
+	if u == nil {
+		slog.WarnContext(ctx, fmt.Sprintf("[TokenLimiterEngine] no usage recorded, skipping deduction, key: %s", e.key))
+		return
+	}
+	if err := e.deduction(ctx, u.GetTotalTokens()); err != nil {
+		slog.ErrorContext(ctx, fmt.Sprintf("[TokenLimiterEngine] deduction error: %v, key: %s", err, e.key))
+	}
 }
 
 // parseInt64 is a small helper to parse string to int64.
