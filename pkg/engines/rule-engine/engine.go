@@ -28,6 +28,10 @@ type RuleChain []Rule
 
 type RuleEngine struct {
 	Chains map[string]RuleChain
+	// MatchedRuleMetadataKey is the request metadata key under which the matched rule name is
+	// recorded. Nil uses the default key read by GetMatchedRuleName. Set a distinct key on a
+	// nested RuleEngine so it does not overwrite the rule matched by an enclosing one.
+	MatchedRuleMetadataKey any
 }
 
 var _ octollm.Engine = (*RuleEngine)(nil)
@@ -49,6 +53,13 @@ func GetMatchedRuleName(req *octollm.Request) (string, bool) {
 	return ruleName, ok
 }
 
+func (e *RuleEngine) matchedRuleMetadataKey() any {
+	if e.MatchedRuleMetadataKey != nil {
+		return e.MatchedRuleMetadataKey
+	}
+	return matchedRuleName
+}
+
 func (e *RuleEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	// find default chain
 	currChain, ok := e.Chains["default"]
@@ -65,7 +76,7 @@ func (e *RuleEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 		if !r.Matcher.Match(req) {
 			continue
 		}
-		req.SetMetadataValue(matchedRuleName, r.Name)
+		req.SetMetadataValue(e.matchedRuleMetadataKey(), r.Name)
 		slog.DebugContext(req.Context(), fmt.Sprintf("[rule-engine] rule %s matched, executing", r.Name))
 		resp, err := r.Engine.Process(req)
 		if err == nil {
