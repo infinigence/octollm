@@ -23,6 +23,10 @@ type BackendItem struct {
 	MaxConcurrencyFn func(req *octollm.Request) int
 	// ConcurrencyKeyFn returns this backend's in-flight Redis ZSET key for the request.
 	ConcurrencyKeyFn func(req *octollm.Request) string
+	// Layer is the non-negative scheduling priority; a higher value is tried first. Backends in a
+	// lower layer are selected only after every backend in the higher layers has been tried for the
+	// request. Weights apply within a layer. Only ShardKeyWeightedRoundRobin uses it.
+	Layer int
 }
 
 type wrrBackend struct {
@@ -73,9 +77,9 @@ func isNotRetriableError(err error) bool {
 	return false
 }
 
-// isNotBackendFailureError reports errors that are not recorded as backend
-// failures: client cancellation, limiter rejects, upstream HTTP 413/429, and
-// gateway HandlerError 413/429. Failover still uses isNotRetriableError.
+// isBackendFailureError reports whether err is recorded as a backend failure.
+// Client cancellation, limiter rejects, upstream HTTP 413/429, and gateway
+// HandlerError 429 are not. Failover still uses isNotRetriableError.
 func isBackendFailureError(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
@@ -93,7 +97,7 @@ func isBackendFailureError(err error) bool {
 	var handlerErr *errutils.HandlerError
 	if errors.As(err, &handlerErr) && handlerErr != nil {
 		switch handlerErr.StatusCode {
-		case http.StatusRequestEntityTooLarge, http.StatusTooManyRequests:
+		case http.StatusTooManyRequests:
 			return false
 		}
 	}

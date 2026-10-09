@@ -26,7 +26,6 @@ func TestIsBackendFailureError(t *testing.T) {
 	assert.False(t, isBackendFailureError(fmt.Errorf("outer: %w", &errutils.UpstreamRespError{StatusCode: 413})))
 	assert.False(t, isBackendFailureError(errutils.NewHandlerError(&errutils.UpstreamRespError{StatusCode: 413}, 429, "mapped", "", "")))
 	assert.False(t, isBackendFailureError(errutils.NewHandlerError(nil, 429, "rate", "rate_limit_error", "rate_limit_exceeded")))
-	assert.False(t, isBackendFailureError(errutils.NewHandlerError(nil, 413, "too large", "invalid_request_error", "request_too_large")))
 	assert.False(t, isBackendFailureError(fmt.Errorf("outer: %w", errutils.NewHandlerError(nil, 429, "rate", "rate_limit_error", "rate_limit_exceeded"))))
 	assert.True(t, isBackendFailureError(errutils.NewHandlerError(nil, 502, "bad gateway", "server_error", "gateway_internal_error")))
 	assert.True(t, isBackendFailureError(&errutils.UpstreamHTTPError{StatusCode: 504, Err: io.EOF}))
