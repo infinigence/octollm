@@ -82,7 +82,18 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 	)
 	assert.Error(t, err)
 
-	// all zero weights -> normalized to 100
+	// negative layer
+	_, err = NewShardKeyWeightedRoundRobin(
+		withTestConcurrencyKeys([]BackendItem{
+			{Name: "b1", Weight: 1, Layer: -1, Engine: backendEngine},
+		}),
+		time.Second, 1, 0, nil,
+		nil,
+		newTestRedis(t),
+	)
+	assert.Error(t, err)
+
+	// all zero weights are kept as configured; weight-0 backends are never selected
 	lb, err := NewShardKeyWeightedRoundRobin(
 		withTestConcurrencyKeys([]BackendItem{
 			{Name: "b1", Weight: 0, Engine: backendEngine},
@@ -99,9 +110,8 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 	assert.Equal(t, defaultMinWeightMultiple, lb.minWeightMultiple)
 	if assert.Len(t, lb.backends, 2) {
 		for i, b := range lb.backends {
-			assert.Equalf(t, 100, b.weight, "backend %d weight", i)
-			assert.GreaterOrEqualf(t, b.currentWeight, 0, "backend %d currentWeight lower bound", i)
-			assert.LessOrEqualf(t, b.currentWeight, b.weight, "backend %d currentWeight upper bound", i)
+			assert.Equalf(t, 0, b.weight, "backend %d weight", i)
+			assert.Equalf(t, 0, b.currentWeight, "backend %d currentWeight", i)
 		}
 	}
 
@@ -132,11 +142,11 @@ func TestResolveAffinity_WithRedisAndTrim(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 
 	backends := []BackendItem{
-		{Name: "b1"},
-		{Name: "b2"},
-		{Name: "b3"},
-		{Name: "b4"},
-		{Name: "b5"},
+		{Name: "b1", Weight: 1},
+		{Name: "b2", Weight: 1},
+		{Name: "b3", Weight: 1},
+		{Name: "b4", Weight: 1},
+		{Name: "b5", Weight: 1},
 	}
 	provider := newPrimaryShardKeyProvider(
 		t,
@@ -192,8 +202,8 @@ func TestResolveAffinity_OnlyStrongCacheHits(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 
 	backends := []BackendItem{
-		{Name: "weak"},
-		{Name: "strong"},
+		{Name: "weak", Weight: 1},
+		{Name: "strong", Weight: 1},
 	}
 	provider := newPrimaryShardKeyProvider(
 		t,
@@ -258,7 +268,7 @@ func TestSelectNextEngine_PrioritizedHit(t *testing.T) {
 	assert.NotZero(t, lb.backends[0].currentWeight)
 }
 
-func TestSelectNextEngine_AllWeightZeroBackends(t *testing.T) {
+func TestSelectNextEngine_ZeroWeightBackendsNeverSelected(t *testing.T) {
 	lb := &ShardKeyWeightedRoundRobin{
 		backends: []*sharedKeyRoundRobinBackend{
 			{name: "a", weight: 0, engine: &stubEngine{}, currentWeight: 0},
@@ -266,11 +276,9 @@ func TestSelectNextEngine_AllWeightZeroBackends(t *testing.T) {
 		},
 	}
 
-	sel := lb.selectNextEngine(context.Background(), "", nil)
+	sel := lb.selectNextEngine(context.Background(), "a", nil)
 	require.NotNil(t, sel)
-	assert.NotEmpty(t, sel.sharedKeyRoundRobinBackend.name)
-	assert.Contains(t, []string{"a", "b"}, sel.sharedKeyRoundRobinBackend.name)
-	assert.NotNil(t, sel.sharedKeyRoundRobinBackend.engine)
+	assert.Nil(t, sel.sharedKeyRoundRobinBackend)
 }
 
 func TestSelectNextEngine_HintBelowThresholdFallsBackToWRR(t *testing.T) {
@@ -559,7 +567,7 @@ func TestShardKeyWeightedRoundRobin_Process_AllBackendExhausted(t *testing.T) {
 	})
 }
 
-func TestShardKeyWeightedRoundRobin_Process_FailoverToZeroWeightedBackend(t *testing.T) {
+func TestShardKeyWeightedRoundRobin_Process_FailoverToLowerLayerBackend(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 	rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -569,19 +577,19 @@ func TestShardKeyWeightedRoundRobin_Process_FailoverToZeroWeightedBackend(t *tes
 	stubC := &stubEngine{}
 
 	lbItems := []BackendItem{
-		{Name: "A", Weight: 10, Engine: stubA},
-		{Name: "B", Weight: 5, Engine: stubB},
-		{Name: "C", Weight: 0, Engine: stubC},
+		{Name: "A", Weight: 10, Layer: 1, Engine: stubA},
+		{Name: "B", Weight: 5, Layer: 1, Engine: stubB},
+		{Name: "C", Weight: 1, Layer: 0, Engine: stubC},
 	}
 	shardKeyListFunc := func(req *octollm.Request) []string {
 		return []string{"shard-key-1"}
 	}
-	provider := newPrimaryShardKeyProvider(t, shardKeyListFunc, rd, "shard-key:failover-zero-weight", time.Minute, lbItems)
+	provider := newPrimaryShardKeyProvider(t, shardKeyListFunc, rd, "shard-key:failover-lower-layer", time.Minute, lbItems)
 	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, 0, provider, nil, rd)
 	require.NoError(t, err)
 
-	t.Run("weighted backends fail, zero-weight backend succeeds", func(t *testing.T) {
-		// A B should be tried first (in order of prioritization), then failover to C which has zero weight but should still be tried and succeed
+	t.Run("higher-layer backends fail, lower-layer backend succeeds", func(t *testing.T) {
+		// A B in layer 1 should be tried first, then failover to C in layer 0 which should succeed
 		req := testhelper.CreateTestRequest()
 		resp, err := lb.Process(req)
 		require.NoError(t, err)
@@ -596,10 +604,10 @@ func TestShardKeyWeightedRoundRobin_Process_FailoverToZeroWeightedBackend(t *tes
 	stubB.reset()
 	stubC.reset()
 
-	t.Run("shard-key prioritizes weighted backends, zero-weight backend succeeds as last resort", func(t *testing.T) {
+	t.Run("shard-key prioritizes higher-layer backends, lower-layer backend succeeds as last resort", func(t *testing.T) {
 		ctx := context.Background()
-		// b -> a -> c
-		_, err := rd.ZAdd(ctx, "shard-key:failover-zero-weight:shard-key-1",
+		// C is the most recent affinity hit but sits in layer 0, so the order is b -> a -> c
+		_, err := rd.ZAdd(ctx, "shard-key:failover-lower-layer:shard-key-1",
 			redis.Z{Score: float64(time.Now().Unix() - 2), Member: "A"},
 			redis.Z{Score: float64(time.Now().Unix() - 1), Member: "B"},
 			redis.Z{Score: float64(time.Now().Unix()), Member: "C"},
@@ -620,49 +628,49 @@ func TestShardKeyWeightedRoundRobin_Process_FailoverToZeroWeightedBackend(t *tes
 	})
 }
 
-func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineNotFirstChoice(t *testing.T) {
+func TestShardKeyWeightedRoundRobin_Process_LowerLayerEngineNotFirstChoice(t *testing.T) {
 	stubA := &stubEngine{}
 	stubB := &stubEngine{}
 	stubC := &stubEngine{}
 
 	lbItems := []BackendItem{
-		{Name: "A", Weight: 10, Engine: stubA},
-		{Name: "B", Weight: 5, Engine: stubB},
-		{Name: "C", Weight: 0, Engine: stubC},
+		{Name: "A", Weight: 10, Layer: 1, Engine: stubA},
+		{Name: "B", Weight: 5, Layer: 1, Engine: stubB},
+		{Name: "C", Weight: 100, Layer: 0, Engine: stubC},
 	}
 
 	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, 0, nil, nil, newTestRedis(t)) // skip shard-key prioritized routing
 	require.NoError(t, err)
 
-	t.Run("WRR prefers weighted backends; zero-weight not called when healthy alternatives exist", func(t *testing.T) {
+	t.Run("WRR prefers higher-layer backends; lower layer not called when healthy alternatives exist", func(t *testing.T) {
 		for range 5 {
 			req := testhelper.CreateTestRequest()
 			resp, err := lb.Process(req)
 			require.NoError(t, err)
 			require.NotNil(t, resp)
 		}
-		assert.Equal(t, 0, stubC.callCount, "stubC with zero weight should not be called when other weighted backends are available and healthy")
-		assert.Equal(t, 5, stubA.callCount+stubB.callCount, "stubA and stubB should be called for all requests since they are healthy and have non-zero weight")
+		assert.Equal(t, 0, stubC.callCount, "stubC in a lower layer should not be called when higher-layer backends are available and healthy")
+		assert.Equal(t, 5, stubA.callCount+stubB.callCount, "stubA and stubB should be called for all requests since they are healthy and in the higher layer")
 	})
 }
 
-func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineCanBeLoadBalanced(t *testing.T) {
+func TestShardKeyWeightedRoundRobin_Process_LowerLayerEnginesCanBeLoadBalanced(t *testing.T) {
 	stubA := &stubEngine{err: errors.New("failure")}
 	stubB := &stubEngine{err: errors.New("failure")}
 	stubC := &stubEngine{}
 	stubD := &stubEngine{}
 
 	lbItems := []BackendItem{
-		{Name: "A", Weight: 10, Engine: stubA},
-		{Name: "B", Weight: 5, Engine: stubB},
-		{Name: "C", Weight: 0, Engine: stubC},
-		{Name: "D", Weight: 0, Engine: stubD},
+		{Name: "A", Weight: 10, Layer: 1, Engine: stubA},
+		{Name: "B", Weight: 5, Layer: 1, Engine: stubB},
+		{Name: "C", Weight: 1, Layer: 0, Engine: stubC},
+		{Name: "D", Weight: 1, Layer: 0, Engine: stubD},
 	}
 
 	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, 0, nil, nil, newTestRedis(t)) // skip shard-key prioritized routing
 	require.NoError(t, err)
 
-	t.Run("WRR failover to zero-weight backends load-balanced when all weighted backends fail", func(t *testing.T) {
+	t.Run("WRR failover to lower-layer backends load-balanced when all higher-layer backends fail", func(t *testing.T) {
 		for range 1000 {
 			req := testhelper.CreateTestRequest()
 			resp, err := lb.Process(req)
@@ -672,7 +680,7 @@ func TestShardKeyhWeightedRoundRobin_Process_ZeroWeightEngineCanBeLoadBalanced(t
 		assert.Equal(t, 1000, stubA.callCount, "stubA should be called once per request")
 		assert.Equal(t, 1000, stubB.callCount, "stubB should be called once per request")
 
-		assert.Equal(t, 1000, stubC.callCount+stubD.callCount, "zero-weight backends C and D should handle all requests as fallback")
+		assert.Equal(t, 1000, stubC.callCount+stubD.callCount, "lower-layer backends C and D should handle all requests as fallback")
 
 		assert.InDelta(t, 1.0, float64(stubC.callCount)/float64(stubD.callCount), 0.3, "C and D should be load balanced roughly equally")
 	})
@@ -688,9 +696,9 @@ func TestShardKeyWeightedRoundRobin_Process_Priority(t *testing.T) {
 	stubC := &stubEngine{}
 
 	lbItems := []BackendItem{
-		{Name: "A", Weight: 10, Engine: stubA},
-		{Name: "B", Weight: 5, Engine: stubB},
-		{Name: "C", Weight: 0, Engine: stubC},
+		{Name: "A", Weight: 10, Layer: 1, Engine: stubA},
+		{Name: "B", Weight: 5, Layer: 1, Engine: stubB},
+		{Name: "C", Weight: 1, Layer: 0, Engine: stubC},
 	}
 
 	shardKeyListFunc := func(req *octollm.Request) []string {
@@ -729,7 +737,7 @@ func TestShardKeyWeightedRoundRobin_Process_Priority(t *testing.T) {
 	stubA.err = errors.New("failure")
 	stubB.err = errors.New("failure")
 
-	t.Run("redis score is not updated after successful processing for zero-weight backend", func(t *testing.T) {
+	t.Run("redis score is updated after lower-layer affinity backend succeeds on failover", func(t *testing.T) {
 		initialScore := float64(time.Now().Unix() - 10)
 		_, err = rd.ZAdd(ctx, "shard-key:select-by-ctx:C",
 			redis.Z{Score: initialScore, Member: "C"},
@@ -744,9 +752,9 @@ func TestShardKeyWeightedRoundRobin_Process_Priority(t *testing.T) {
 		assert.Equal(t, 1, stubB.callCount)
 		assert.Equal(t, 1, stubC.callCount, "stubC should be called for failover")
 
-		// Score should NOT be updated for zero-weight backends
+		// A lower-layer backend is a regular WRR backend, so its affinity is committed on success
 		scoreAfter, err := rd.ZScore(ctx, "shard-key:select-by-ctx:C", "C").Result()
 		require.NoError(t, err)
-		assert.Equal(t, initialScore, scoreAfter, "Redis ZSET score for zero-weight backend C should not be updated after processing")
+		assert.Greater(t, scoreAfter, initialScore, "Redis ZSET score for lower-layer backend C should be updated after processing")
 	})
 }
