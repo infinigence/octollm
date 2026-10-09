@@ -25,6 +25,10 @@ type BackendItem struct {
 	// ConcurrencyKeyFn returns this backend's in-flight Redis ZSET key for the request.
 	// Required by shard-key LBs that read concurrency for ratio-based selection.
 	ConcurrencyKeyFn func(*octollm.Request) string
+	// Layer is the non-negative scheduling priority; a higher value is tried first. Backends in a
+	// lower layer are selected only after every backend in the higher layers has been tried for the
+	// request. Weights apply within a layer. Only ShardKeyWeightedRoundRobin uses it.
+	Layer int
 }
 
 type wrrBackend struct {

@@ -9,14 +9,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/infinigence/octollm/pkg/engines/limiter"
 	"github.com/infinigence/octollm/pkg/octollm"
-	"github.com/redis/go-redis/v9"
 )
 
 type sharedKeyRoundRobinBackend struct {
 	name          string
 	weight        int
+	layer         int
 	engine        octollm.Engine
 	currentWeight int
 }
@@ -28,10 +30,11 @@ type prioritizedWrrBackend struct {
 
 const defaultMinWeightMultiple = 5
 
-// ShardKeyWeightedRoundRobin implements weighted round-robin with optional backend affinity. It:
+// ShardKeyWeightedRoundRobin implements layered weighted round-robin with optional backend affinity. It:
+//   - Restricts each pick to the highest layer that still has untried backends.
 //   - Uses AffinityProvider to resolve ordered backend candidates.
-//   - Tries eligible affinity candidates before normal WRR selection.
-//   - Falls back to smooth WRR after affinity candidates are exhausted.
+//   - Tries eligible affinity candidates in that layer before normal WRR selection.
+//   - Falls back to smooth WRR within that layer after its affinity candidates are exhausted.
 //   - Writes CacheHitKind onto each attempt request; Color Limiter enforces headroom.
 type ShardKeyWeightedRoundRobin struct {
 	mu sync.Mutex
@@ -53,9 +56,9 @@ var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
 
 // NewShardKeyWeightedRoundRobin creates an affinity-aware weighted round-robin load balancer.
 //
-// Negative weights are rejected. If every configured weight is zero, all backends are normalized
-// to the same positive weight. A nil affinityProvider disables affinity and uses normal WRR.
-// A nil backendAdmission skips admission checks and preserves current balancer behavior.
+// Negative weights and layers are rejected. A nil affinityProvider disables affinity and uses
+// normal WRR. A nil backendAdmission skips admission checks and preserves current balancer
+// behavior.
 // redisClient is required by the constructor for call-site compatibility.
 // minWeightMultiple <= 0 uses defaultMinWeightMultiple.
 func NewShardKeyWeightedRoundRobin(
@@ -75,29 +78,23 @@ func NewShardKeyWeightedRoundRobin(
 		return nil, fmt.Errorf("backends must have at least one item")
 	}
 
-	// Normalize an all-zero configuration to equal positive weights so affinity routing and smooth
-	// WRR remain active.
-	allZero := true
 	for _, backend := range backends {
 		if backend.Weight < 0 {
 			return nil, fmt.Errorf("weight must be >= 0")
 		}
-		if backend.Weight != 0 {
-			allZero = false
+		if backend.Layer < 0 {
+			return nil, fmt.Errorf("layer must be >= 0")
 		}
 	}
 
 	wrrBackends := make([]*sharedKeyRoundRobinBackend, len(backends))
 	for i, backend := range backends {
-		w := backend.Weight
-		if allZero {
-			w = 100
-		}
 		wrrBackends[i] = &sharedKeyRoundRobinBackend{
 			name:          backend.Name,
-			weight:        w,
+			weight:        backend.Weight,
+			layer:         backend.Layer,
 			engine:        backend.Engine,
-			currentWeight: rand.Intn(w + 1),
+			currentWeight: rand.Intn(backend.Weight + 1),
 		}
 	}
 
@@ -164,7 +161,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 		return nil, err
 	}
 
-	prioritizedIndex := 0
+	offeredPrioritized := make(map[string]bool)
 	excludeNames := make(map[string]bool)
 
 	start := time.Now()
@@ -174,14 +171,17 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 	var lastRealErr, lastLimiterErr error
 	var lastN, lastActualKind string
 	for {
+		// Offer each affinity candidate at most once, and only while its layer is the active one.
+		layer := l.activeLayer(excludeNames)
 		var prioritizedBackend *prioritizedWrrBackend
-		if prioritizedIndex < len(prioritizedBackends) {
-			cand := prioritizedBackends[prioritizedIndex]
-			prioritizedIndex++
-			if cand == nil || cand.backend == nil || excludeNames[cand.backend.name] {
+		for _, cand := range prioritizedBackends {
+			if cand == nil || cand.backend == nil || cand.backend.layer != layer ||
+				offeredPrioritized[cand.backend.name] || excludeNames[cand.backend.name] {
 				continue
 			}
+			offeredPrioritized[cand.backend.name] = true
 			prioritizedBackend = cand
+			break
 		}
 
 		prioritizedName := ""
@@ -204,7 +204,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			return exhaustAfterNoBackend(lastRealResp, lastRealErr, lastLimiterErr)
 		}
 		selected := selection.sharedKeyRoundRobinBackend
-		n, eng, isAllZero := selected.name, selected.engine, selection.isAllZero
+		n, eng := selected.name, selected.engine
 		isPrioritizedHit := prioritizedBackend != nil && n == prioritizedName
 		var actualKind string
 		if isPrioritizedHit {
@@ -214,13 +214,13 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 				actualKind = affinityKindWeakCacheAware
 			}
 			slog.InfoContext(req.Context(),
-				fmt.Sprintf("[ShardKey WRR load balancer] prioritized backend hit (strongCacheHit=%t): %s (index %d/%d)", strongCacheHit, n, prioritizedIndex, len(prioritizedBackends)),
+				fmt.Sprintf("[ShardKey WRR load balancer] prioritized backend hit (strongCacheHit=%t): %s (layer %d, %d prioritized)", strongCacheHit, n, layer, len(prioritizedBackends)),
 				slog.String("backend_name", n),
 			)
 		} else {
 			actualKind = affinityKindMiss
 			slog.InfoContext(req.Context(),
-				fmt.Sprintf("[ShardKey WRR load balancer] no prioritized backend available (exhausted %d), fallback to WRR: %s", len(prioritizedBackends), n),
+				fmt.Sprintf("[ShardKey WRR load balancer] no prioritized backend available in layer %d (%d prioritized), fallback to WRR: %s", layer, len(prioritizedBackends), n),
 				slog.String("backend_name", n),
 			)
 		}
@@ -267,7 +267,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			done(err == nil)
 		}
 		if err == nil {
-			if commit != nil && !isAllZero {
+			if commit != nil {
 				if commitErr := commit(n); commitErr != nil {
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] failed to commit shard key mapping: %v", commitErr))
 				}
@@ -311,7 +311,22 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 
 type wrrSelection struct {
 	sharedKeyRoundRobinBackend *sharedKeyRoundRobinBackend
-	isAllZero                  bool
+}
+
+// activeLayer returns the highest layer that still has a non-excluded positive-weight backend, or
+// -1 when none is left. Backend name, weight and layer never change after construction, so the
+// lock is not required.
+func (l *ShardKeyWeightedRoundRobin) activeLayer(excludeNames map[string]bool) int {
+	layer := -1
+	for _, backend := range l.backends {
+		if backend == nil || backend.weight <= 0 || excludeNames[backend.name] {
+			continue
+		}
+		if backend.layer > layer {
+			layer = backend.layer
+		}
+	}
+	return layer
 }
 
 func (l *ShardKeyWeightedRoundRobin) weightThreshold(totalWeight int) int {
@@ -335,27 +350,33 @@ func pickMaxCurrentWeight(candidates []*sharedKeyRoundRobinBackend) *sharedKeyRo
 	return selected
 }
 
-// selectNextEngine applies affinity-aware smooth WRR selection.
+// selectNextEngine applies layered, affinity-aware smooth WRR selection.
 //
 // Per-pick algorithm:
-//  1. Build non-excluded candidates with non-negative weights and compute totalWeight.
-//  2. If totalWeight is zero, pick a random candidate without mutating WRR state.
-//  3. Otherwise compute threshold = -minWeightMultiple * totalWeight.
-//  4. Prefer an eligible positive-weight affinity backend whose currentWeight is
-//     at least threshold; otherwise pick the positive-weight candidate with the
-//     highest currentWeight, even if every candidate is below threshold.
+//  1. Pick the active layer: the highest layer that has a non-excluded positive-weight backend.
+//  2. Build non-excluded positive-weight candidates from that layer only and compute its
+//     totalWeight. Weight-0 backends are never selected.
+//  3. Compute threshold = -minWeightMultiple * totalWeight.
+//  4. Prefer the affinity backend if it is a candidate whose currentWeight is at least
+//     threshold; otherwise pick the candidate with the highest currentWeight, even if every
+//     candidate is below threshold.
 //  5. Penalize the selected backend by subtracting totalWeight.
-//  6. Add each positive-weight candidate's weight to its currentWeight.
+//  6. Add each candidate's weight to its currentWeight.
 //
-// Steps 5–6 are applied immediately and are never rolled back.
+// Steps 5–6 are applied immediately, touch only the active layer, and are never rolled back.
 func (l *ShardKeyWeightedRoundRobin) selectNextEngine(ctx context.Context, prioritizedBackend string, excludeNames map[string]bool) *wrrSelection {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	layer := l.activeLayer(excludeNames)
+	if layer < 0 {
+		return &wrrSelection{}
+	}
+
 	totalWeight := 0
 	var candidates []*sharedKeyRoundRobinBackend
 	for _, backend := range l.backends {
-		if backend == nil || backend.weight < 0 {
+		if backend == nil || backend.weight <= 0 || backend.layer != layer {
 			continue
 		}
 		if excludeNames[backend.name] {
@@ -364,26 +385,13 @@ func (l *ShardKeyWeightedRoundRobin) selectNextEngine(ctx context.Context, prior
 		totalWeight += backend.weight
 		candidates = append(candidates, backend)
 	}
-	isAllZero := totalWeight == 0
-
-	if isAllZero {
-		if len(candidates) == 0 {
-			return &wrrSelection{isAllZero: true}
-		}
-		selected := candidates[rand.Intn(len(candidates))]
-		slog.InfoContext(ctx,
-			fmt.Sprintf("[ShardKey WRR load balancer] all-zero weights, random pick: %s, candidates: %v", selected.name, candidates),
-			slog.String("backend_name", selected.name),
-		)
-		return &wrrSelection{sharedKeyRoundRobinBackend: selected, isAllZero: true}
-	}
 
 	threshold := l.weightThreshold(totalWeight)
 
 	var selected *sharedKeyRoundRobinBackend
 	if prioritizedBackend != "" {
 		for _, backend := range candidates {
-			if backend.name != prioritizedBackend || backend.weight <= 0 {
+			if backend.name != prioritizedBackend {
 				continue
 			}
 			if backend.currentWeight >= threshold {
@@ -407,15 +415,12 @@ func (l *ShardKeyWeightedRoundRobin) selectNextEngine(ctx context.Context, prior
 	}
 
 	slog.InfoContext(ctx,
-		fmt.Sprintf("[ShardKey WRR load balancer] selected: %s (currentWeight=%d, threshold=%d), candidates: %v", selected.name, selected.currentWeight, threshold, candidates),
+		fmt.Sprintf("[ShardKey WRR load balancer] selected: %s (layer=%d, currentWeight=%d, threshold=%d), candidates: %v", selected.name, layer, selected.currentWeight, threshold, candidates),
 		slog.String("backend_name", selected.name),
 	)
 
 	selected.currentWeight -= totalWeight
 	for _, backend := range candidates {
-		if backend == nil || backend.weight <= 0 {
-			continue
-		}
 		backend.currentWeight += backend.weight
 	}
 
