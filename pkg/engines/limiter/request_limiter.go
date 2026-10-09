@@ -35,6 +35,12 @@ var ErrPLoadRateLimitReached = fmt.Errorf("%w: p_load rate limit reached", ErrRa
 
 var ErrPLoadStrongCacheRateLimitReached = fmt.Errorf("%w: p_load strong cache hit rate limit reached", ErrRateLimitReached)
 
+// ErrTPMRateLimitReached is returned by the TPM marker and limiter.
+var ErrTPMRateLimitReached = fmt.Errorf("%w: tpm rate limit reached", ErrRateLimitReached)
+
+// ErrTPMStrongCacheRateLimitReached is returned by the TPM limiter when it rejects a strong cache hit.
+var ErrTPMStrongCacheRateLimitReached = fmt.Errorf("%w: tpm strong cache hit rate limit reached", ErrRateLimitReached)
+
 // NewRequestLimiterEngine creates a token bucket-based request rate limiter engine
 // redisClient: Redis client
 // key: Redis key for storing token bucket state
