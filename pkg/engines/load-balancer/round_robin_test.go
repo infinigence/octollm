@@ -38,4 +38,8 @@ func TestIsBackendFailureError(t *testing.T) {
 	assert.False(t, isBackendFailureError(fmt.Errorf("outer: %w", limiter.ErrPLoadRateLimitReached)))
 	assert.False(t, isBackendFailureError(limiter.ErrPLoadStrongCacheRateLimitReached))
 	assert.False(t, isBackendFailureError(fmt.Errorf("outer: %w", limiter.ErrPLoadStrongCacheRateLimitReached)))
+	assert.False(t, isBackendFailureError(limiter.ErrTPMRateLimitReached))
+	assert.False(t, isBackendFailureError(fmt.Errorf("outer: %w", limiter.ErrTPMRateLimitReached)))
+	assert.False(t, isBackendFailureError(limiter.ErrTPMStrongCacheRateLimitReached))
+	assert.False(t, isBackendFailureError(fmt.Errorf("outer: %w", limiter.ErrTPMStrongCacheRateLimitReached)))
 }
