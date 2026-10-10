@@ -21,10 +21,6 @@ func newHookTestRedis(t *testing.T) *redis.Client {
 	return redis.NewClient(&redis.Options{Addr: mr.Addr()})
 }
 
-func hookConcurrencyKeyFn(_ *octollm.Request, backendName string) string {
-	return "concurrency_rate:service:gpt-4:" + backendName + ":tier_0"
-}
-
 func seedHookConcurrency(t *testing.T, rd *redis.Client, backendName string, n int) {
 	t.Helper()
 	if n <= 0 {
@@ -34,7 +30,7 @@ func seedHookConcurrency(t *testing.T, rd *redis.Client, backendName string, n i
 	for i := range members {
 		members[i] = redis.Z{Score: float64(i), Member: fmt.Sprintf("m%d", i)}
 	}
-	require.NoError(t, rd.ZAdd(t.Context(), hookConcurrencyKeyFn(nil, backendName), members...).Err())
+	require.NoError(t, rd.ZAdd(t.Context(), gpt4ConcurrencyKey(backendName), members...).Err())
 }
 
 func TestShardKeyConcurrency_Admission_SkipDoesNotConsumeRetry(t *testing.T) {
@@ -44,11 +40,11 @@ func TestShardKeyConcurrency_Admission_SkipDoesNotConsumeRetry(t *testing.T) {
 	rd := newHookTestRedis(t)
 	seedHookConcurrency(t, rd, "B", 10)
 	lb, err := NewShardKeyConcurrency(
-		[]BackendItem{
+		withGPT4ConcurrencyKeys([]BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
-		},
-		time.Second, 1, nil, rd, hookConcurrencyKeyFn, hook,
+		}),
+		time.Second, 1, nil, rd, hook,
 	)
 	require.NoError(t, err)
 
@@ -65,11 +61,11 @@ func TestShardKeyConcurrency_Admission_AllDeniedReturnsNoBackendAvailable(t *tes
 	engineB := &stubEngine{}
 	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}, "B": {}}}
 	lb, err := NewShardKeyConcurrency(
-		[]BackendItem{
+		withGPT4ConcurrencyKeys([]BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
-		},
-		time.Second, 3, nil, newHookTestRedis(t), hookConcurrencyKeyFn, hook,
+		}),
+		time.Second, 3, nil, newHookTestRedis(t), hook,
 	)
 	require.NoError(t, err)
 
@@ -91,12 +87,12 @@ func TestShardKeyConcurrency_Admission_PreservesRealErrorWhenRemainingDenied(t *
 	seedHookConcurrency(t, rd, "B", 10)
 	seedHookConcurrency(t, rd, "C", 10)
 	lb, err := NewShardKeyConcurrency(
-		[]BackendItem{
+		withGPT4ConcurrencyKeys([]BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 			{Name: "C", Weight: 1, Engine: engineC},
-		},
-		time.Second, 10, nil, rd, hookConcurrencyKeyFn, hook,
+		}),
+		time.Second, 10, nil, rd, hook,
 	)
 	require.NoError(t, err)
 
@@ -116,11 +112,11 @@ func TestShardKeyConcurrency_Admission_DoneCalledOncePerRealAttempt(t *testing.T
 	rd := newHookTestRedis(t)
 	seedHookConcurrency(t, rd, "B", 10)
 	lb, err := NewShardKeyConcurrency(
-		[]BackendItem{
+		withGPT4ConcurrencyKeys([]BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
-		},
-		time.Second, 5, nil, rd, hookConcurrencyKeyFn, hook,
+		}),
+		time.Second, 5, nil, rd, hook,
 	)
 	require.NoError(t, err)
 
@@ -139,11 +135,11 @@ func TestShardKeyConcurrency_Admission_PrioritizedDenyFallsBack(t *testing.T) {
 		return []*PrioritizedBackend{{Name: "A", StrongCacheHit: true}}, nil, nil
 	})
 	lb, err := NewShardKeyConcurrency(
-		[]BackendItem{
+		withGPT4ConcurrencyKeys([]BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
-		},
-		time.Second, 3, provider, newHookTestRedis(t), hookConcurrencyKeyFn, hook,
+		}),
+		time.Second, 3, provider, newHookTestRedis(t), hook,
 	)
 	require.NoError(t, err)
 
@@ -162,11 +158,11 @@ func TestShardKeyConcurrency_Admission_RealFailureStillConsumesRetry(t *testing.
 	seedHookConcurrency(t, rd, "A", 0)
 	seedHookConcurrency(t, rd, "B", 10)
 	lb, err := NewShardKeyConcurrency(
-		[]BackendItem{
+		withGPT4ConcurrencyKeys([]BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
-		},
-		time.Second, 2, nil, rd, hookConcurrencyKeyFn, nil,
+		}),
+		time.Second, 2, nil, rd, nil,
 	)
 	require.NoError(t, err)
 
@@ -180,8 +176,8 @@ func TestShardKeyConcurrency_Admission_RealFailureStillConsumesRetry(t *testing.
 func TestShardKeyConcurrency_Admission_NilAdmissionKeepsCurrentBehavior(t *testing.T) {
 	engineA := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	lb, err := NewShardKeyConcurrency(
-		[]BackendItem{{Name: "A", Weight: 1, Engine: engineA}},
-		time.Second, 1, nil, newHookTestRedis(t), hookConcurrencyKeyFn, nil,
+		withGPT4ConcurrencyKeys([]BackendItem{{Name: "A", Weight: 1, Engine: engineA}}),
+		time.Second, 1, nil, newHookTestRedis(t), nil,
 	)
 	require.NoError(t, err)
 

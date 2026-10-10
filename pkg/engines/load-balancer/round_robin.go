@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/infinigence/octollm/pkg/engines/limiter"
 	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
@@ -18,13 +19,12 @@ type BackendItem struct {
 	Name   string // optional
 	Weight int
 	Engine octollm.Engine
-	// MaxConcurrencyFn is optional; ShardKeyConcurrency uses it as the request-time ratio denominator.
-	// When nil, ShardKeyConcurrency wraps Weight as a static denominator.
+	// MaxConcurrencyFn is optional; ShardKeyConcurrency uses it as the request-time
+	// ratio denominator. When nil, Weight is used as a static denominator.
 	MaxConcurrencyFn ShardMaxConcurrencyFn
-	// CacheMissMaxUtilization is the per-backend concurrency utilization (count/maxConcurrency) ceiling
-	// above which non-strong-cache-hit requests are denied headroom on this backend. A value >= 1.0
-	// (or <= 0) disables the headroom reservation for the backend. Only ShardKeyConcurrency uses it.
-	CacheMissMaxUtilization float64
+	// ConcurrencyKeyFn returns this backend's in-flight Redis ZSET key for the request.
+	// Required by shard-key LBs that read concurrency for ratio-based selection.
+	ConcurrencyKeyFn func(*octollm.Request) string
 }
 
 type wrrBackend struct {
@@ -76,10 +76,13 @@ func isNotRetriableError(err error) bool {
 }
 
 // isIgnoredAttemptError reports errors that are not recorded as backend
-// failures: client cancellation, upstream HTTP 413/429, and gateway HandlerError
-// 413/429 (service/rule concurrency). Failover still uses isNotRetriableError.
+// failures: client cancellation, limiter rejects, upstream HTTP 413/429, and
+// gateway HandlerError 413/429. Failover still uses isNotRetriableError.
 func isIgnoredAttemptError(err error) bool {
 	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	if errors.Is(err, limiter.ErrRateLimitReached) {
 		return true
 	}
 	var upstreamErr *errutils.UpstreamRespError
@@ -97,6 +100,26 @@ func isIgnoredAttemptError(err error) bool {
 		}
 	}
 	return false
+}
+
+func attemptCacheHitKind(prioritized, strongCacheHit bool) octollm.CacheHitKind {
+	if !prioritized {
+		return octollm.CacheMiss
+	}
+	if strongCacheHit {
+		return octollm.CacheHitStrong
+	}
+	return octollm.CacheHitWeak
+}
+
+func exhaustAfterNoBackend(realResp *octollm.Response, realErr, limiterErr error) (*octollm.Response, error) {
+	if realErr != nil {
+		return realResp, realErr
+	}
+	if limiterErr != nil {
+		return nil, limiterErr
+	}
+	return nil, fmt.Errorf("no backend engine available")
 }
 
 func NewWeightedRoundRobin(backends []BackendItem, retryTimeout time.Duration, retryMaxCount int) (*WeightedRoundRobin, error) {

@@ -78,6 +78,26 @@ func TestRequestIsStream(t *testing.T) {
 	})
 }
 
+func TestCacheHitKindContext(t *testing.T) {
+	base := octollm.NewEmptyRequest(context.Background())
+	_, ok := octollm.GetCtxValue[octollm.CacheHitKind](base, octollm.ContextKeyCacheHitKind)
+	assert.False(t, ok)
+
+	first := base.WithContext(context.WithValue(base.Context(), octollm.ContextKeyCacheHitKind, octollm.CacheHitStrong))
+	second := base.WithContext(context.WithValue(base.Context(), octollm.ContextKeyCacheHitKind, octollm.CacheHitWeak))
+
+	v1, ok := octollm.GetCtxValue[octollm.CacheHitKind](first, octollm.ContextKeyCacheHitKind)
+	assert.True(t, ok)
+	assert.Equal(t, octollm.CacheHitStrong, v1)
+
+	v2, ok := octollm.GetCtxValue[octollm.CacheHitKind](second, octollm.ContextKeyCacheHitKind)
+	assert.True(t, ok)
+	assert.Equal(t, octollm.CacheHitWeak, v2)
+
+	_, ok = octollm.GetCtxValue[octollm.CacheHitKind](base, octollm.ContextKeyCacheHitKind)
+	assert.False(t, ok, "base request must stay unmarked")
+}
+
 func TestRequestOriginalFormat(t *testing.T) {
 	t.Run("NewRequest records the entry format", func(t *testing.T) {
 		req := testhelper.CreateTestRequest(testhelper.WithFormat(octollm.APIFormatClaudeMessages))

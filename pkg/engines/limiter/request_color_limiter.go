@@ -38,7 +38,7 @@ var ErrRequestLimitReached = errors.New("request limit reached")
 // perPriorityRates are per-band budgets below that (YAML `rpm_rates` or equivalent); values greater than or equal to
 // totalConcurrency are effectively capped by the global tier. Negative entries are treated as 0 (empty band).
 //
-// Same assembly rules as NewConcurrencyColorLimiterEngine: only total → [total]; only rates with total≤0 → tier 0 = sum(rates);
+// Assembly: only total → [total]; only rates with total≤0 → tier 0 = sum(rates);
 // both → [total, ...rates]; empty → disabled.
 //
 // window: Time window for token refill, must be greater than 0 when enabled.
@@ -308,3 +308,35 @@ end
 
 return {allowed, ownTokens, tier0Tokens}
 `
+
+// buildTotalPlusPerPriorityLimits builds tier limits for request color limiters:
+// [total] or [total, ...per] or [sum(per), ...per].
+func buildTotalPlusPerPriorityLimits(totalConcurrency int, perPriorityRates []int) ([]int, error) {
+	clamped := make([]int, len(perPriorityRates))
+	for i, v := range perPriorityRates {
+		if v < 0 {
+			v = 0
+		}
+		clamped[i] = v
+	}
+	if len(clamped) == 0 {
+		if totalConcurrency <= 0 {
+			return nil, nil
+		}
+		return []int{totalConcurrency}, nil
+	}
+	if totalConcurrency > 0 {
+		out := make([]int, 0, 1+len(clamped))
+		out = append(out, totalConcurrency)
+		out = append(out, clamped...)
+		return out, nil
+	}
+	sum := 0
+	for _, v := range clamped {
+		sum += v
+	}
+	out := make([]int, 0, 1+len(clamped))
+	out = append(out, sum)
+	out = append(out, clamped...)
+	return out, nil
+}

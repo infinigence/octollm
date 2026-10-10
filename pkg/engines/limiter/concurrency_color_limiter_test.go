@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,66 +14,8 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
-
-func TestFilterDecreasingRates(t *testing.T) {
-	tests := []struct {
-		name         string
-		in           []int
-		wantOut      []int
-		wantFiltered bool
-	}{
-		{
-			name:         "empty",
-			in:           nil,
-			wantOut:      nil,
-			wantFiltered: false,
-		},
-		{
-			name:         "single",
-			in:           []int{10},
-			wantOut:      []int{10},
-			wantFiltered: false,
-		},
-		{
-			name:         "all_non_increasing",
-			in:           []int{100, 10, 5, 1},
-			wantOut:      []int{100, 10, 5, 1},
-			wantFiltered: false,
-		},
-		{
-			name:         "stops_on_increase",
-			in:           []int{100, 50, 75, 10},
-			wantOut:      []int{100, 50},
-			wantFiltered: true,
-		},
-		{
-			name:         "allows_equal_plateau",
-			in:           []int{5, 4, 4, 3},
-			wantOut:      []int{5, 4, 4, 3},
-			wantFiltered: false,
-		},
-		{
-			name:         "stops_after_plateau_on_increase",
-			in:           []int{5, 4, 4, 5},
-			wantOut:      []int{5, 4, 4},
-			wantFiltered: true,
-		},
-		{
-			name:         "second_elem_not_smaller",
-			in:           []int{1, 5, 10},
-			wantOut:      []int{1},
-			wantFiltered: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, filtered := filterDecreasingRates(tt.in)
-			assert.Equal(t, tt.wantOut, got)
-			assert.Equal(t, tt.wantFiltered, filtered)
-		})
-	}
-}
 
 func newConcurrencyColorLimiterTestRequest(t *testing.T, ns string, priority *int) *octollm.Request {
 	t.Helper()
@@ -86,13 +30,46 @@ func newConcurrencyColorLimiterTestRequest(t *testing.T, ns string, priority *in
 	return r.WithContext(ctx)
 }
 
-func assertConcurrencyColorLimiterRates(t *testing.T, e *ConcurrencyColorLimiterEngine, want []int) {
-	t.Helper()
+func withHitKind(req *octollm.Request, kind octollm.CacheHitKind) *octollm.Request {
+	return req.WithContext(context.WithValue(req.Context(), octollm.ContextKeyCacheHitKind, kind))
+}
 
-	assert.NotNil(t, e.ratesFunc)
-	rates, err := e.ratesFunc(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
+func staticQoS(own, pub []int, ratio float64) QoSLimits {
+	return QoSLimits{AvailableTotalMax: own, PriorityLevelMax: pub, HeadroomRatio: ratio}
+}
+
+func zcard(t *testing.T, client *redis.Client, key string) int64 {
+	t.Helper()
+	n, err := client.ZCard(context.Background(), key).Result()
 	assert.NoError(t, err)
-	assert.Equal(t, want, rates)
+	return n
+}
+
+func TestQosIndex(t *testing.T) {
+	assert.Equal(t, 2, qosIndex(0, 3))
+	assert.Equal(t, 1, qosIndex(1, 3))
+	assert.Equal(t, 0, qosIndex(2, 3))
+	assert.Equal(t, 0, qosIndex(9, 3))
+	assert.Equal(t, 2, qosIndex(-1, 3))
+	assert.Equal(t, 0, qosIndex(0, 1))
+}
+
+func TestEffectiveOwnAndTotalLimits(t *testing.T) {
+	own, total := effectiveOwnAndTotalLimits(100, 95, 0.1, octollm.CacheMiss)
+	assert.Equal(t, 100, own)
+	assert.Equal(t, 95, total)
+
+	own, total = effectiveOwnAndTotalLimits(100, 95, 0.1, octollm.CacheHitWeak)
+	assert.Equal(t, 100, own)
+	assert.Equal(t, 95, total)
+
+	own, total = effectiveOwnAndTotalLimits(100, 95, 0.1, octollm.CacheHitStrong)
+	assert.Equal(t, 110, own)
+	assert.Equal(t, 104, total)
+
+	own, total = effectiveOwnAndTotalLimits(100, 95, 0, octollm.CacheHitStrong)
+	assert.Equal(t, 100, own)
+	assert.Equal(t, 95, total)
 }
 
 func TestBuildTotalPlusPerPriorityLimits(t *testing.T) {
@@ -129,32 +106,36 @@ func TestBuildTotalPlusPerPriorityLimits(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-func TestNewConcurrencyColorLimiterEngine_ValidationAndFiltering(t *testing.T) {
+func TestNewConcurrencyColorLimiterEngine_Validation(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	next := &nextStubEngine{}
 
-	_, err := NewConcurrencyColorLimiterEngine(nil, "k", 10, []int{10}, time.Second, "ns", next)
+	_, err := NewConcurrencyColorLimiterEngine(nil, "k", staticQoS([]int{10}, []int{10}, 0), time.Second, "ns", next)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "redisClient")
 
-	e, err := NewConcurrencyColorLimiterEngine(nil, "k", 0, nil, time.Second, "ns", next)
+	e, err := NewConcurrencyColorLimiterEngine(nil, "k", QoSLimits{}, time.Second, "ns", next)
 	assert.NoError(t, err)
-	assert.Nil(t, e.ratesFunc)
-	assert.Nil(t, e.acquireSingleScript)
-	assert.Nil(t, e.acquireDualScript)
+	assert.Nil(t, e.limitsFunc)
+	assert.Nil(t, e.acquireScript)
 
-	_, err = NewConcurrencyColorLimiterEngine(client, "k", 2, []int{1}, 0, "ns", next)
+	_, err = NewConcurrencyColorLimiterEngine(client, "k", staticQoS([]int{2}, []int{1}, 0), 0, "ns", next)
 	assert.Error(t, err)
 
-	e, err = NewConcurrencyColorLimiterEngine(client, "k", 10, []int{10}, time.Second, "ns", next)
-	assert.NoError(t, err)
-	assertConcurrencyColorLimiterRates(t, e, []int{10, 10})
+	_, err = NewConcurrencyColorLimiterEngine(client, "k", staticQoS([]int{1}, []int{1, 2}, 0), time.Second, "ns", next)
+	assert.Error(t, err)
 
-	e, err = NewConcurrencyColorLimiterEngine(client, "k", 10, []int{5, 6, 1}, time.Second, "ns", next)
+	_, err = NewConcurrencyColorLimiterEngine(client, "k", staticQoS([]int{1}, []int{1}, -0.1), time.Second, "ns", next)
+	assert.Error(t, err)
+
+	e, err = NewConcurrencyColorLimiterEngine(client, "k", staticQoS([]int{10, 5}, []int{10, 8}, 0.1), time.Second, "ns", next)
 	assert.NoError(t, err)
-	assertConcurrencyColorLimiterRates(t, e, []int{10, 5, 6, 1})
+	assert.NotNil(t, e.limitsFunc)
+	assert.NotNil(t, e.acquireScript)
+	assert.NotNil(t, e.releaseScript)
+	assert.NotNil(t, e.renewScript)
 }
 
 func TestConcurrencyColorLimiter_PassThroughWhenDisabled(t *testing.T) {
@@ -162,7 +143,7 @@ func TestConcurrencyColorLimiter_PassThroughWhenDisabled(t *testing.T) {
 	defer mr.Close()
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200}}
-	e, err := NewConcurrencyColorLimiterEngine(client, "k", 0, nil, time.Second, "ns", next)
+	e, err := NewConcurrencyColorLimiterEngine(client, "k", QoSLimits{}, time.Second, "ns", next)
 	assert.NoError(t, err)
 
 	req := newConcurrencyColorLimiterTestRequest(t, "ns", nil)
@@ -172,150 +153,196 @@ func TestConcurrencyColorLimiter_PassThroughWhenDisabled(t *testing.T) {
 	assert.Equal(t, 1, next.callCount)
 	assertLimiterAllow(t, req, 0)
 
-	nextFromRatesFunc := &nextStubEngine{resp: &octollm.Response{StatusCode: 200}}
-	disabledFromRatesFunc, err := NewConcurrencyColorLimiterEngineWithRatesFunc(client, "k2", time.Second, "ns", nil, nextFromRatesFunc)
+	nextFromLimitsFunc := &nextStubEngine{resp: &octollm.Response{StatusCode: 200}}
+	disabled, err := NewConcurrencyColorLimiterEngineWithLimitsFunc(client, "k2", time.Second, "ns", nil, nextFromLimitsFunc)
 	assert.NoError(t, err)
-	assert.Nil(t, disabledFromRatesFunc.ratesFunc)
-	assert.Nil(t, disabledFromRatesFunc.acquireSingleScript)
-	assert.Nil(t, disabledFromRatesFunc.acquireDualScript)
+	assert.Nil(t, disabled.limitsFunc)
+	assert.Nil(t, disabled.acquireScript)
 
-	resp, err = disabledFromRatesFunc.Process(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
+	resp, err = disabled.Process(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
-	assert.Equal(t, 1, nextFromRatesFunc.callCount)
+	assert.Equal(t, 1, nextFromLimitsFunc.callCount)
 }
 
-func TestConcurrencyColorLimiter_PriorityMappingAndReservation(t *testing.T) {
+func TestConcurrencyColorLimiter_HighestPriorityWritesBothKeys(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
-
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ns := "limiter-ns"
+	ns := "ns"
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
+	e, err := NewConcurrencyColorLimiterEngine(client, "hi-key", staticQoS([]int{5, 5}, []int{5, 4}, 0), 10*time.Second, ns, next)
+	require.NoError(t, err)
 
-	// rates=[2,1] supports priority 1 (tier0, limit2) and priority 0 (tier1, limit1 with reservedSlots=1)
-	e, err := NewConcurrencyColorLimiterEngine(client, "limiter-key", 2, []int{1}, 10*time.Second, ns, next)
-	assert.NoError(t, err)
+	p := 1
+	resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p))
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), zcard(t, client, "hi-key:own_1"))
+	assert.Equal(t, int64(1), zcard(t, client, "hi-key:public"))
+	assert.Equal(t, int64(0), zcard(t, client, "hi-key:own_2"))
 
-	// Hold one max-priority slot (tier0Count becomes 1)
-	p1 := 1
-	req1 := newConcurrencyColorLimiterTestRequest(t, ns, &p1)
-	resp1, err := e.Process(req1)
-	assert.NoError(t, err)
-	assert.NotNil(t, resp1)
-	assertLimiterAllow(t, req1, 1)
-
-	// Now priority 0 should be denied because it requires tier0Count < (2-1)=1, but tier0Count is 1
-	p0 := 0
-	reqDenied := newConcurrencyColorLimiterTestRequest(t, ns, &p0)
-	_, err = e.Process(reqDenied)
-	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrRateLimitReached)
-	assertLimiterDeny(t, reqDenied, 0)
-
-	// Release and try again: should allow
-	assert.NoError(t, resp1.Body.Close())
-	req2 := newConcurrencyColorLimiterTestRequest(t, ns, &p0)
-	resp2, err := e.Process(req2)
-	assert.NoError(t, err)
-	assert.NotNil(t, resp2)
-	assertLimiterAllow(t, req2, 0)
-	assert.NoError(t, resp2.Body.Close())
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, int64(0), zcard(t, client, "hi-key:own_1"))
+	assert.Equal(t, int64(0), zcard(t, client, "hi-key:public"))
 }
 
-// [4,3,3,3]: global cap 4 on tier 0; lower tiers 3 each — reservation still caps p2/p1/p0 differently.
-func TestConcurrencyColorLimiter_EqualTierLimits_ReservationCaps(t *testing.T) {
+func TestConcurrencyColorLimiter_OwnBucketFull(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
-
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ns := "limiter-ns-eq333"
+	ns := "ns"
 	next := &nextNewBodyPerCallEngine{}
-	e, err := NewConcurrencyColorLimiterEngine(client, "limiter-key-eq333", 4, []int{3, 3, 3}, 10*time.Second, ns, next)
-	assert.NoError(t, err)
-
-	p3 := 3
-	var held []*octollm.Response
-	for i := 0; i < 4; i++ {
-		resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p3))
-		assert.NoError(t, err, "p3 request %d", i+1)
-		assert.NotNil(t, resp)
-		held = append(held, resp)
-	}
-	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p3))
-	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrRateLimitReached)
-	for _, r := range held {
-		assert.NoError(t, r.Body.Close())
-	}
-	held = held[:0]
-
-	p2 := 2
-	for i := 0; i < 3; i++ {
-		resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p2))
-		assert.NoError(t, err, "p2 request %d", i+1)
-		assert.NotNil(t, resp)
-		held = append(held, resp)
-	}
-	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p2))
-	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrRateLimitReached)
-	for _, r := range held {
-		assert.NoError(t, r.Body.Close())
-	}
-	held = held[:0]
-
-	p1 := 1
-	for i := 0; i < 2; i++ {
-		resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p1))
-		assert.NoError(t, err, "p1 request %d", i+1)
-		assert.NotNil(t, resp)
-		held = append(held, resp)
-	}
-	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p1))
-	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrRateLimitReached)
-	for _, r := range held {
-		assert.NoError(t, r.Body.Close())
-	}
-	held = held[:0]
+	e, err := NewConcurrencyColorLimiterEngine(client, "own-key", staticQoS([]int{100, 1}, []int{100, 100}, 0), 10*time.Second, ns, next)
+	require.NoError(t, err)
 
 	p0 := 0
 	resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), zcard(t, client, "own-key:own_2"))
+	assert.Equal(t, int64(1), zcard(t, client, "own-key:public"))
+
 	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
-	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrRateLimitReached)
-	assert.NoError(t, resp.Body.Close())
+
+	require.NoError(t, resp.Body.Close())
+}
+
+func TestConcurrencyColorLimiter_PublicBucketFull(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ns"
+	next := &nextNewBodyPerCallEngine{}
+	e, err := NewConcurrencyColorLimiterEngine(client, "pub-key", staticQoS([]int{100, 100}, []int{1, 1}, 0), 10*time.Second, ns, next)
+	require.NoError(t, err)
+
+	pHigh := 1
+	resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &pHigh))
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), zcard(t, client, "pub-key:public"))
+
+	pLow := 0
+	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &pLow))
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assert.Equal(t, int64(0), zcard(t, client, "pub-key:own_2"))
+
+	require.NoError(t, resp.Body.Close())
+}
+
+func TestConcurrencyColorLimiter_BothBucketsPassThenRelease(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ns"
+	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
+	e, err := NewConcurrencyColorLimiterEngine(client, "ok-key", staticQoS([]int{2, 2}, []int{2, 2}, 0), 10*time.Second, ns, next)
+	require.NoError(t, err)
+
+	p0 := 0
+	req := newConcurrencyColorLimiterTestRequest(t, ns, &p0)
+	resp, err := e.Process(req)
+	require.NoError(t, err)
+	assertLimiterAllow(t, req, 0)
+	assert.Equal(t, int64(1), zcard(t, client, "ok-key:own_2"))
+	assert.Equal(t, int64(1), zcard(t, client, "ok-key:public"))
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, int64(0), zcard(t, client, "ok-key:own_2"))
+	assert.Equal(t, int64(0), zcard(t, client, "ok-key:public"))
 }
 
 func TestConcurrencyColorLimiter_NoPriorityDefaultsToLowest(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
-
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	ns := "ns"
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
+	e, err := NewConcurrencyColorLimiterEngine(client, "noprio-key", staticQoS([]int{10, 1}, []int{10, 10}, 0), 10*time.Second, ns, next)
+	require.NoError(t, err)
 
-	// rates=[10,1] => default priority 0 maps to tier1, limit 1
-	e, err := NewConcurrencyColorLimiterEngine(client, "noprio-key", 10, []int{1}, 10*time.Second, ns, next)
-	assert.NoError(t, err)
-
-	// first allowed
 	resp1, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, nil))
-	assert.NoError(t, err)
-	assert.NotNil(t, resp1)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), zcard(t, client, "noprio-key:own_2"))
 
-	// second denied while first not closed
 	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, nil))
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	require.NoError(t, resp1.Body.Close())
+}
+
+func TestConcurrencyColorLimiter_StrongHeadroomVsMiss(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ns"
+	next := &nextNewBodyPerCallEngine{}
+	e, err := NewConcurrencyColorLimiterEngine(client, "hr-key", staticQoS([]int{10}, []int{10}, 0.1), 10*time.Second, ns, next)
+	require.NoError(t, err)
+
+	var held []*octollm.Response
+	p0 := 0
+	for i := 0; i < 10; i++ {
+		resp, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheMiss))
+		require.NoError(t, err, "miss %d", i+1)
+		held = append(held, resp)
+	}
+	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheMiss))
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheHitWeak))
 	assert.ErrorIs(t, err, ErrRateLimitReached)
 
-	assert.NoError(t, resp1.Body.Close())
+	strong, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheHitStrong))
+	require.NoError(t, err)
+	assert.Equal(t, int64(11), zcard(t, client, "hr-key:public"))
+	assert.Equal(t, int64(11), zcard(t, client, "hr-key:own_1"))
+
+	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheHitStrong))
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+
+	require.NoError(t, strong.Body.Close())
+	for _, r := range held {
+		require.NoError(t, r.Body.Close())
+	}
+}
+
+func TestConcurrencyColorLimiter_ZeroHeadroomStrongEqualsMiss(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ns"
+	next := &nextNewBodyPerCallEngine{}
+	e, err := NewConcurrencyColorLimiterEngine(client, "hr0-key", staticQoS([]int{1}, []int{1}, 0), 10*time.Second, ns, next)
+	require.NoError(t, err)
+
+	p0 := 0
+	resp, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheMiss))
+	require.NoError(t, err)
+	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheHitStrong))
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	require.NoError(t, resp.Body.Close())
+}
+
+func TestConcurrencyColorLimiter_IllegalHitKindIsMiss(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ns"
+	next := &nextNewBodyPerCallEngine{}
+	e, err := NewConcurrencyColorLimiterEngine(client, "badkind-key", staticQoS([]int{1}, []int{1}, 0.1), 10*time.Second, ns, next)
+	require.NoError(t, err)
+
+	p0 := 0
+	resp, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheMiss))
+	require.NoError(t, err)
+	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheHitKind("nope")))
+	assert.ErrorIs(t, err, ErrRateLimitReached)
+	require.NoError(t, resp.Body.Close())
 }
 
 type nextNewBodyPerCallEngine struct {
@@ -324,7 +351,6 @@ type nextNewBodyPerCallEngine struct {
 
 func (n *nextNewBodyPerCallEngine) Process(req *octollm.Request) (*octollm.Response, error) {
 	n.callCount++
-	// Important: return a fresh Body each time so OnClose doesn't get stacked on the same instance.
 	return &octollm.Response{
 		StatusCode: 200,
 		Body:       octollm.NewBodyFromBytes([]byte("ok"), nil),
@@ -335,213 +361,251 @@ func TestConcurrencyColor_MarkerLimiterChain_MarkerBottleneck_Allows2ThenRejects
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
-
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	ns := "chain-ns"
-
-	// Marker: independent caps [1,1,0] — two non-zero bands (p1 then p0); third has no slot.
-	markerRates := []int{1, 1, 0}
-
-	// Limiter: built as concurrency=4, rates=[3,2] -> [4,3,2]; matches three marker priorities.
 	next := &nextNewBodyPerCallEngine{}
-	limiter, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter", 4, []int{3, 2}, 10*time.Second, ns, next)
-	assert.NoError(t, err)
-	marker, err := NewConcurrencyColorMarkerEngine(client, "chain-marker", markerRates, 10*time.Second, ns, limiter)
-	assert.NoError(t, err)
+	lim, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter", staticQoS([]int{4, 3, 2}, []int{4, 4, 4}, 0), 10*time.Second, ns, next)
+	require.NoError(t, err)
+	marker, err := NewConcurrencyColorMarkerEngine(client, "chain-marker", []int{1, 1, 0}, 10*time.Second, ns, lim)
+	require.NoError(t, err)
 
 	resp1, err := marker.Process(newConcurrencyColorLimiterTestRequest(t, ns, nil))
-	assert.NoError(t, err)
-	assert.NotNil(t, resp1)
-
+	require.NoError(t, err)
 	resp2, err := marker.Process(newConcurrencyColorLimiterTestRequest(t, ns, nil))
-	assert.NoError(t, err)
-	assert.NotNil(t, resp2)
-
+	require.NoError(t, err)
 	_, err = marker.Process(newConcurrencyColorLimiterTestRequest(t, ns, nil))
-	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrRateLimitReached)
-	assert.Equal(t, 2, next.callCount, "limiter.next should be called only for the allowed requests")
+	assert.Equal(t, 2, next.callCount)
 
-	assert.NoError(t, resp1.Body.Close())
-	assert.NoError(t, resp2.Body.Close())
+	require.NoError(t, resp1.Body.Close())
+	require.NoError(t, resp2.Body.Close())
 }
 
 func TestConcurrencyColor_MarkerLimiterChain_LimiterBottleneck_Allows1ThenRejectsAndCleansUp(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
-
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	ns := "chain-ns-2"
-
-	// Same marker shape as previous test but with equal low tiers ([1,1,2]).
-	markerRates := []int{1, 1, 2}
-
-	// Limiter: concurrency=2, rates=[1,1] -> [2,1,1]; priority 1 needs tier0Count < tier0Limit-reservedSlots = 1,
-	// so the second in-flight (tier0 already 1) is rejected at the limiter, not the marker.
 	next := &nextNewBodyPerCallEngine{}
-	limiter, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter-2", 2, []int{1, 1}, 10*time.Second, ns, next)
-	assert.NoError(t, err)
-	marker, err := NewConcurrencyColorMarkerEngine(client, "chain-marker-2", markerRates, 10*time.Second, ns, limiter)
-	assert.NoError(t, err)
+	lim, err := NewConcurrencyColorLimiterEngine(client, "chain-limiter-2", staticQoS([]int{10, 10, 10}, []int{1, 1, 1}, 0), 10*time.Second, ns, next)
+	require.NoError(t, err)
+	marker, err := NewConcurrencyColorMarkerEngine(client, "chain-marker-2", []int{1, 1, 2}, 10*time.Second, ns, lim)
+	require.NoError(t, err)
 
 	resp1, err := marker.Process(newConcurrencyColorLimiterTestRequest(t, ns, nil))
-	assert.NoError(t, err)
-	assert.NotNil(t, resp1)
+	require.NoError(t, err)
 	assert.Equal(t, 1, next.callCount)
 
 	_, err = marker.Process(newConcurrencyColorLimiterTestRequest(t, ns, nil))
-	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrRateLimitReached)
-	assert.Equal(t, 1, next.callCount, "denied request should not reach limiter.next")
+	assert.Equal(t, 1, next.callCount)
 
-	// If marker cleanup failed for the denied request, this third request could be blocked by leftover marker slots.
-	assert.NoError(t, resp1.Body.Close())
-
+	require.NoError(t, resp1.Body.Close())
 	resp3, err := marker.Process(newConcurrencyColorLimiterTestRequest(t, ns, nil))
-	assert.NoError(t, err)
-	assert.NotNil(t, resp3)
+	require.NoError(t, err)
 	assert.Equal(t, 2, next.callCount)
-
-	assert.NoError(t, resp3.Body.Close())
+	require.NoError(t, resp3.Body.Close())
 }
 
-// RatesFunc tests: non-empty return is used as-is; empty/nil return pass-through that request.
-
-func TestConcurrencyColorLimiter_RatesFuncOnly(t *testing.T) {
+func TestConcurrencyColorLimiter_LimitsFuncError(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
-
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ns := "ratesfunc-ns"
-	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
-
-	fn := func(req *octollm.Request) ([]int, error) {
-		return []int{1}, nil
-	}
-	e, err := NewConcurrencyColorLimiterEngineWithRatesFunc(client, "dyn-key", 10*time.Second, ns, fn, next)
-	assert.NoError(t, err)
-	assert.NotNil(t, e.acquireSingleScript)
-
-	p0 := 0
-	resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
-
-	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
-	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrRateLimitReached)
-	assert.NoError(t, resp.Body.Close())
-}
-
-func TestConcurrencyColorLimiter_RatesFuncError(t *testing.T) {
-	t.Parallel()
-	mr := miniredis.RunT(t)
-	defer mr.Close()
-
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ns := "ratesfunc-err-ns"
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200}}
+	e, err := NewConcurrencyColorLimiterEngineWithLimitsFunc(client, "err-key", 10*time.Second, "ns", func(*octollm.Request) (*QoSLimits, error) {
+		return nil, fmt.Errorf("limits resolver failed")
+	}, next)
+	require.NoError(t, err)
 
-	fn := func(req *octollm.Request) ([]int, error) {
-		return nil, fmt.Errorf("rates resolver failed")
-	}
-	e, err := NewConcurrencyColorLimiterEngineWithRatesFunc(client, "err-key", 10*time.Second, ns, fn, next)
-	assert.NoError(t, err)
-
-	p0 := 0
-	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
+	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "rates resolver failed")
+	assert.Contains(t, err.Error(), "limits resolver failed")
 	assert.Equal(t, 0, next.callCount)
 }
 
-func TestConcurrencyColorLimiter_RatesFuncOverridesStatic(t *testing.T) {
+func TestConcurrencyColorLimiter_LimitsFuncEmptyPassThrough(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
-
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ns := "ratesfunc-over-ns"
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
+	e, err := NewConcurrencyColorLimiterEngineWithLimitsFunc(client, "empty-key", 10*time.Second, "ns", func(*octollm.Request) (*QoSLimits, error) {
+		return nil, nil
+	}, next)
+	require.NoError(t, err)
 
-	// Dynamic [1,1] for this request (priority 1 → tier 0, cap 1).
-	fn := func(req *octollm.Request) ([]int, error) {
-		return []int{1, 1}, nil
-	}
-	e, err := NewConcurrencyColorLimiterEngineWithRatesFunc(client, "over-key", 10*time.Second, ns, fn, next)
-	assert.NoError(t, err)
-
-	p1 := 1
-	resp1, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p1))
-	assert.NoError(t, err)
-	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p1))
-	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrRateLimitReached)
-	assert.NoError(t, resp1.Body.Close())
+	resp1, err := e.Process(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
+	require.NoError(t, err)
+	resp2, err := e.Process(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
+	require.NoError(t, err)
+	assert.Equal(t, 2, next.callCount)
+	require.NoError(t, resp1.Body.Close())
+	require.NoError(t, resp2.Body.Close())
 }
 
-func TestConcurrencyColorLimiter_RatesFuncEmptyPassThrough(t *testing.T) {
+func TestConcurrencyColorLimiter_StaticLimitsImmutableAfterInit(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
-
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ns := "ratesfunc-empty-ns"
-	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
+	own := []int{5, 6}
+	e, err := NewConcurrencyColorLimiterEngine(client, "k", staticQoS(own, []int{10, 10}, 0), time.Second, "ns", &nextStubEngine{})
+	require.NoError(t, err)
+	limits, err := e.limitsFunc(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
+	require.NoError(t, err)
+	assert.Equal(t, []int{5, 6}, limits.AvailableTotalMax)
+	own[0] = 999
+	limits, err = e.limitsFunc(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
+	require.NoError(t, err)
+	assert.Equal(t, []int{5, 6}, limits.AvailableTotalMax)
+}
 
-	// Empty dynamic return bypasses acquire for each request.
-	fn := func(req *octollm.Request) ([]int, error) {
-		return nil, nil
+func TestConcurrencyColorLimiter_PublicBucketNoOverAdmit(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ns"
+	next := octollm.EngineFunc(func(*octollm.Request) (*octollm.Response, error) {
+		return &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}, nil
+	})
+	e, err := NewConcurrencyColorLimiterEngine(client, "race-key", staticQoS([]int{100}, []int{1}, 0), 10*time.Second, ns, next)
+	require.NoError(t, err)
+
+	const n = 16
+	p0 := 0
+	var wg sync.WaitGroup
+	var success atomic.Int32
+	held := make([]*octollm.Response, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
+			if err != nil {
+				assert.ErrorIs(t, err, ErrRateLimitReached)
+				return
+			}
+			held[i] = resp
+			success.Add(1)
+		}(i)
 	}
-	e, err := NewConcurrencyColorLimiterEngineWithRatesFunc(client, "empty-key", 10*time.Second, ns, fn, next)
+	wg.Wait()
+
+	assert.Equal(t, int32(1), success.Load())
+	assert.Equal(t, int64(1), zcard(t, client, "race-key:public"))
+	assert.Equal(t, int64(1), zcard(t, client, "race-key:own_1"))
+	for _, resp := range held {
+		if resp != nil && resp.Body != nil {
+			require.NoError(t, resp.Body.Close())
+		}
+	}
+	assert.Equal(t, int64(0), zcard(t, client, "race-key:public"))
+	assert.Equal(t, int64(0), zcard(t, client, "race-key:own_1"))
+}
+
+func TestConcurrencyColorLimiter_ReleasesOnStreamClose(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ch := make(chan *octollm.StreamChunk)
+	stream := octollm.NewStreamChan(ch, func() { close(ch) })
+	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Stream: stream}}
+	e, err := NewConcurrencyColorLimiterEngine(client, "stream-key", staticQoS([]int{1}, []int{1}, 0), 10*time.Second, "ns", next)
+	require.NoError(t, err)
+
+	p0 := 0
+	resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, "ns", &p0))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Stream)
+	assert.Equal(t, int64(1), zcard(t, client, "stream-key:own_1"))
+	assert.Equal(t, int64(1), zcard(t, client, "stream-key:public"))
+
+	resp.Stream.Close()
+	assert.Equal(t, int64(0), zcard(t, client, "stream-key:own_1"))
+	assert.Equal(t, int64(0), zcard(t, client, "stream-key:public"))
+}
+
+func TestConcurrencyColorLimiter_ReleasesImmediatelyOnNextErrorOrNilResp(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	p0 := 0
+
+	nextErr := &nextStubEngine{
+		resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("x"), nil)},
+		err:  assert.AnError,
+	}
+	eErr, err := NewConcurrencyColorLimiterEngine(client, "next-error-key", staticQoS([]int{1}, []int{1}, 0), 10*time.Second, "ns", nextErr)
+	require.NoError(t, err)
+	_, err = eErr.Process(newConcurrencyColorLimiterTestRequest(t, "ns", &p0))
+	assert.Error(t, err)
+	assert.Equal(t, int64(0), zcard(t, client, "next-error-key:own_1"))
+	assert.Equal(t, int64(0), zcard(t, client, "next-error-key:public"))
+
+	eNil, err := NewConcurrencyColorLimiterEngine(client, "next-nil-key", staticQoS([]int{1}, []int{1}, 0), 10*time.Second, "ns", nilRespEngine{})
+	require.NoError(t, err)
+	resp, err := eNil.Process(newConcurrencyColorLimiterTestRequest(t, "ns", &p0))
 	assert.NoError(t, err)
+	assert.Nil(t, resp)
+	assert.Equal(t, int64(0), zcard(t, client, "next-nil-key:own_1"))
+	assert.Equal(t, int64(0), zcard(t, client, "next-nil-key:public"))
+}
+
+func TestConcurrencyColorLimiter_AcquireDropsExpiredMembers(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ns"
+	next := &nextNewBodyPerCallEngine{}
+	e, err := NewConcurrencyColorLimiterEngine(client, "exp-key", staticQoS([]int{1}, []int{1}, 0), 10*time.Second, ns, next)
+	require.NoError(t, err)
+
+	staleScore := float64(time.Now().Add(-30 * time.Second).Unix())
+	ctx := context.Background()
+	require.NoError(t, client.ZAdd(ctx, "exp-key:own_1", redis.Z{Score: staleScore, Member: "stale"}).Err())
+	require.NoError(t, client.ZAdd(ctx, "exp-key:public", redis.Z{Score: staleScore, Member: "stale"}).Err())
+
+	p0 := 0
+	resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), zcard(t, client, "exp-key:own_1"))
+	assert.Equal(t, int64(1), zcard(t, client, "exp-key:public"))
+	_, err = client.ZScore(ctx, "exp-key:public", "stale").Result()
+	assert.ErrorIs(t, err, redis.Nil)
+	require.NoError(t, resp.Body.Close())
+}
+
+func TestConcurrencyColorLimiter_LimitsFuncDynamicCaps(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ns := "ns"
+	var calls atomic.Int32
+	e, err := NewConcurrencyColorLimiterEngineWithLimitsFunc(client, "dyn-key", 10*time.Second, ns, func(*octollm.Request) (*QoSLimits, error) {
+		if calls.Add(1) == 1 {
+			return &QoSLimits{AvailableTotalMax: []int{1}, PriorityLevelMax: []int{1}}, nil
+		}
+		return &QoSLimits{AvailableTotalMax: []int{2}, PriorityLevelMax: []int{2}}, nil
+	}, &nextNewBodyPerCallEngine{})
+	require.NoError(t, err)
 
 	p0 := 0
 	resp1, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), zcard(t, client, "dyn-key:own_1"))
+	assert.Equal(t, int64(1), zcard(t, client, "dyn-key:public"))
+
 	resp2, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p0))
-	assert.NoError(t, err)
-	assert.Equal(t, 2, next.callCount)
-	assert.NoError(t, resp1.Body.Close())
-	assert.NoError(t, resp2.Body.Close())
-}
-
-func TestConcurrencyColorLimiter_RatesFuncUsesReturnedTiersAsIs(t *testing.T) {
-	t.Parallel()
-	mr := miniredis.RunT(t)
-	defer mr.Close()
-
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	ns := "ratesfunc-as-is-ns"
-	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200, Body: octollm.NewBodyFromBytes([]byte("ok"), nil)}}
-
-	// Returned tiers are used directly (no trimming). Priority 1 maps to tier 0; cap 1 rejects the second call.
-	fn := func(req *octollm.Request) ([]int, error) {
-		return []int{1, 99}, nil
-	}
-	e, err := NewConcurrencyColorLimiterEngineWithRatesFunc(client, "as-is-key", 10*time.Second, ns, fn, next)
-	assert.NoError(t, err)
-
-	p1 := 1
-	resp, err := e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p1))
-	assert.NoError(t, err)
-	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, ns, &p1))
-	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrRateLimitReached)
-	assert.NoError(t, resp.Body.Close())
-}
-
-func TestConcurrencyColorLimiter_StaticRatesImmutableAfterInit(t *testing.T) {
-	t.Parallel()
-	mr := miniredis.RunT(t)
-	defer mr.Close()
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	per := []int{5, 6}
-	e, err := NewConcurrencyColorLimiterEngine(client, "k", 10, per, time.Second, "ns", &nextStubEngine{})
-	assert.NoError(t, err)
-	assertConcurrencyColorLimiterRates(t, e, []int{10, 5, 6})
-	per[0] = 999
-	assertConcurrencyColorLimiterRates(t, e, []int{10, 5, 6})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), zcard(t, client, "dyn-key:own_1"))
+	assert.Equal(t, int64(2), zcard(t, client, "dyn-key:public"))
+	require.NoError(t, resp1.Body.Close())
+	require.NoError(t, resp2.Body.Close())
 }
