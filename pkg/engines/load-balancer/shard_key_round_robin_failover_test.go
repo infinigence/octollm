@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -258,5 +259,141 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 		require.NotErrorIs(t, err, limiter.ErrRateLimitReached)
 		assert.Nil(t, resp)
 		assert.Equal(t, int32(0), cCalls.Load())
+	})
+}
+
+func TestShardKeyWRR_PLoadFailover(t *testing.T) {
+	const namespace = "endpoint_priority"
+	limits := limiter.PLoadLimits{AvailableTotalMax: []float64{100}, HeadroomRatio: 1.2}
+	scoreErr := errors.New("pair missing")
+
+	pLoad := func(t *testing.T, score float64, err error, next octollm.Engine) octollm.Engine {
+		t.Helper()
+		eng, buildErr := limiter.NewPLoadColorLimiterEngine(limits, func(*octollm.Request) (float64, error) {
+			if err != nil {
+				return 0, err
+			}
+			return score, nil
+		}, namespace, next)
+		require.NoError(t, buildErr)
+		return eng
+	}
+	selectedBackend := func(t *testing.T, req *octollm.Request) string {
+		t.Helper()
+		mv, ok := req.GetMetadataValue(backendName)
+		require.True(t, ok)
+		name, ok := mv.(string)
+		require.True(t, ok)
+		return name
+	}
+	newWRR := func(t *testing.T, items []BackendItem, provider AffinityProvider, rd *redis.Client) *ShardKeyWeightedRoundRobin {
+		t.Helper()
+		lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(items), time.Second, 3, 0, provider, nil, rd)
+		require.NoError(t, err)
+		return lb
+	}
+	affinity := func(t *testing.T, rd *redis.Client, keyPrefix, policy string, items []BackendItem) AffinityProvider {
+		t.Helper()
+		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "a"}).Err())
+		return newPrimaryShardKeyProviderWithPolicy(t, func(*octollm.Request) []string {
+			return []string{"sk0", "sk1", "sk2"}
+		}, rd, keyPrefix, time.Minute, items, policy)
+	}
+
+	t.Run("over limit on A fails over to B", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		nextA := &captureHitKindEngine{}
+		nextB := &captureHitKindEngine{}
+		items := []BackendItem{
+			{Name: "a", Weight: 10, Engine: pLoad(t, 150, nil, nextA)},
+			{Name: "b", Weight: 10, Engine: pLoad(t, 50, nil, nextB)},
+		}
+		const keyPrefix = "pload-failover-allow"
+		provider := affinity(t, rd, keyPrefix, StrongHitPolicyLeaf, items)
+
+		req := testhelper.CreateTestRequest()
+		resp, err := newWRR(t, items, provider, rd).Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, "b", selectedBackend(t, req))
+		assert.Empty(t, nextA.kindsCopy())
+		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheMiss}, nextB.kindsCopy())
+	})
+
+	t.Run("strong headroom is not inherited by B", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		nextA := &captureHitKindEngine{}
+		nextB := &captureHitKindEngine{}
+		items := []BackendItem{
+			{Name: "a", Weight: 10, Engine: pLoad(t, 250, nil, nextA)},
+			{Name: "b", Weight: 10, Engine: pLoad(t, 150, nil, nextB)},
+		}
+		const keyPrefix = "pload-failover-strong"
+		provider := affinity(t, rd, keyPrefix, StrongHitPolicyLastTwo, items)
+
+		_, err := newWRR(t, items, provider, rd).Process(testhelper.CreateTestRequest())
+		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
+		assert.Empty(t, nextA.kindsCopy())
+		assert.Empty(t, nextB.kindsCopy())
+	})
+
+	t.Run("all over limit returns rate limit", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		nextA := &captureHitKindEngine{}
+		nextB := &captureHitKindEngine{}
+		items := []BackendItem{
+			{Name: "a", Weight: 10, Engine: pLoad(t, 200, nil, nextA)},
+			{Name: "b", Weight: 10, Engine: pLoad(t, 200, nil, nextB)},
+		}
+		const keyPrefix = "pload-failover-all"
+		provider := affinity(t, rd, keyPrefix, StrongHitPolicyLeaf, items)
+
+		_, err := newWRR(t, items, provider, rd).Process(testhelper.CreateTestRequest())
+		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
+		assert.Empty(t, nextA.kindsCopy())
+		assert.Empty(t, nextB.kindsCopy())
+	})
+
+	t.Run("score error on A still allows B", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		nextA := &captureHitKindEngine{}
+		nextB := &captureHitKindEngine{}
+		items := []BackendItem{
+			{Name: "a", Weight: 10, Engine: pLoad(t, 0, scoreErr, nextA)},
+			{Name: "b", Weight: 10, Engine: pLoad(t, 50, nil, nextB)},
+		}
+		const keyPrefix = "pload-failover-score-then-allow"
+		provider := affinity(t, rd, keyPrefix, StrongHitPolicyLeaf, items)
+
+		req := testhelper.CreateTestRequest()
+		resp, err := newWRR(t, items, provider, rd).Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, "b", selectedBackend(t, req))
+		assert.Empty(t, nextA.kindsCopy())
+		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheMiss}, nextB.kindsCopy())
+	})
+
+	t.Run("score error after rate limit is not a rate limit", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		nextA := &captureHitKindEngine{}
+		nextB := &captureHitKindEngine{}
+		items := []BackendItem{
+			{Name: "a", Weight: 10, Engine: pLoad(t, 150, nil, nextA)},
+			{Name: "b", Weight: 10, Engine: pLoad(t, 0, scoreErr, nextB)},
+		}
+		const keyPrefix = "pload-failover-limit-then-score"
+		provider := affinity(t, rd, keyPrefix, StrongHitPolicyLeaf, items)
+
+		_, err := newWRR(t, items, provider, rd).Process(testhelper.CreateTestRequest())
+		require.ErrorIs(t, err, scoreErr)
+		assert.NotErrorIs(t, err, limiter.ErrRateLimitReached)
+		assert.Empty(t, nextA.kindsCopy())
+		assert.Empty(t, nextB.kindsCopy())
 	})
 }

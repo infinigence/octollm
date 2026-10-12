@@ -169,7 +169,7 @@ func (e *ConcurrencyColorMarkerEngine) allow(ctx context.Context) (newCtx contex
 	acquiredKeys := []string{keys[acquiredTierIdx]}
 
 	// Set priority to context
-	newCtx = e.setPriorityToContext(ctx, priority)
+	newCtx = setPriorityToContext(ctx, e.nameSpace, priority)
 
 	// Start renewal goroutine
 	renewCtx, renewCancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -221,12 +221,6 @@ func (e *ConcurrencyColorMarkerEngine) Process(req *octollm.Request) (*octollm.R
 	}
 
 	return resp, err
-}
-
-func (e *ConcurrencyColorMarkerEngine) setPriorityToContext(ctx context.Context, priority int) context.Context {
-	priorityStr := fmt.Sprintf("%s%d", ContextValuePrefixPriority, priority)
-	contextKey := contextKey(fmt.Sprintf("%s:%s", e.nameSpace, ContextKeyPriority))
-	return context.WithValue(ctx, contextKey, priorityStr)
 }
 
 // formatTierUsage formats per-tier "count/limit" usage as "(2/2 1/3 0/5)".

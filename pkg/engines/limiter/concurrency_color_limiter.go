@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"runtime/debug"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -112,7 +113,7 @@ func (e *ConcurrencyColorLimiterEngine) allow(req *octollm.Request) (done func()
 	}
 
 	priority = 0
-	if p, ok := e.getPriorityFromContext(ctx); ok {
+	if p, ok := priorityFromNamespace(ctx, e.nameSpace); ok {
 		priority = p
 	}
 	i := qosIndex(priority, len(limits.AvailableTotalMax))
@@ -199,49 +200,6 @@ func (e *ConcurrencyColorLimiterEngine) Process(req *octollm.Request) (*octollm.
 	return resp, err
 }
 
-func (e *ConcurrencyColorLimiterEngine) getPriorityFromContext(ctx context.Context) (int, bool) {
-	contextKey := contextKey(fmt.Sprintf("%s:%s", e.nameSpace, ContextKeyPriority))
-	priorityStr, ok := ctx.Value(contextKey).(string)
-	if !ok {
-		return 0, false
-	}
-	var priority int
-	_, err := fmt.Sscanf(priorityStr, ContextValuePrefixPriority+"%d", &priority)
-	if err != nil {
-		return 0, false
-	}
-
-	return priority, true
-}
-
-func cacheHitKindFromRequest(req *octollm.Request) octollm.CacheHitKind {
-	kind, ok := octollm.GetCtxValue[octollm.CacheHitKind](req, octollm.ContextKeyCacheHitKind)
-	if !ok {
-		return octollm.CacheMiss
-	}
-	switch kind {
-	case octollm.CacheHitStrong, octollm.CacheHitWeak, octollm.CacheMiss:
-		return kind
-	default:
-		return octollm.CacheMiss
-	}
-}
-
-// qosIndex maps a request priority onto the high-to-low QoS arrays.
-// Missing or negative priority uses the lowest band; priority >= n-1 uses the highest.
-func qosIndex(priority, n int) int {
-	if n <= 0 {
-		return 0
-	}
-	if priority < 0 {
-		return n - 1
-	}
-	if priority >= n-1 {
-		return 0
-	}
-	return n - 1 - priority
-}
-
 func effectiveOwnAndTotalLimits(ownBase, totalBase int, headroomRatio float64, kind octollm.CacheHitKind) (int, int) {
 	if kind != octollm.CacheHitStrong || headroomRatio <= 0 {
 		return ownBase, totalBase
@@ -265,8 +223,8 @@ func validateQoSLimits(limits QoSLimits) error {
 
 func cloneQoSLimits(in QoSLimits) QoSLimits {
 	return QoSLimits{
-		AvailableTotalMax: append([]int(nil), in.AvailableTotalMax...),
-		PriorityLevelMax:  append([]int(nil), in.PriorityLevelMax...),
+		AvailableTotalMax: slices.Clone(in.AvailableTotalMax),
+		PriorityLevelMax:  slices.Clone(in.PriorityLevelMax),
 		HeadroomRatio:     in.HeadroomRatio,
 	}
 }

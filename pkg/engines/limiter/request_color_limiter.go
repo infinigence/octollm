@@ -111,7 +111,7 @@ func (e *RequestColorLimiterEngine) allow(ctx context.Context) (done func(), pri
 
 	// Priority from context (set by RequestColorMarkerEngine); default 0 when absent.
 	priority = 0
-	if p, ok := e.getPriorityFromContext(ctx); ok {
+	if p, ok := priorityFromNamespace(ctx, e.nameSpace); ok {
 		priority = p
 	}
 
@@ -230,21 +230,6 @@ func (e *RequestColorLimiterEngine) Process(req *octollm.Request) (*octollm.Resp
 	done()
 
 	return resp, err
-}
-
-func (e *RequestColorLimiterEngine) getPriorityFromContext(ctx context.Context) (int, bool) {
-	contextKey := contextKey(fmt.Sprintf("%s:%s", e.nameSpace, ContextKeyPriority))
-	priorityStr, ok := ctx.Value(contextKey).(string)
-	if !ok {
-		return 0, false
-	}
-	var priority int
-	_, err := fmt.Sscanf(priorityStr, ContextValuePrefixPriority+"%d", &priority)
-	if err != nil {
-		return 0, false
-	}
-
-	return priority, true
 }
 
 // dualTokenBucketLuaScript atomically checks and consumes tokens from two buckets
