@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/infinigence/octollm/pkg/octollm"
@@ -97,7 +98,7 @@ func CloneForReplication(req *octollm.Request, expiration time.Duration) (clone 
 	if req.Query != nil {
 		clone.Query = make(url.Values, len(req.Query))
 		for k, v := range req.Query {
-			clone.Query[k] = append([]string(nil), v...)
+			clone.Query[k] = slices.Clone(v)
 		}
 	}
 
@@ -105,7 +106,7 @@ func CloneForReplication(req *octollm.Request, expiration time.Duration) (clone 
 	if req.Header != nil {
 		clone.Header = make(http.Header, len(req.Header))
 		for k, v := range req.Header {
-			clone.Header[k] = append([]string(nil), v...)
+			clone.Header[k] = slices.Clone(v)
 		}
 	}
 

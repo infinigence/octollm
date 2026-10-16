@@ -38,7 +38,7 @@ func seedHookLBConcurrency(t *testing.T, rd *redis.Client, backendName string, n
 	for i := range members {
 		members[i] = redis.Z{Score: float64(i), Member: fmt.Sprintf("m%d", i)}
 	}
-	require.NoError(t, rd.ZAdd(t.Context(), hookConcurrencyKey(nil, backendName), members...).Err())
+	require.NoError(t, rd.ZAdd(t.Context(), hookConcurrencyKey(backendName), members...).Err())
 }
 
 type countingEngine struct {
@@ -87,12 +87,11 @@ func TestAdmission_WRR_DeniedBackendIsNotInvoked(t *testing.T) {
 	engineA := &countingEngine{err: errors.New("should not be called")}
 	engineB := &countingEngine{resp: &octollm.Response{StatusCode: 200}}
 	lb, err := loadbalancer.NewShardKeyWeightedRoundRobin(
-		[]loadbalancer.BackendItem{
+		withSoftCBKeys([]loadbalancer.BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
-		},
-		time.Second, 3, prioritizeBackends{"A"}, hook,
-	)
+		}),
+		time.Second, 3, 0, prioritizeBackends{"A"}, hook, newHookLBRedis(t))
 	require.NoError(t, err)
 
 	resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -111,12 +110,11 @@ func TestAdmission_WRR_AllDeniedReturnsNoBackendAvailable(t *testing.T) {
 	engineA := &countingEngine{}
 	engineB := &countingEngine{}
 	lb, err := loadbalancer.NewShardKeyWeightedRoundRobin(
-		[]loadbalancer.BackendItem{
+		withSoftCBKeys([]loadbalancer.BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
-		},
-		time.Second, 3, nil, hook,
-	)
+		}),
+		time.Second, 3, 0, nil, hook, newHookLBRedis(t))
 	require.NoError(t, err)
 
 	resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -135,12 +133,11 @@ func TestAdmission_WRR_PreservesRealErrorWhenRemainingDenied(t *testing.T) {
 	engineA := &countingEngine{resp: &octollm.Response{StatusCode: 502}, err: upstream}
 	engineB := &countingEngine{}
 	lb, err := loadbalancer.NewShardKeyWeightedRoundRobin(
-		[]loadbalancer.BackendItem{
+		withSoftCBKeys([]loadbalancer.BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
-		},
-		time.Second, 5, nil, hook,
-	)
+		}),
+		time.Second, 5, 0, nil, hook, newHookLBRedis(t))
 	require.NoError(t, err)
 
 	resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -161,11 +158,11 @@ func TestAdmission_Concurrency_DeniedBackendIsNotInvoked(t *testing.T) {
 	rd := newHookLBRedis(t)
 	seedHookLBConcurrency(t, rd, "B", 10)
 	lb, err := loadbalancer.NewShardKeyConcurrency(
-		[]loadbalancer.BackendItem{
+		withSoftCBKeys([]loadbalancer.BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
-		},
-		time.Second, 3, nil, rd, hookConcurrencyKey, hook,
+		}),
+		time.Second, 3, nil, rd, hook,
 	)
 	require.NoError(t, err)
 
@@ -185,11 +182,11 @@ func TestAdmission_Concurrency_AllDeniedReturnsNoBackendAvailable(t *testing.T) 
 	engineA := &countingEngine{}
 	engineB := &countingEngine{}
 	lb, err := loadbalancer.NewShardKeyConcurrency(
-		[]loadbalancer.BackendItem{
+		withSoftCBKeys([]loadbalancer.BackendItem{
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
-		},
-		time.Second, 3, nil, newHookLBRedis(t), hookConcurrencyKey, hook,
+		}),
+		time.Second, 3, nil, newHookLBRedis(t), hook,
 	)
 	require.NoError(t, err)
 
@@ -212,9 +209,8 @@ func TestAdmission_WRR_ExcludedHTTPStatusIsNotRecorded(t *testing.T) {
 
 	engine := &countingEngine{err: &errutils.UpstreamRespError{StatusCode: http.StatusTooManyRequests}}
 	lb, err := loadbalancer.NewShardKeyWeightedRoundRobin(
-		[]loadbalancer.BackendItem{{Name: "A", Weight: 1, Engine: engine}},
-		time.Second, 3, nil, hook,
-	)
+		withSoftCBKeys([]loadbalancer.BackendItem{{Name: "A", Weight: 1, Engine: engine}}),
+		time.Second, 3, 0, nil, hook, newHookLBRedis(t))
 	require.NoError(t, err)
 
 	_, err = lb.Process(testhelper.CreateTestRequest())
@@ -230,6 +226,18 @@ func newHookLBRedis(t *testing.T) *redis.Client {
 	return redis.NewClient(&redis.Options{Addr: miniredis.RunT(t).Addr()})
 }
 
-func hookConcurrencyKey(_ *octollm.Request, backendName string) string {
+func hookConcurrencyKey(backendName string) string {
 	return "softcb:concurrency:" + backendName
+}
+
+func withSoftCBKeys(items []loadbalancer.BackendItem) []loadbalancer.BackendItem {
+	out := make([]loadbalancer.BackendItem, len(items))
+	copy(out, items)
+	for i := range out {
+		name := out[i].Name
+		out[i].ConcurrencyKeyFn = func(*octollm.Request) string {
+			return hookConcurrencyKey(name)
+		}
+	}
+	return out
 }

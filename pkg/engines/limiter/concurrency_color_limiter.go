@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime/debug"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,80 +16,63 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
-// RatesFunc resolves per-request tier limits for the limiter Lua scripts.
-// Return the full tier array used as-is by acquire Lua (same shape as the output of
-// buildTotalPlusPerPriorityLimits). Any non-empty slice applies to that request only.
-// nil or empty slice means pass-through for that request (no acquire).
+// QoSLimits is the dual-bucket configuration for one request.
+// AvailableTotalMax[i] is the own-bucket cap and PriorityLevelMax[i] is the public-bucket cap.
+// The limiter maps priority and cache-hit kind onto those caps.
+type QoSLimits struct {
+	AvailableTotalMax []int
+	PriorityLevelMax  []int
+	HeadroomRatio     float64
+}
+
+// LimitsFunc resolves per-request QoSLimits for the dual-bucket Lua scripts.
+// A non-nil result with both arrays empty (or a nil result) pass-through that request.
 // Errors fail the request.
-type RatesFunc func(req *octollm.Request) ([]int, error)
+type LimitsFunc func(req *octollm.Request) (*QoSLimits, error)
 
 type ConcurrencyColorLimiterEngine struct {
-	redisClient         *redis.Client
-	key                 string
-	ratesFunc           RatesFunc
-	timeout             time.Duration
-	nameSpace           string
-	acquireSingleScript *redis.Script
-	acquireDualScript   *redis.Script
-	releaseSingleScript *redis.Script
-	releaseDualScript   *redis.Script
-	renewSingleScript   *redis.Script
-	renewDualScript     *redis.Script
-	next                octollm.Engine
+	redisClient   *redis.Client
+	key           string
+	limitsFunc    LimitsFunc
+	timeout       time.Duration
+	nameSpace     string
+	acquireScript *redis.Script
+	releaseScript *redis.Script
+	renewScript   *redis.Script
+	next          octollm.Engine
 }
 
 var _ octollm.Engine = (*ConcurrencyColorLimiterEngine)(nil)
 
-// NewConcurrencyColorLimiterEngine creates a limiter with static tier limits from totalConcurrency and perPriorityRates.
-//
-// totalConcurrency is the global concurrent cap (YAML `concurrency`): tier 0, highest-priority band only.
-// perPriorityRates are per-priority caps (YAML `concurrency_rates`) from the next band down.
-// Negative entries are treated as 0 (empty band). When both total and per are set, internal tiers
-// are [total, ...per] without clamping per entries to total; tier-0 Lua reservation still applies.
-//
-// Configuration rules:
-//   - Only totalConcurrency (>0) and empty perPriorityRates → single tier [total] (legacy flat limit).
-//   - Only perPriorityRates (non-empty) and totalConcurrency <= 0 → tier 0 is the sum of perPriorityRates (after clamping negatives to 0); remaining tiers use perPriorityRates.
-//   - Both set → internal rates are append([totalConcurrency], perPriorityRates...).
-//   - totalConcurrency <= 0 and empty perPriorityRates → disabled (pass-through).
-//
-// timeout: Timeout duration for member expiration, must be greater than 0 when the limiter is enabled.
-// nameSpace: Namespace for isolating priority across marker/limiter.
-//
-// Working principle (unchanged Lua): priority = len(rates)-1-tierIdx; lower priorities reserve slots in tier 0.
-func NewConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, totalConcurrency int, perPriorityRates []int, timeout time.Duration, nameSpace string, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
-	rates, err := buildTotalPlusPerPriorityLimits(totalConcurrency, perPriorityRates)
-	if err != nil {
+// NewConcurrencyColorLimiterEngine creates a limiter with static QoSLimits.
+// Empty AvailableTotalMax and PriorityLevelMax disable the limiter (pass-through).
+func NewConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, limits QoSLimits, timeout time.Duration, nameSpace string, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
+	if len(limits.AvailableTotalMax) == 0 && len(limits.PriorityLevelMax) == 0 {
+		return NewConcurrencyColorLimiterEngineWithLimitsFunc(redisClient, key, timeout, nameSpace, nil, next)
+	}
+	if err := validateQoSLimits(limits); err != nil {
 		return nil, err
 	}
-	if len(rates) == 0 {
-		return NewConcurrencyColorLimiterEngineWithRatesFunc(redisClient, key, timeout, nameSpace, nil, next)
-	}
-	return NewConcurrencyColorLimiterEngineWithRatesFunc(redisClient, key, timeout, nameSpace, func(req *octollm.Request) ([]int, error) {
-		return rates, nil
+	cloned := cloneQoSLimits(limits)
+	return NewConcurrencyColorLimiterEngineWithLimitsFunc(redisClient, key, timeout, nameSpace, func(*octollm.Request) (*QoSLimits, error) {
+		return &cloned, nil
 	}, next)
 }
 
-// NewConcurrencyColorLimiterEngineWithRatesFunc creates a limiter that resolves tier limits per request via ratesFunc.
-// Static totalConcurrency/perPriorityRates are not used; tiers come only from ratesFunc at request time.
-// A nil ratesFunc constructs a disabled pass-through limiter.
-// Non-empty return applies to that request; nil or empty return pass-through that request (no acquire).
-// timeout must be positive when limits are enforced for a given request.
-func NewConcurrencyColorLimiterEngineWithRatesFunc(redisClient *redis.Client, key string, timeout time.Duration, nameSpace string, ratesFunc RatesFunc, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
-	if ratesFunc == nil {
+// NewConcurrencyColorLimiterEngineWithLimitsFunc creates a limiter that resolves QoSLimits per request.
+// A nil limitsFunc constructs a disabled pass-through limiter.
+func NewConcurrencyColorLimiterEngineWithLimitsFunc(redisClient *redis.Client, key string, timeout time.Duration, nameSpace string, limitsFunc LimitsFunc, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
+	if limitsFunc == nil {
 		return &ConcurrencyColorLimiterEngine{
-			redisClient:         redisClient,
-			key:                 key,
-			ratesFunc:           nil,
-			timeout:             timeout,
-			nameSpace:           nameSpace,
-			acquireSingleScript: nil,
-			acquireDualScript:   nil,
-			releaseSingleScript: nil,
-			releaseDualScript:   nil,
-			renewSingleScript:   nil,
-			renewDualScript:     nil,
-			next:                next,
+			redisClient:   redisClient,
+			key:           key,
+			limitsFunc:    nil,
+			timeout:       timeout,
+			nameSpace:     nameSpace,
+			acquireScript: nil,
+			releaseScript: nil,
+			renewScript:   nil,
+			next:          next,
 		}, nil
 	}
 
@@ -99,161 +84,90 @@ func NewConcurrencyColorLimiterEngineWithRatesFunc(redisClient *redis.Client, ke
 	}
 
 	return &ConcurrencyColorLimiterEngine{
-		redisClient:         redisClient,
-		key:                 key,
-		ratesFunc:           ratesFunc,
-		timeout:             timeout,
-		nameSpace:           nameSpace,
-		acquireSingleScript: redis.NewScript(acquireSingleLuaScript),
-		acquireDualScript:   redis.NewScript(acquireLuaScript),
-		releaseSingleScript: redis.NewScript(releaseSingleLuaScript),
-		releaseDualScript:   redis.NewScript(releaseLuaScript),
-		renewSingleScript:   redis.NewScript(renewSingleLuaScript),
-		renewDualScript:     redis.NewScript(renewLuaScript),
-		next:                next,
+		redisClient:   redisClient,
+		key:           key,
+		limitsFunc:    limitsFunc,
+		timeout:       timeout,
+		nameSpace:     nameSpace,
+		acquireScript: redis.NewScript(acquireLuaScript),
+		releaseScript: redis.NewScript(releaseLuaScript),
+		renewScript:   redis.NewScript(renewLuaScript),
+		next:          next,
 	}, nil
 }
 
-// allow attempts to allow the request to pass through, performing rate limiting check.
-// When the limiter is disabled (pass-through), returns priority 0 (recorded as allow at priority 0).
 func (e *ConcurrencyColorLimiterEngine) allow(req *octollm.Request) (done func(), priority int, err error) {
 	ctx := req.Context()
-	if e.ratesFunc == nil {
+	if e.limitsFunc == nil {
 		return func() {}, 0, nil
 	}
-	rates, err := e.ratesFunc(req)
+	limits, err := e.limitsFunc(req)
 	if err != nil {
 		return func() {}, 0, err
 	}
-
-	// If resolved rates is empty, directly pass through
-	if len(rates) == 0 || e.acquireSingleScript == nil {
+	if limits == nil || (len(limits.AvailableTotalMax) == 0 && len(limits.PriorityLevelMax) == 0) || e.acquireScript == nil {
 		return func() {}, 0, nil
+	}
+	if err := validateQoSLimits(*limits); err != nil {
+		return func() {}, 0, err
 	}
 
 	priority = 0
-	if p, ok := e.getPriorityFromContext(ctx); ok {
+	if p, ok := priorityFromNamespace(ctx, e.nameSpace); ok {
 		priority = p
 	}
+	i := qosIndex(priority, len(limits.AvailableTotalMax))
+	kind := cacheHitKindFromRequest(req)
+	ownBase := limits.AvailableTotalMax[i]
+	totalBase := limits.PriorityLevelMax[i]
+	effectiveOwn, effectiveTotal := effectiveOwnAndTotalLimits(ownBase, totalBase, limits.HeadroomRatio, kind)
 
 	nowUnix := time.Now().Unix()
 	expireBefore := nowUnix - int64(e.timeout.Seconds())
 	memberID := uuid.New().String()
+	ownKey := fmt.Sprintf("%s:own_%d", e.key, i+1)
+	publicKey := e.key + ":public"
 
-	// Calculate max supported priority: len(rates) - 1
-	maxSupportedPriority := len(rates) - 1
-
-	// Determine which tier corresponds to this priority
-	// Priority mapping: priority = len(rates) - 1 - tierIdx
-	// So tierIdx = len(rates) - 1 - priority
-	var tierIdx int
-	if priority >= maxSupportedPriority {
-		// High priority (>= max supported): use tier 0
-		tierIdx = 0
-	} else if priority >= 0 {
-		// Valid priority: use corresponding tier
-		tierIdx = len(rates) - 1 - priority
-	} else {
-		// Invalid priority (< 0): use last tier (lowest priority)
-		tierIdx = len(rates) - 1
+	result, err := e.acquireScript.Run(ctx, e.redisClient, []string{ownKey, publicKey},
+		effectiveOwn, effectiveTotal, nowUnix, expireBefore, memberID).Result()
+	if err != nil {
+		slog.ErrorContext(ctx, fmt.Sprintf("dual acquire script error: %v, ownKey: %s, publicKey: %s", err, ownKey, publicKey))
+		return func() {}, 0, fmt.Errorf("acquire script error: %w", err)
 	}
 
-	if tierIdx == 0 {
-		// Max priority: only check tier 0 using single key script
-		tier0Key := fmt.Sprintf("%s:tier_0", e.key)
-		tier0Limit := rates[0]
-
-		result, err := e.acquireSingleScript.Run(ctx, e.redisClient, []string{tier0Key},
-			tier0Limit, nowUnix, expireBefore, memberID).Result()
-		if err != nil {
-			slog.ErrorContext(ctx, fmt.Sprintf("acquire script error for tier 0: %v, key: %s", err, tier0Key))
-			return func() {}, 0, fmt.Errorf("acquire script error: %w", err)
-		}
-
-		results, ok := result.([]interface{})
-		if !ok || len(results) != 2 {
-			slog.ErrorContext(ctx, fmt.Sprintf("unexpected script result format for tier 0, key: %s", tier0Key))
-			return func() {}, 0, fmt.Errorf("unexpected script result format")
-		}
-
-		acquiredInt, _ := results[0].(int64)
-		tier0Count, _ := results[1].(int64)
-
-		if acquiredInt == 0 {
-			slog.WarnContext(ctx, fmt.Sprintf("tier 0 concurrency limit %d reached, current: %d, key: %s", tier0Limit, tier0Count, tier0Key))
-			return func() {}, priority, ErrRateLimitReached
-		}
-
-		// Start renewal goroutine
-		renewCtx, renewCancel := context.WithCancel(context.WithoutCancel(ctx))
-		renewDone := make(chan struct{})
-		go e.renewMemberSingle(renewCtx, tier0Key, memberID, renewDone)
-
-		done = func() {
-			renewCancel()
-			<-renewDone
-			c1 := context.WithoutCancel(ctx)
-			_, err := e.releaseSingleScript.Run(c1, e.redisClient, []string{tier0Key}, memberID).Result()
-			if err != nil {
-				slog.ErrorContext(ctx, fmt.Sprintf("failed to release member: %v, key: %s", err, tier0Key))
-			}
-		}
-
-		slog.InfoContext(ctx, fmt.Sprintf("max priority concurrency allowed, tier 0 count: %d/%d, key: %s", tier0Count, tier0Limit, tier0Key))
-		return done, priority, nil
-	} else {
-		// Non-max priority: atomically check own tier and tier 0 with reservation
-		ownKey := fmt.Sprintf("%s:tier_%d", e.key, tierIdx)
-		tier0Key := fmt.Sprintf("%s:tier_0", e.key)
-
-		ownLimit := rates[tierIdx]
-		tier0Limit := rates[0]
-
-		// Calculate reservation (priority difference)
-		reservedSlots := int64(tierIdx)
-
-		result, err := e.acquireDualScript.Run(ctx, e.redisClient, []string{ownKey, tier0Key},
-			ownLimit, tier0Limit, nowUnix, expireBefore, memberID, reservedSlots).Result()
-		if err != nil {
-			slog.ErrorContext(ctx, fmt.Sprintf("dual acquire script error: %v, ownKey: %s, tier0Key: %s", err, ownKey, tier0Key))
-			return func() {}, 0, fmt.Errorf("acquire script error: %w", err)
-		}
-
-		results, ok := result.([]interface{})
-		if !ok || len(results) != 3 {
-			slog.ErrorContext(ctx, fmt.Sprintf("unexpected script result format, ownKey: %s, tier0Key: %s", ownKey, tier0Key))
-			return func() {}, 0, fmt.Errorf("unexpected script result format")
-		}
-
-		acquiredInt, _ := results[0].(int64)
-		ownCount, _ := results[1].(int64)
-		tier0Count, _ := results[2].(int64)
-
-		if acquiredInt == 0 {
-			slog.WarnContext(ctx, fmt.Sprintf("concurrency limit reached for priority %d (tier %d), ownCount: %d/%d, tier0Count: %d/%d (reserved: %d)",
-				priority, tierIdx, ownCount, ownLimit, tier0Count, tier0Limit, reservedSlots))
-			return func() {}, priority, ErrRateLimitReached
-		}
-
-		// Start renewal goroutine
-		renewCtx, renewCancel := context.WithCancel(context.WithoutCancel(ctx))
-		renewDone := make(chan struct{})
-		go e.renewMemberDual(renewCtx, ownKey, tier0Key, memberID, renewDone)
-
-		done = func() {
-			renewCancel()
-			<-renewDone
-			c1 := context.WithoutCancel(ctx)
-			_, err := e.releaseDualScript.Run(c1, e.redisClient, []string{ownKey, tier0Key}, memberID).Result()
-			if err != nil {
-				slog.ErrorContext(ctx, fmt.Sprintf("failed to release member: %v, ownKey: %s, tier0Key: %s", err, ownKey, tier0Key))
-			}
-		}
-
-		slog.InfoContext(ctx, fmt.Sprintf("concurrency allowed for priority %d (tier %d), ownCount: %d/%d, tier0Count: %d/%d (reserved: %d)",
-			priority, tierIdx, ownCount, ownLimit, tier0Count, tier0Limit, reservedSlots))
-		return done, priority, nil
+	results, ok := result.([]interface{})
+	if !ok || len(results) != 3 {
+		slog.ErrorContext(ctx, fmt.Sprintf("unexpected script result format, ownKey: %s, publicKey: %s", ownKey, publicKey))
+		return func() {}, 0, fmt.Errorf("unexpected script result format")
 	}
+
+	acquiredInt, _ := results[0].(int64)
+	ownCount, _ := results[1].(int64)
+	publicCount, _ := results[2].(int64)
+
+	if acquiredInt == 0 {
+		slog.WarnContext(ctx, fmt.Sprintf("concurrency limit reached for priority %d (qosIndex %d), ownCount: %d/%d, publicCount: %d/%d, hitKind: %s",
+			priority, i, ownCount, effectiveOwn, publicCount, effectiveTotal, kind))
+		return func() {}, priority, ErrRateLimitReached
+	}
+
+	renewCtx, renewCancel := context.WithCancel(context.WithoutCancel(ctx))
+	renewDone := make(chan struct{})
+	go e.renewMember(renewCtx, ownKey, publicKey, memberID, renewDone)
+
+	done = func() {
+		renewCancel()
+		<-renewDone
+		c1 := context.WithoutCancel(ctx)
+		_, err := e.releaseScript.Run(c1, e.redisClient, []string{ownKey, publicKey}, memberID).Result()
+		if err != nil {
+			slog.ErrorContext(ctx, fmt.Sprintf("failed to release member: %v, ownKey: %s, publicKey: %s", err, ownKey, publicKey))
+		}
+	}
+
+	slog.InfoContext(ctx, fmt.Sprintf("concurrency allowed for priority %d (qosIndex %d), ownCount: %d/%d, publicCount: %d/%d, hitKind: %s",
+		priority, i, ownCount, effectiveOwn, publicCount, effectiveTotal, kind))
+	return done, priority, nil
 }
 
 func (e *ConcurrencyColorLimiterEngine) Process(req *octollm.Request) (*octollm.Response, error) {
@@ -269,10 +183,8 @@ func (e *ConcurrencyColorLimiterEngine) Process(req *octollm.Request) (*octollm.
 	}
 	recordLimiterAllow(req, priority)
 
-	// Process request
 	resp, err := e.next.Process(req)
 
-	// Call done to cleanup regardless of success or failure
 	if err != nil || resp == nil {
 		done()
 		return resp, err
@@ -288,106 +200,43 @@ func (e *ConcurrencyColorLimiterEngine) Process(req *octollm.Request) (*octollm.
 	return resp, err
 }
 
-func (e *ConcurrencyColorLimiterEngine) getPriorityFromContext(ctx context.Context) (int, bool) {
-	contextKey := contextKey(fmt.Sprintf("%s:%s", e.nameSpace, ContextKeyPriority))
-	priorityStr, ok := ctx.Value(contextKey).(string)
-	if !ok {
-		return 0, false
+func effectiveOwnAndTotalLimits(ownBase, totalBase int, headroomRatio float64, kind octollm.CacheHitKind) (int, int) {
+	if kind != octollm.CacheHitStrong || headroomRatio <= 0 {
+		return ownBase, totalBase
 	}
-	var priority int
-	_, err := fmt.Sscanf(priorityStr, ContextValuePrefixPriority+"%d", &priority)
-	if err != nil {
-		return 0, false
-	}
-
-	return priority, true
+	factor := 1 + headroomRatio
+	return int(math.Floor(float64(ownBase) * factor)), int(math.Floor(float64(totalBase) * factor))
 }
 
-// buildTotalPlusPerPriorityLimits builds tier limits for color limiters: [total] or [total, ...per] or [sum(per), ...per].
-// When only per-priority rates are set, tier 0 is the sum of those caps so total in-flight work has a finite headroom.
-// Shared by concurrency and request color limiters.
-func buildTotalPlusPerPriorityLimits(totalConcurrency int, perPriorityRates []int) ([]int, error) {
-	clamped := make([]int, len(perPriorityRates))
-	for i, v := range perPriorityRates {
-		if v < 0 {
-			v = 0
-		}
-		clamped[i] = v
+func validateQoSLimits(limits QoSLimits) error {
+	if len(limits.AvailableTotalMax) != len(limits.PriorityLevelMax) {
+		return fmt.Errorf("available_total_max and priority_level_max must have the same length")
 	}
-	if len(clamped) == 0 {
-		if totalConcurrency <= 0 {
-			return nil, nil
-		}
-		return []int{totalConcurrency}, nil
+	if len(limits.AvailableTotalMax) == 0 {
+		return fmt.Errorf("qos limits must not be empty")
 	}
-	if totalConcurrency > 0 {
-		out := make([]int, 0, 1+len(clamped))
-		out = append(out, totalConcurrency)
-		out = append(out, clamped...)
-		return out, nil
+	if limits.HeadroomRatio < 0 {
+		return fmt.Errorf("headroom_ratio must be non-negative")
 	}
-	sum := 0
-	for _, v := range clamped {
-		sum += v
-	}
-	out := make([]int, 0, 1+len(clamped))
-	out = append(out, sum)
-	out = append(out, clamped...)
-	return out, nil
+	return nil
 }
 
-func filterDecreasingRates(rates []int) ([]int, bool) {
-	if len(rates) == 0 {
-		return rates, false
+func cloneQoSLimits(in QoSLimits) QoSLimits {
+	return QoSLimits{
+		AvailableTotalMax: slices.Clone(in.AvailableTotalMax),
+		PriorityLevelMax:  slices.Clone(in.PriorityLevelMax),
+		HeadroomRatio:     in.HeadroomRatio,
 	}
-
-	filteredRates := make([]int, 0, len(rates))
-	filteredRates = append(filteredRates, rates[0])
-
-	for i := 1; i < len(rates); i++ {
-		if rates[i] <= rates[i-1] {
-			filteredRates = append(filteredRates, rates[i])
-		} else {
-			break
-		}
-	}
-
-	filtered := len(filteredRates) < len(rates)
-	return filteredRates, filtered
 }
 
-// Single key acquire script (for max priority)
-const acquireSingleLuaScript = `
-local key = KEYS[1]
-local concurrency = tonumber(ARGV[1])
-local nowUnix = tonumber(ARGV[2])
-local expireBefore = tonumber(ARGV[3])
-local memberID = ARGV[4]
-
-redis.call('ZREMRANGEBYSCORE', key, '0', expireBefore)
-
-local currentCount = redis.call('ZCARD', key)
-
-local acquired = 0
-if currentCount < concurrency then
-    redis.call('ZADD', key, nowUnix, memberID)
-    redis.call('EXPIRE', key, 3600)
-    currentCount = currentCount + 1
-    acquired = 1
-end
-
-return {acquired, currentCount}
-`
-
-// Dual key acquire script with reservation (for non-max priority)
-// KEYS[1]: own tier key
-// KEYS[2]: tier 0 key
-// ARGV[1]: ownLimit
-// ARGV[2]: tier0Limit
+// Dual key acquire script.
+// KEYS[1]: current QoS own-bucket key (own_{i+1})
+// KEYS[2]: public bucket key
+// ARGV[1]: effectiveOwnLimit
+// ARGV[2]: effectiveTier0Limit
 // ARGV[3]: nowUnix
 // ARGV[4]: expireBefore
 // ARGV[5]: memberID
-// ARGV[6]: reservedSlots (number of slots to reserve in tier 0)
 const acquireLuaScript = `
 local ownKey = KEYS[1]
 local tier0Key = KEYS[2]
@@ -396,18 +245,15 @@ local tier0Limit = tonumber(ARGV[2])
 local nowUnix = tonumber(ARGV[3])
 local expireBefore = tonumber(ARGV[4])
 local memberID = ARGV[5]
-local reservedSlots = tonumber(ARGV[6])
 
--- Clean up expired members
 redis.call('ZREMRANGEBYSCORE', ownKey, '0', expireBefore)
 redis.call('ZREMRANGEBYSCORE', tier0Key, '0', expireBefore)
 
 local ownCount = redis.call('ZCARD', ownKey)
 local tier0Count = redis.call('ZCARD', tier0Key)
 
--- Check if both conditions are met: ownCount < ownLimit AND tier0Count < (tier0Limit - reservedSlots)
 local acquired = 0
-if ownCount < ownLimit and tier0Count < (tier0Limit - reservedSlots) then
+if ownCount < ownLimit and tier0Count < tier0Limit then
     redis.call('ZADD', ownKey, nowUnix, memberID)
     redis.call('ZADD', tier0Key, nowUnix, memberID)
     redis.call('EXPIRE', ownKey, 3600)
@@ -420,17 +266,6 @@ end
 return {acquired, ownCount, tier0Count}
 `
 
-// Single key release script
-const releaseSingleLuaScript = `
-local key = KEYS[1]
-local memberID = ARGV[1]
-
-redis.call('ZREM', key, memberID)
-
-return {1}
-`
-
-// Dual key release script
 const releaseLuaScript = `
 local ownKey = KEYS[1]
 local tier0Key = KEYS[2]
@@ -442,22 +277,6 @@ redis.call('ZREM', tier0Key, memberID)
 return {1}
 `
 
-// Single key renew script
-const renewSingleLuaScript = `
-local key = KEYS[1]
-local nowUnix = tonumber(ARGV[1])
-local memberID = ARGV[2]
-
-if redis.call('ZSCORE', key, memberID) ~= false then
-    redis.call('ZADD', key, nowUnix, memberID)
-    redis.call('EXPIRE', key, 3600)
-    return {1}
-else
-    return {0}
-end
-`
-
-// Dual key renew script
 const renewLuaScript = `
 local ownKey = KEYS[1]
 local tier0Key = KEYS[2]
@@ -478,45 +297,7 @@ else
 end
 `
 
-// renewMemberSingle periodically renews the member's score for single key
-func (e *ConcurrencyColorLimiterEngine) renewMemberSingle(ctx context.Context, key, memberID string, done chan struct{}) {
-	defer close(done)
-	defer func() {
-		if p := recover(); p != nil {
-			slog.ErrorContext(ctx, "panic in renewal goroutine", "err", p, "stack", string(debug.Stack()))
-		}
-	}()
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			nowUnix := time.Now().Unix()
-			result, err := e.renewSingleScript.Run(ctx, e.redisClient, []string{key}, nowUnix, memberID).Result()
-			if err != nil {
-				slog.ErrorContext(ctx, fmt.Sprintf("failed to renew member: %v, key: %s, memberID: %s", err, key, memberID))
-				continue
-			}
-			results, ok := result.([]interface{})
-			if !ok || len(results) != 1 {
-				slog.ErrorContext(ctx, fmt.Sprintf("unexpected renew script result format, key: %s, memberID: %s", key, memberID))
-				continue
-			}
-			renewed, _ := results[0].(int64)
-			if renewed == 0 {
-				slog.WarnContext(ctx, fmt.Sprintf("member not found for renewal, key: %s, memberID: %s", key, memberID))
-				return
-			}
-			slog.DebugContext(ctx, fmt.Sprintf("renewed member: key=%s, memberID=%s", key, memberID))
-		}
-	}
-}
-
-// renewMemberDual periodically renews the member's score for dual keys
-func (e *ConcurrencyColorLimiterEngine) renewMemberDual(ctx context.Context, ownKey, tier0Key, memberID string, done chan struct{}) {
+func (e *ConcurrencyColorLimiterEngine) renewMember(ctx context.Context, ownKey, publicKey, memberID string, done chan struct{}) {
 	defer close(done)
 	defer func() {
 		if err := recover(); err != nil {
@@ -532,22 +313,22 @@ func (e *ConcurrencyColorLimiterEngine) renewMemberDual(ctx context.Context, own
 			return
 		case <-ticker.C:
 			nowUnix := time.Now().Unix()
-			result, err := e.renewDualScript.Run(ctx, e.redisClient, []string{ownKey, tier0Key}, nowUnix, memberID).Result()
+			result, err := e.renewScript.Run(ctx, e.redisClient, []string{ownKey, publicKey}, nowUnix, memberID).Result()
 			if err != nil {
-				slog.ErrorContext(ctx, fmt.Sprintf("failed to renew member: %v, ownKey: %s, tier0Key: %s, memberID: %s", err, ownKey, tier0Key, memberID))
+				slog.ErrorContext(ctx, fmt.Sprintf("failed to renew member: %v, ownKey: %s, publicKey: %s, memberID: %s", err, ownKey, publicKey, memberID))
 				continue
 			}
 			results, ok := result.([]interface{})
 			if !ok || len(results) != 1 {
-				slog.ErrorContext(ctx, fmt.Sprintf("unexpected renew script result format, ownKey: %s, tier0Key: %s, memberID: %s", ownKey, tier0Key, memberID))
+				slog.ErrorContext(ctx, fmt.Sprintf("unexpected renew script result format, ownKey: %s, publicKey: %s, memberID: %s", ownKey, publicKey, memberID))
 				continue
 			}
 			renewed, _ := results[0].(int64)
 			if renewed == 0 {
-				slog.WarnContext(ctx, fmt.Sprintf("member not found for renewal, ownKey: %s, tier0Key: %s, memberID: %s", ownKey, tier0Key, memberID))
+				slog.WarnContext(ctx, fmt.Sprintf("member not found for renewal, ownKey: %s, publicKey: %s, memberID: %s", ownKey, publicKey, memberID))
 				return
 			}
-			slog.DebugContext(ctx, fmt.Sprintf("renewed member: ownKey=%s, tier0Key=%s, memberID=%s", ownKey, tier0Key, memberID))
+			slog.DebugContext(ctx, fmt.Sprintf("renewed member: ownKey=%s, publicKey=%s, memberID=%s", ownKey, publicKey, memberID))
 		}
 	}
 }

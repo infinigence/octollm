@@ -1,6 +1,7 @@
 package image_url_fetch
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/infinigence/octollm/pkg/types/anthropic"
@@ -98,7 +99,7 @@ func collectFromClaudeContentSlice(msgIndex int, prefix []int, items anthropic.M
 				if u != "" && !strings.HasPrefix(strings.ToLower(u), "data:") {
 					jobs = append(jobs, &claudeImageReplaceJob{
 						msgIndex:       msgIndex,
-						contentIndices: append([]int(nil), pathToBlock...),
+						contentIndices: slices.Clone(pathToBlock),
 						url:            u,
 					})
 				}

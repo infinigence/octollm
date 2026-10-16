@@ -175,7 +175,7 @@ func (e *RequestColorMarkerEngine) allow(ctx context.Context) (newCtx context.Co
 	acquiredTierIdx := numTiers - 1 - priority
 
 	// Set priority to context
-	newCtx = e.setPriorityToContext(ctx, priority)
+	newCtx = setPriorityToContext(ctx, e.nameSpace, priority)
 
 	slog.InfoContext(ctx, fmt.Sprintf("[RequestColorMarkerEngine] request allowed with priority %d (tier %d)", priority, acquiredTierIdx))
 	done = func() {}
@@ -203,12 +203,6 @@ func (e *RequestColorMarkerEngine) Process(req *octollm.Request) (*octollm.Respo
 	done()
 
 	return resp, err
-}
-
-func (e *RequestColorMarkerEngine) setPriorityToContext(ctx context.Context, priority int) context.Context {
-	priorityStr := fmt.Sprintf("%s%d", ContextValuePrefixPriority, priority)
-	contextKey := contextKey(fmt.Sprintf("%s:%s", e.nameSpace, ContextKeyPriority))
-	return context.WithValue(ctx, contextKey, priorityStr)
 }
 
 // Unified token bucket script supporting N tiers

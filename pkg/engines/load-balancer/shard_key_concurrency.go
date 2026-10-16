@@ -1,6 +1,7 @@
 package loadbalancer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,13 +11,9 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/infinigence/octollm/pkg/engines/limiter"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
-
-// ErrCacheMissHeadroom is returned when a cache-miss request cannot be served because every
-// candidate backend is above cacheMissMaxUtilization — only the reserved headroom remains,
-// and it is restricted to strong-cache-hit requests.
-var ErrCacheMissHeadroom = errors.New("cache-miss request rejected to preserve cache-hit headroom")
 
 // ShardMaxConcurrencyFn returns the capacity denominator for concurrency ratio (count/denom).
 // When non-nil, each value—including 0—is used directly (no fallback to BackendItem.Weight).
@@ -25,16 +22,19 @@ var ErrCacheMissHeadroom = errors.New("cache-miss request rejected to preserve c
 type ShardMaxConcurrencyFn func(req *octollm.Request) int
 
 type concurrencyBackend struct {
-	name   string
-	engine octollm.Engine
-	// maxConcurrencyFn supplies the ratio denominator per request. It is always set by construction:
-	// dynamic backends use BackendItem.MaxConcurrencyFn, static backends use a closure over Weight.
+	name             string
+	engine           octollm.Engine
 	maxConcurrencyFn ShardMaxConcurrencyFn
-	// cacheMissMaxUtilization is the per-backend headroom ceiling; see BackendItem.CacheMissMaxUtilization.
-	cacheMissMaxUtilization float64
+	concurrencyKeyFn func(*octollm.Request) string
 }
 
-// prioritizedBackend pairs an affinity-resolved backend with whether it is a strong cache hit.
+func (b *concurrencyBackend) denom(req *octollm.Request) int {
+	if b == nil || b.maxConcurrencyFn == nil {
+		return 0
+	}
+	return b.maxConcurrencyFn(req)
+}
+
 type prioritizedBackend struct {
 	backend        *concurrencyBackend
 	strongCacheHit bool
@@ -49,11 +49,11 @@ func (pb *prioritizedBackend) isStrongCacheHit() bool {
 //     falling back to concurrency-based selection once all prioritized backends are exhausted.
 //   - When affinityProvider is nil: selects the backend with the lowest
 //     currentConcurrency/maxConcurrency ratio via Redis ZCard.
+//   - Writes CacheHitKind onto each attempt request; Color Limiter enforces headroom.
 type ShardKeyConcurrency struct {
 	backends         []*concurrencyBackend
 	affinityProvider AffinityProvider
 	redisClient      *redis.Client
-	concurrencyKeyFn func(req *octollm.Request, backendName string) string
 	retryTimeout     time.Duration
 	retryMaxCount    int
 	backendAdmission BackendAdmission
@@ -66,10 +66,8 @@ var _ octollm.Engine = (*ShardKeyConcurrency)(nil)
 //
 // Backends with Weight <= 0 are skipped unless MaxConcurrencyFn is set; a static Weight is wrapped
 // as the request-time maximum concurrency when MaxConcurrencyFn is nil. A nil affinityProvider
-// disables backend affinity. redisClient and concurrencyKeyFn are required for selection;
-// concurrencyKeyFn must return the Redis ZSET key whose cardinality represents the backend's
-// current concurrency. The per-backend cache-miss ceiling is configured through
-// BackendItem.CacheMissMaxUtilization. A nil backendAdmission skips admission checks
+// disables backend affinity. redisClient is required for selection. Each kept BackendItem must
+// supply ConcurrencyKeyFn. A nil backendAdmission skips admission checks
 // and preserves current balancer behavior.
 func NewShardKeyConcurrency(
 	backends []BackendItem,
@@ -77,14 +75,10 @@ func NewShardKeyConcurrency(
 	retryMaxCount int,
 	affinityProvider AffinityProvider,
 	redisClient *redis.Client,
-	concurrencyKeyFn func(req *octollm.Request, backendName string) string,
 	backendAdmission BackendAdmission,
 ) (*ShardKeyConcurrency, error) {
 	if redisClient == nil {
 		return nil, fmt.Errorf("redisClient must be provided")
-	}
-	if concurrencyKeyFn == nil {
-		return nil, fmt.Errorf("concurrencyKeyFn must be provided")
 	}
 
 	cb := make([]*concurrencyBackend, 0, len(backends))
@@ -93,19 +87,19 @@ func NewShardKeyConcurrency(
 			slog.Warn(fmt.Sprintf("[ShardKey Concurrency load balancer] backend %s has weight<=0 and no MaxConcurrencyFn, skipping", b.Name))
 			continue
 		}
-		maxConcurrencyFn := b.MaxConcurrencyFn
-		if maxConcurrencyFn == nil {
-			static := b.Weight
-			maxConcurrencyFn = func(req *octollm.Request) int {
-				return static
-			}
+		if b.ConcurrencyKeyFn == nil {
+			return nil, fmt.Errorf("concurrencyKeyFn must be provided")
 		}
-
+		fn := b.MaxConcurrencyFn
+		if fn == nil {
+			w := b.Weight
+			fn = func(*octollm.Request) int { return w }
+		}
 		cb = append(cb, &concurrencyBackend{
-			name:                    b.Name,
-			engine:                  b.Engine,
-			maxConcurrencyFn:        maxConcurrencyFn,
-			cacheMissMaxUtilization: b.CacheMissMaxUtilization,
+			name:             b.Name,
+			engine:           b.Engine,
+			maxConcurrencyFn: fn,
+			concurrencyKeyFn: b.ConcurrencyKeyFn,
 		})
 	}
 	if len(cb) == 0 {
@@ -116,7 +110,6 @@ func NewShardKeyConcurrency(
 		backends:         cb,
 		affinityProvider: affinityProvider,
 		redisClient:      redisClient,
-		concurrencyKeyFn: concurrencyKeyFn,
 		retryTimeout:     retryTimeout,
 		retryMaxCount:    retryMaxCount,
 		backendAdmission: backendAdmission,
@@ -158,40 +151,42 @@ func (l *ShardKeyConcurrency) resolveAffinity(req *octollm.Request) ([]*prioriti
 }
 
 // selectByConcurrency picks the backend with the lowest currentConcurrency/maxConcurrency ratio
-// using Redis ZCard. Backends in excludeNames are skipped. The returned float is the selected
-// backend's utilization ratio (count/maxConcurrency); it is 0 on the random fallback path below.
-// Falls back to uniform random selection among backends with positive effective capacity if Redis Exec fails.
-func (l *ShardKeyConcurrency) selectByConcurrency(req *octollm.Request, excludeNames map[string]bool) (*concurrencyBackend, float64) {
+// using Redis ZCard. Backends in excludeNames are skipped. Redis Exec failure falls back to a
+// random positive-capacity backend.
+func (l *ShardKeyConcurrency) selectByConcurrency(req *octollm.Request, excludeNames map[string]bool) *concurrencyBackend {
 	ctx := req.Context()
 	candidates := make([]*concurrencyBackend, 0, len(l.backends))
 	for _, b := range l.backends {
 		if b == nil || excludeNames[b.name] {
 			continue
 		}
+		if b.concurrencyKeyFn == nil || b.concurrencyKeyFn(req) == "" {
+			continue
+		}
 		candidates = append(candidates, b)
 	}
 	if len(candidates) == 0 {
-		return nil, 0
+		return nil
 	}
 	rand.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
 
 	pipe := l.redisClient.Pipeline()
 	cmds := make([]*redis.IntCmd, len(candidates))
 	for i, b := range candidates {
-		cmds[i] = pipe.ZCard(ctx, l.concurrencyKeyFn(req, b.name))
+		cmds[i] = pipe.ZCard(ctx, b.concurrencyKeyFn(req))
 	}
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
 		slog.WarnContext(ctx, fmt.Sprintf("[ShardKey Concurrency load balancer] failed to get concurrency counts from Redis: %v", err))
 		usable := candidates[:0]
 		for _, b := range candidates {
-			if b.maxConcurrencyFn(req) > 0 {
+			if b.denom(req) > 0 {
 				usable = append(usable, b)
 			}
 		}
 		if len(usable) == 0 {
-			return nil, 0
+			return nil
 		}
-		return usable[0], 0
+		return usable[0]
 	}
 
 	minRatio := math.MaxFloat64
@@ -201,45 +196,20 @@ func (l *ShardKeyConcurrency) selectByConcurrency(req *octollm.Request, excludeN
 		if err != nil {
 			continue
 		}
-		denom := b.maxConcurrencyFn(req)
-		if denom <= 0 {
+		d := b.denom(req)
+		if d <= 0 {
 			continue
 		}
-		ratio := float64(count) / float64(denom)
+		ratio := float64(count) / float64(d)
 		if ratio < minRatio {
 			minRatio = ratio
 			selected = b
 		}
 	}
-	if selected == nil {
-		return nil, 0
-	}
-	return selected, minRatio
-}
-
-// headroomEnabled reports whether cache-miss headroom reservation is active. A configured
-// utilization of <= 0 or >= 1 disables it.
-func (b *concurrencyBackend) headroomEnabled() bool {
-	return b.cacheMissMaxUtilization > 0 && b.cacheMissMaxUtilization < 1.0
-}
-
-// overHeadroom fails open on Redis errors so transient Redis failures do not reject requests.
-// Callers must first check headroomEnabled.
-func (l *ShardKeyConcurrency) overHeadroom(req *octollm.Request, b *concurrencyBackend) bool {
-	denom := b.maxConcurrencyFn(req)
-	if denom <= 0 {
-		return true
-	}
-	count, err := l.redisClient.ZCard(req.Context(), l.concurrencyKeyFn(req, b.name)).Result()
-	if err != nil {
-		slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] failed to ZCard concurrency for headroom check on %s: %v", b.name, err))
-		return false
-	}
-	return float64(count)/float64(denom) > b.cacheMissMaxUtilization
+	return selected
 }
 
 func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, error) {
-	// Materialize the request body once so every retry can read it again.
 	if _, err := req.Body.Bytes(); err != nil {
 		return nil, fmt.Errorf("failed to cache request body for retries: %w", err)
 	}
@@ -256,15 +226,16 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 
 	start := time.Now()
 	retryCount := 0
-	headroomSkipCount := 0
 	expectKind := affinityKindMiss
-	var lastResp *octollm.Response
-	var lastErr error
+	var lastRealResp *octollm.Response
+	var lastRealErr, lastLimiterErr error
 	var lastN, lastActualKind string
 	for {
 		var n string
 		var eng octollm.Engine
 		var actualKind string
+		var strongCacheHit bool
+		isPrioritizedHit := false
 
 		if prioritizedIndex < len(prioritized) {
 			pb := prioritized[prioritizedIndex]
@@ -276,33 +247,14 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			if excludeNames[b.name] {
 				continue
 			}
-			strongCacheHit := pb.isStrongCacheHit()
-			// Determine the expected affinity kind for metrics. If a strong cache hit is found, it takes precedence.
+			strongCacheHit = pb.isStrongCacheHit()
 			if strongCacheHit {
 				expectKind = affinityKindStrongCacheAware
 			} else if expectKind != affinityKindStrongCacheAware {
 				expectKind = affinityKindWeakCacheAware
 			}
-
-			if b.maxConcurrencyFn(req) <= 0 {
-				slog.InfoContext(req.Context(),
-					fmt.Sprintf("[ShardKey Concurrency load balancer] skip prioritized backend with no effective capacity: %s (index %d/%d)", b.name, prioritizedIndex, len(prioritized)),
-					slog.String("backend_name", b.name),
-				)
-				excludeNames[b.name] = true
-				continue
-			}
-			// Preserve reserved capacity for strong cache hits; weak hits obey the ceiling.
-			if !strongCacheHit && b.headroomEnabled() && l.overHeadroom(req, b) {
-				slog.InfoContext(req.Context(),
-					fmt.Sprintf("[ShardKey Concurrency load balancer] skip weak-cache-hit prioritized backend over headroom %.2f: %s (index %d/%d)", b.cacheMissMaxUtilization, b.name, prioritizedIndex, len(prioritized)),
-					slog.String("backend_name", b.name),
-				)
-				excludeNames[b.name] = true
-				headroomSkipCount++
-				continue
-			}
 			n, eng = b.name, b.engine
+			isPrioritizedHit = true
 			if strongCacheHit {
 				actualKind = affinityKindStrongCacheAware
 			} else {
@@ -319,35 +271,13 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 					candidates = append(candidates, b.name)
 				}
 			}
-			selected, ratio := l.selectByConcurrency(req, excludeNames)
+			selected := l.selectByConcurrency(req, excludeNames)
 			if selected == nil {
-				// Exit when no engine can be selected. Candidates may already be
-				// exhausted by headroom/admission excludes, or skipped for non-positive
-				// capacity without being marked. Prefer the previous backend error after a
-				// real failover; otherwise ErrCacheMissHeadroom if any headroom skip
-				// occurred; otherwise a generic selection failure.
 				if retryCount > 0 {
-					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no backend engine available on failover, returning previous error: %v", lastErr))
+					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no backend engine available on failover, returning previous error: %v", lastRealErr))
 					cacheAwareRouteCounter.WithLabelValues(expectKind, lastActualKind, modelName, lastN).Inc()
-					return lastResp, lastErr
 				}
-
-				if headroomSkipCount > 0 {
-					return nil, ErrCacheMissHeadroom
-				}
-
-				return nil, fmt.Errorf("no backend engine available")
-			}
-
-			// Headroom is per backend, so exclude an over-limit cache miss and try the next candidate.
-			if selected.headroomEnabled() && ratio > selected.cacheMissMaxUtilization {
-				slog.InfoContext(req.Context(),
-					fmt.Sprintf("[ShardKey Concurrency load balancer] skip cache-miss backend over headroom %.2f: %s (ratio=%.2f), candidates: %v", selected.cacheMissMaxUtilization, selected.name, ratio, candidates),
-					slog.String("backend_name", selected.name),
-				)
-				excludeNames[selected.name] = true
-				headroomSkipCount++
-				continue
+				return exhaustAfterNoBackend(lastRealResp, lastRealErr, lastLimiterErr)
 			}
 
 			n, eng = selected.name, selected.engine
@@ -372,8 +302,30 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			}
 		}
 
-		req.SetMetadataValue(backendName, n)
-		resp, err := eng.Process(req)
+		kind := attemptCacheHitKind(isPrioritizedHit, strongCacheHit)
+		attemptReq := req.WithContext(context.WithValue(req.Context(), octollm.ContextKeyCacheHitKind, kind))
+		attemptReq.SetMetadataValue(backendName, n)
+		resp, err := eng.Process(attemptReq)
+		if errors.Is(err, limiter.ErrRateLimitReached) {
+			slog.InfoContext(req.Context(),
+				fmt.Sprintf("[ShardKey Concurrency load balancer] limiter rejected backend %s, failover", n),
+				slog.String("backend_name", n),
+			)
+			excludeNames[n] = true
+			lastLimiterErr = err
+			if len(excludeNames) >= len(l.backends) {
+				return exhaustAfterNoBackend(lastRealResp, lastRealErr, lastLimiterErr)
+			}
+			if req.Context().Err() != nil {
+				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] request context error: %v", req.Context().Err()))
+				return exhaustAfterNoBackend(lastRealResp, lastRealErr, lastLimiterErr)
+			}
+			if time.Since(start) >= l.retryTimeout {
+				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] retry period %v reached, return last limiter err", l.retryTimeout))
+				return exhaustAfterNoBackend(lastRealResp, lastRealErr, lastLimiterErr)
+			}
+			continue
+		}
 		if admissionDone != nil && !isIgnoredAttemptError(err) {
 			admissionDone(err == nil)
 		}
@@ -393,7 +345,7 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			return resp, err
 		}
 		excludeNames[n] = true
-		lastResp, lastErr = resp, err
+		lastRealResp, lastRealErr = resp, err
 		lastN, lastActualKind = n, actualKind
 		retryCount++
 		if req.Context().Err() != nil {
@@ -414,7 +366,7 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 		if len(excludeNames) >= len(l.backends) {
 			slog.WarnContext(req.Context(), "[ShardKey Concurrency load balancer] all backends have been tried, return last resp and err")
 			cacheAwareRouteCounter.WithLabelValues(expectKind, actualKind, modelName, n).Inc()
-			return resp, err
+			return exhaustAfterNoBackend(lastRealResp, lastRealErr, lastLimiterErr)
 		}
 		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] will retry, count %d, time %v", retryCount, time.Since(start)))
 		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
