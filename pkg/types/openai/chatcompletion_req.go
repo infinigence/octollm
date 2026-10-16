@@ -25,6 +25,7 @@ type ChatCompletionRequest struct {
 	Stream              *bool           `json:"stream,omitempty"`
 	Tools               []*Tool         `json:"tools,omitempty"`       // 可用函数工具列表
 	ToolChoice          ToolChoiceValue `json:"tool_choice,omitempty"` // 指定强制调用的函数（可选）
+	ResponseFormat      *ResponseFormat `json:"response_format,omitempty"`
 }
 
 func (r *ChatCompletionRequest) UnmarshalJSON(data []byte) error {
@@ -46,6 +47,22 @@ func (r *ChatCompletionRequest) UnmarshalJSON(data []byte) error {
 
 type Thinking struct {
 	Type string `json:"type"`
+}
+
+// ResponseFormat constrains the format of the model output. Type is one of
+// "text", "json_object" or "json_schema"; JSONSchema is set only for the latter.
+type ResponseFormat struct {
+	Type       string                    `json:"type"`
+	JSONSchema *ResponseFormatJSONSchema `json:"json_schema,omitempty"`
+}
+
+// ResponseFormatJSONSchema is the structured-output schema of a "json_schema"
+// response format.
+type ResponseFormatJSONSchema struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Schema      json.RawMessage `json:"schema,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
 }
 
 type Message struct {

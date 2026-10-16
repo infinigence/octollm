@@ -131,6 +131,30 @@ func TestResponsesRequest_Marshal_UnmarshalJSON(t *testing.T) {
 				ParallelToolCalls: boolPtr(true),
 			},
 		},
+		{
+			Name: "TextFormatJSONSchema",
+			JSON: `{"model":"gpt-5.4","input":"hi","text":{"format":{"type":"json_schema","name":"city_extract","description":"Extract a city","schema":{"type":"object","properties":{"city":{"type":"string"}}},"strict":true}}}`,
+			Object: ResponsesRequest{
+				Model: "gpt-5.4",
+				Input: ResponsesInputString("hi"),
+				Text: &ResponsesText{Format: &ResponsesTextFormat{
+					Type:        "json_schema",
+					Name:        "city_extract",
+					Description: "Extract a city",
+					Schema:      json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}}}`),
+					Strict:      boolPtr(true),
+				}},
+			},
+		},
+		{
+			Name: "TextFormatJSONObject",
+			JSON: `{"model":"gpt-5.4","input":"hi","text":{"format":{"type":"json_object"}}}`,
+			Object: ResponsesRequest{
+				Model: "gpt-5.4",
+				Input: ResponsesInputString("hi"),
+				Text:  &ResponsesText{Format: &ResponsesTextFormat{Type: "json_object"}},
+			},
+		},
 	}
 
 	for _, tc := range testCases {

@@ -185,7 +185,33 @@ func (e *ChatCompletionToResponses) convertRequestBody(ctx context.Context, srcB
 		dst.ToolChoice = convertResponsesToolChoice(src.ToolChoice)
 	}
 
+	// Text format -> response_format
+	if src.Text != nil && src.Text.Format != nil {
+		dst.ResponseFormat = convertResponsesTextFormat(src.Text.Format)
+	}
+
 	return octollm.NewBodyFromParsed(dst, &octollm.JSONParser[openai.ChatCompletionRequest]{}), nil
+}
+
+// convertResponsesTextFormat maps a Responses `text.format` onto a chat-completions
+// `response_format`. The two share their type names; only json_schema differs in
+// shape, nesting the schema fields under a `json_schema` object.
+func convertResponsesTextFormat(src *openai.ResponsesTextFormat) *openai.ResponseFormat {
+	switch src.Type {
+	case "text", "json_object":
+		return &openai.ResponseFormat{Type: src.Type}
+	case "json_schema":
+		return &openai.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &openai.ResponseFormatJSONSchema{
+				Name:        src.Name,
+				Description: src.Description,
+				Schema:      src.Schema,
+				Strict:      src.Strict,
+			},
+		}
+	}
+	return nil
 }
 
 func convertResponsesInputMessage(src *openai.ResponsesInputMessage) *openai.Message {
