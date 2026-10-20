@@ -121,6 +121,12 @@ func (m *ModelRepoFileBased) UpdateFromConfig(conf *ConfigFile) error {
 			if backend.URLPathResponses != nil {
 				finalBackend.URLPathResponses = backend.URLPathResponses
 			}
+			if backend.URLPathSystemOne != nil {
+				finalBackend.URLPathSystemOne = backend.URLPathSystemOne
+			}
+			if backend.URLPathDecisions != nil {
+				finalBackend.URLPathDecisions = backend.URLPathDecisions
+			}
 			if backend.RequestCompression != "" {
 				finalBackend.RequestCompression = backend.RequestCompression
 			}
@@ -259,6 +265,20 @@ func (m *ModelRepoFileBased) BuildEngineByBackend(b *Backend) (octollm.Engine, e
 		}
 	} else {
 		generalConf.Endpoints[octollm.APIFormatResponses] = "" // will use default
+	}
+	if b.URLPathSystemOne != nil {
+		if *b.URLPathSystemOne != "" {
+			generalConf.Endpoints[octollm.APIFormatSystemOne] = *b.URLPathSystemOne
+		}
+	} else {
+		generalConf.Endpoints[octollm.APIFormatSystemOne] = "" // will use default
+	}
+	if b.URLPathDecisions != nil {
+		if *b.URLPathDecisions != "" {
+			generalConf.Endpoints[octollm.APIFormatDecisions] = *b.URLPathDecisions
+		}
+	} else {
+		generalConf.Endpoints[octollm.APIFormatDecisions] = "" // will use default
 	}
 	if b.URLPathVertex != nil {
 		if *b.URLPathVertex != "" {

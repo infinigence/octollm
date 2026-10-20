@@ -8,13 +8,78 @@
 // original bytes, so they are never lost.
 package systemone
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"maps"
+	"slices"
+	"strings"
+)
 
 // SystemOneRequest is the request body of POST /v1/systemone.
 type SystemOneRequest struct {
 	Model     string             `json:"model"`
 	State     json.RawMessage    `json:"state"`     // string / object / array
 	Questions SystemOneQuestions `json:"questions"` // keyed by question name
+}
+
+// ExtractText returns the text of the state and of every question, in
+// question-name order. String values inside an object or array state are
+// collected; keys, numbers and booleans are not.
+func (r *SystemOneRequest) ExtractText() string {
+	text := rawJSONStrings(r.State)
+	for _, name := range slices.Sorted(maps.Keys(r.Questions)) {
+		if q := r.Questions[name]; q != nil {
+			text += q.ExtractText()
+		}
+	}
+	return text
+}
+
+// rawJSONStrings concatenates the string values of a raw JSON value, in
+// document order for arrays and key order for objects. Object keys are skipped.
+func rawJSONStrings(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return ""
+	}
+	switch raw[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return ""
+		}
+		return s
+	case '{':
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return ""
+		}
+		var sb strings.Builder
+		for _, k := range slices.Sorted(maps.Keys(obj)) {
+			sb.WriteString(rawJSONStrings(obj[k]))
+		}
+		return sb.String()
+	case '[':
+		var arr []json.RawMessage
+		if err := json.Unmarshal(raw, &arr); err != nil {
+			return ""
+		}
+		var sb strings.Builder
+		for _, v := range arr {
+			sb.WriteString(rawJSONStrings(v))
+		}
+		return sb.String()
+	default:
+		return ""
+	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // SystemOneQuestions maps question names to questions.
@@ -42,7 +107,8 @@ func (q *SystemOneQuestions) UnmarshalJSON(data []byte) error {
 
 // SystemOneQuestion is one question, discriminated by its `type` field.
 type SystemOneQuestion interface {
-	isSystemOneQuestion()
+	// ExtractText returns the instructions and criteria text of the question.
+	ExtractText() string
 }
 
 // SystemOneNoulQuestion is a yes/no question.
@@ -52,7 +118,13 @@ type SystemOneNoulQuestion struct {
 	Criteria     *SystemOneNoulCriteria `json:"criteria,omitempty"`
 }
 
-func (*SystemOneNoulQuestion) isSystemOneQuestion() {}
+func (q *SystemOneNoulQuestion) ExtractText() string {
+	text := q.Instructions
+	if c := q.Criteria; c != nil {
+		text += deref(c.True) + deref(c.False)
+	}
+	return text
+}
 
 // SystemOneNoulCriteria describes what makes a noul answer true or false.
 type SystemOneNoulCriteria struct {
@@ -70,7 +142,13 @@ type SystemOneChoiceQuestion struct {
 	Criteria map[string]*string `json:"criteria"`
 }
 
-func (*SystemOneChoiceQuestion) isSystemOneQuestion() {}
+func (q *SystemOneChoiceQuestion) ExtractText() string {
+	text := q.Instructions
+	for _, label := range slices.Sorted(maps.Keys(q.Criteria)) {
+		text += label + deref(q.Criteria[label])
+	}
+	return text
+}
 
 // SystemOneScoreQuestion rates the state on the ordered levels in Criteria,
 // from lowest to highest. The score is a level index.
@@ -80,7 +158,9 @@ type SystemOneScoreQuestion struct {
 	Criteria     []string `json:"criteria"`
 }
 
-func (*SystemOneScoreQuestion) isSystemOneQuestion() {}
+func (q *SystemOneScoreQuestion) ExtractText() string {
+	return q.Instructions + strings.Join(q.Criteria, "")
+}
 
 // SystemOneBoxQuestion locates something in an image and answers with its
 // bounding box. It takes no criteria.
@@ -89,7 +169,7 @@ type SystemOneBoxQuestion struct {
 	Instructions string `json:"instructions,omitempty"`
 }
 
-func (*SystemOneBoxQuestion) isSystemOneQuestion() {}
+func (q *SystemOneBoxQuestion) ExtractText() string { return q.Instructions }
 
 // SystemOneGeneralQuestion is the fallback for question types not modeled
 // above, so new types do not break parsing.
@@ -97,7 +177,7 @@ type SystemOneGeneralQuestion struct {
 	Type string `json:"type"`
 }
 
-func (*SystemOneGeneralQuestion) isSystemOneQuestion() {}
+func (*SystemOneGeneralQuestion) ExtractText() string { return "" }
 
 type systemOneQuestionField struct {
 	Value SystemOneQuestion

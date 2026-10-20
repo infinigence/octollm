@@ -7,6 +7,7 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
+	"github.com/infinigence/octollm/pkg/types/systemone"
 	"github.com/infinigence/octollm/pkg/types/vertex"
 )
 
@@ -16,6 +17,8 @@ type UniversalAdapter struct {
 	claudeAdapter          *ClaudeAdapter
 	openaiResponsesAdapter *OpenAIResponseAdapter
 	vertexAdapter          *VertexAdapter
+	systemOneAdapter       *SystemOneAdapter
+	openaiDecisionsAdapter *OpenAIDecisionsAdapter
 }
 
 var _ TextModeratorAdapter = (*UniversalAdapter)(nil)
@@ -27,6 +30,8 @@ func NewUniversalAdapter() *UniversalAdapter {
 		claudeAdapter:          &ClaudeAdapter{},
 		openaiResponsesAdapter: &OpenAIResponseAdapter{},
 		vertexAdapter:          &VertexAdapter{},
+		systemOneAdapter:       &SystemOneAdapter{},
+		openaiDecisionsAdapter: &OpenAIDecisionsAdapter{},
 	}
 }
 
@@ -56,6 +61,8 @@ func NewUniversalAdapterWithConfig(
 			ReplacementTextForNonStreaming: replacementTextForNonStreaming,
 			ReplacementFinishReason:        replacementFinishReason,
 		},
+		systemOneAdapter:       &SystemOneAdapter{},
+		openaiDecisionsAdapter: &OpenAIDecisionsAdapter{},
 	}
 }
 
@@ -76,6 +83,13 @@ func (a *UniversalAdapter) ExtractTextFromBody(ctx context.Context, body *octoll
 		return a.claudeAdapter.ExtractTextFromBody(ctx, body)
 	case *vertex.GenerateContentRequest, *vertex.GenerateContentResponse, *vertex.StreamGenerateContentResponse:
 		return a.vertexAdapter.ExtractTextFromBody(ctx, body)
+	case *systemone.SystemOneRequest:
+		return a.systemOneAdapter.ExtractTextFromBody(ctx, body)
+	case *openai.DecisionsRequest:
+		return a.openaiDecisionsAdapter.ExtractTextFromBody(ctx, body)
+	case *systemone.SystemOneResponse, *openai.DecisionsResponse:
+		// Decision responses carry only probabilities and scores, no text.
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unsupported body type: %T", parsed)
 	}

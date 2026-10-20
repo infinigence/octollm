@@ -57,6 +57,8 @@ type Backend struct {
 	URLPathEmbedding        *string           `json:"url_path_embedding" yaml:"url_path_embedding"`
 	URLPathRerank           *string           `json:"url_path_rerank" yaml:"url_path_rerank"`
 	URLPathResponses        *string           `json:"url_path_responses" yaml:"url_path_responses"`
+	URLPathSystemOne        *string           `json:"url_path_systemone" yaml:"url_path_systemone"`
+	URLPathDecisions        *string           `json:"url_path_decisions" yaml:"url_path_decisions"`
 	RequestCompression      string            `json:"request_compression" yaml:"request_compression"` // "gzip" or empty for no compression
 
 	ConvertToChat      string `json:"convert_to_chat" yaml:"convert_to_chat"`           // "from_messages" or "from_vertex"

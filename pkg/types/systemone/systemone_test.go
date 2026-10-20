@@ -168,3 +168,37 @@ func TestSystemOneResponse_Marshal_UnmarshalJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestSystemOneRequest_ExtractText(t *testing.T) {
+	testCases := []struct {
+		Name          string
+		JSON          string
+		ExtractedText string
+	}{
+		{
+			Name:          "StringState",
+			JSON:          `{"model":"m","state":"hello","questions":{"a":{"type":"noul","instructions":"Is it a greeting?"}}}`,
+			ExtractedText: "helloIs it a greeting?",
+		},
+		{
+			Name: "NestedState_AllQuestionTypes",
+			JSON: `{"model":"m","state":{"b":["x",1,true,null,{"k":"y"}],"a":"z"},"questions":{` +
+				`"q4":{"type":"box","instructions":"mug"},` +
+				`"q1":{"type":"noul","instructions":"N","criteria":{"true":"T","false":null}},` +
+				`"q2":{"type":"choice","instructions":"C","criteria":{"l2":null,"l1":"d1"}},` +
+				`"q3":{"type":"score","instructions":"S","criteria":["low","high"]},` +
+				`"q5":{"type":"rank","instructions":"ignored"}}}`,
+			// state: object keys sorted (a, b), keys/numbers/booleans skipped;
+			// questions sorted by name; choice labels sorted.
+			ExtractedText: "zxyNTCl1d1l2Slowhighmug",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run("ExtractText_"+tc.Name, func(t *testing.T) {
+			var req SystemOneRequest
+			require.NoError(t, json.Unmarshal([]byte(tc.JSON), &req))
+			assert.Equal(t, tc.ExtractedText, req.ExtractText())
+		})
+	}
+}

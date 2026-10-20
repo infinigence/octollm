@@ -44,6 +44,17 @@ type claudeError struct {
 	Message string `json:"message"`
 }
 
+// systemOneErrorResponse mirrors the error body TypeSafe returns from
+// /v1/systemone, e.g. {"detail":{"error_type":"authentication_error","message":"..."}}.
+type systemOneErrorResponse struct {
+	Detail systemOneError `json:"detail"`
+}
+
+type systemOneError struct {
+	ErrorType string `json:"error_type"`
+	Message   string `json:"message"`
+}
+
 func (e *HandlerError) Error() string {
 	if e == nil {
 		return "handler error"
@@ -152,6 +163,37 @@ func ClaudeErrorMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if marshalErr != nil {
 			slog.ErrorContext(r.Context(), "errutils: marshal Claude handler error", "err", marshalErr)
 			body = []byte(`{"type":"error","error":{"type":"api_error","message":"Internal Server Error"}}`)
+		}
+		writeHandlerError(w, r, err, status, body, "application/json")
+	})
+}
+
+// SystemOneErrorMiddleware writes handler errors in the TypeSafe System One
+// error format.
+func SystemOneErrorMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+
+		err, ok := handlerErrorFromRequest(r)
+		if !ok {
+			return
+		}
+		status := normalizeErrorStatus(err.StatusCode)
+		message := normalizeErrorMessage(err.Message, status)
+		errorType := strings.TrimSpace(err.Type)
+		if errorType == "" {
+			errorType = openAIErrorType(status)
+		}
+
+		body, marshalErr := json.Marshal(systemOneErrorResponse{
+			Detail: systemOneError{
+				ErrorType: errorType,
+				Message:   message,
+			},
+		})
+		if marshalErr != nil {
+			slog.ErrorContext(r.Context(), "errutils: marshal System One handler error", "err", marshalErr)
+			body = []byte(`{"detail":{"error_type":"server_error","message":"Internal Server Error"}}`)
 		}
 		writeHandlerError(w, r, err, status, body, "application/json")
 	})
