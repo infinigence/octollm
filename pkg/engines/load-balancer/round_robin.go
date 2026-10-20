@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/infinigence/octollm/pkg/engines/limiter"
+	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
 	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
@@ -102,14 +103,14 @@ func isIgnoredAttemptError(err error) bool {
 	return false
 }
 
-func attemptCacheHitKind(prioritized, strongCacheHit bool) octollm.CacheHitKind {
+func attemptCacheHitKind(prioritized, strongCacheHit bool) common.CacheHitKind {
 	if !prioritized {
-		return octollm.CacheMiss
+		return common.CacheMiss
 	}
 	if strongCacheHit {
-		return octollm.CacheHitStrong
+		return common.CacheHitStrong
 	}
-	return octollm.CacheHitWeak
+	return common.CacheHitWeak
 }
 
 func exhaustAfterNoBackend(realResp *octollm.Response, realErr, limiterErr error) (*octollm.Response, error) {

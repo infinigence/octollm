@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/vertex"
@@ -80,21 +81,21 @@ func TestRequestIsStream(t *testing.T) {
 
 func TestCacheHitKindContext(t *testing.T) {
 	base := octollm.NewEmptyRequest(context.Background())
-	_, ok := octollm.GetCtxValue[octollm.CacheHitKind](base, octollm.ContextKeyCacheHitKind)
+	_, ok := octollm.GetCtxValue[common.CacheHitKind](base, octollm.ContextKeyCacheHitKind)
 	assert.False(t, ok)
 
-	first := base.WithContext(context.WithValue(base.Context(), octollm.ContextKeyCacheHitKind, octollm.CacheHitStrong))
-	second := base.WithContext(context.WithValue(base.Context(), octollm.ContextKeyCacheHitKind, octollm.CacheHitWeak))
+	first := base.WithContext(context.WithValue(base.Context(), octollm.ContextKeyCacheHitKind, common.CacheHitStrong))
+	second := base.WithContext(context.WithValue(base.Context(), octollm.ContextKeyCacheHitKind, common.CacheHitWeak))
 
-	v1, ok := octollm.GetCtxValue[octollm.CacheHitKind](first, octollm.ContextKeyCacheHitKind)
+	v1, ok := octollm.GetCtxValue[common.CacheHitKind](first, octollm.ContextKeyCacheHitKind)
 	assert.True(t, ok)
-	assert.Equal(t, octollm.CacheHitStrong, v1)
+	assert.Equal(t, common.CacheHitStrong, v1)
 
-	v2, ok := octollm.GetCtxValue[octollm.CacheHitKind](second, octollm.ContextKeyCacheHitKind)
+	v2, ok := octollm.GetCtxValue[common.CacheHitKind](second, octollm.ContextKeyCacheHitKind)
 	assert.True(t, ok)
-	assert.Equal(t, octollm.CacheHitWeak, v2)
+	assert.Equal(t, common.CacheHitWeak, v2)
 
-	_, ok = octollm.GetCtxValue[octollm.CacheHitKind](base, octollm.ContextKeyCacheHitKind)
+	_, ok = octollm.GetCtxValue[common.CacheHitKind](base, octollm.ContextKeyCacheHitKind)
 	assert.False(t, ok, "base request must stay unmarked")
 }
 

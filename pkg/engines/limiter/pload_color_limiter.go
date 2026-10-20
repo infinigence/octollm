@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
@@ -94,8 +95,8 @@ func finiteNonNegative(v float64, name string) error {
 // CacheHitStrong with a non-zero headroom uses Ceil(base*(1+headroom)).
 // Every other hit kind, and a zero headroom, returns base unchanged.
 // base is already in the caller's unit; this function does not scale it.
-func effectivePLoadLimit(base, headroom float64, kind octollm.CacheHitKind) float64 {
-	if kind != octollm.CacheHitStrong || headroom == 0 {
+func effectivePLoadLimit(base, headroom float64, kind common.CacheHitKind) float64 {
+	if kind != common.CacheHitStrong || headroom == 0 {
 		return base
 	}
 	return math.Ceil(base * (1 + headroom))
@@ -108,7 +109,7 @@ func (e *PLoadColorLimiterEngine) Process(req *octollm.Request) (*octollm.Respon
 		priority = p
 	}
 	i := qosIndex(priority, len(e.limits.AvailableTotalMax))
-	kind := cacheHitKindFromRequest(req)
+	kind := common.CacheHitKindFromRequest(req)
 	base := e.limits.AvailableTotalMax[i]
 	limit := effectivePLoadLimit(base, e.limits.HeadroomRatio, kind)
 

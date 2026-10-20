@@ -11,6 +11,7 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
+	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -30,7 +31,7 @@ func newConcurrencyColorLimiterTestRequest(t *testing.T, ns string, priority *in
 	return r.WithContext(ctx)
 }
 
-func withHitKind(req *octollm.Request, kind octollm.CacheHitKind) *octollm.Request {
+func withHitKind(req *octollm.Request, kind common.CacheHitKind) *octollm.Request {
 	return req.WithContext(context.WithValue(req.Context(), octollm.ContextKeyCacheHitKind, kind))
 }
 
@@ -55,19 +56,19 @@ func TestQosIndex(t *testing.T) {
 }
 
 func TestEffectiveOwnAndTotalLimits(t *testing.T) {
-	own, total := effectiveOwnAndTotalLimits(100, 95, 0.1, octollm.CacheMiss)
+	own, total := effectiveOwnAndTotalLimits(100, 95, 0.1, common.CacheMiss)
 	assert.Equal(t, 100, own)
 	assert.Equal(t, 95, total)
 
-	own, total = effectiveOwnAndTotalLimits(100, 95, 0.1, octollm.CacheHitWeak)
+	own, total = effectiveOwnAndTotalLimits(100, 95, 0.1, common.CacheHitWeak)
 	assert.Equal(t, 100, own)
 	assert.Equal(t, 95, total)
 
-	own, total = effectiveOwnAndTotalLimits(100, 95, 0.1, octollm.CacheHitStrong)
+	own, total = effectiveOwnAndTotalLimits(100, 95, 0.1, common.CacheHitStrong)
 	assert.Equal(t, 110, own)
 	assert.Equal(t, 104, total)
 
-	own, total = effectiveOwnAndTotalLimits(100, 95, 0, octollm.CacheHitStrong)
+	own, total = effectiveOwnAndTotalLimits(100, 95, 0, common.CacheHitStrong)
 	assert.Equal(t, 100, own)
 	assert.Equal(t, 95, total)
 }
@@ -286,21 +287,21 @@ func TestConcurrencyColorLimiter_StrongHeadroomVsMiss(t *testing.T) {
 	var held []*octollm.Response
 	p0 := 0
 	for i := 0; i < 10; i++ {
-		resp, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheMiss))
+		resp, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheMiss))
 		require.NoError(t, err, "miss %d", i+1)
 		held = append(held, resp)
 	}
-	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheMiss))
+	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheMiss))
 	assert.ErrorIs(t, err, ErrRateLimitReached)
-	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheHitWeak))
+	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheHitWeak))
 	assert.ErrorIs(t, err, ErrRateLimitReached)
 
-	strong, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheHitStrong))
+	strong, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheHitStrong))
 	require.NoError(t, err)
 	assert.Equal(t, int64(11), zcard(t, client, "hr-key:public"))
 	assert.Equal(t, int64(11), zcard(t, client, "hr-key:own_1"))
 
-	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheHitStrong))
+	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheHitStrong))
 	assert.ErrorIs(t, err, ErrRateLimitReached)
 
 	require.NoError(t, strong.Body.Close())
@@ -320,9 +321,9 @@ func TestConcurrencyColorLimiter_ZeroHeadroomStrongEqualsMiss(t *testing.T) {
 	require.NoError(t, err)
 
 	p0 := 0
-	resp, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheMiss))
+	resp, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheMiss))
 	require.NoError(t, err)
-	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheHitStrong))
+	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheHitStrong))
 	assert.ErrorIs(t, err, ErrRateLimitReached)
 	require.NoError(t, resp.Body.Close())
 }
@@ -338,9 +339,9 @@ func TestConcurrencyColorLimiter_IllegalHitKindIsMiss(t *testing.T) {
 	require.NoError(t, err)
 
 	p0 := 0
-	resp, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheMiss))
+	resp, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheMiss))
 	require.NoError(t, err)
-	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), octollm.CacheHitKind("nope")))
+	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheHitKind("nope")))
 	assert.ErrorIs(t, err, ErrRateLimitReached)
 	require.NoError(t, resp.Body.Close())
 }

@@ -13,20 +13,21 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/infinigence/octollm/pkg/engines/limiter"
+	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 type captureHitKindEngine struct {
 	mu    sync.Mutex
-	kinds []octollm.CacheHitKind
+	kinds []common.CacheHitKind
 	err   error
 }
 
 func (e *captureHitKindEngine) Process(req *octollm.Request) (*octollm.Response, error) {
-	kind, ok := octollm.GetCtxValue[octollm.CacheHitKind](req, octollm.ContextKeyCacheHitKind)
+	kind, ok := octollm.GetCtxValue[common.CacheHitKind](req, octollm.ContextKeyCacheHitKind)
 	if !ok {
-		kind = octollm.CacheMiss
+		kind = common.CacheMiss
 	}
 	e.mu.Lock()
 	e.kinds = append(e.kinds, kind)
@@ -37,24 +38,24 @@ func (e *captureHitKindEngine) Process(req *octollm.Request) (*octollm.Response,
 	return &octollm.Response{StatusCode: 200}, nil
 }
 
-func (e *captureHitKindEngine) kindsCopy() []octollm.CacheHitKind {
+func (e *captureHitKindEngine) kindsCopy() []common.CacheHitKind {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	out := make([]octollm.CacheHitKind, len(e.kinds))
+	out := make([]common.CacheHitKind, len(e.kinds))
 	copy(out, e.kinds)
 	return out
 }
 
 func rejectUnlessStrong(e *captureHitKindEngine) octollm.Engine {
 	return octollm.EngineFunc(func(req *octollm.Request) (*octollm.Response, error) {
-		kind, ok := octollm.GetCtxValue[octollm.CacheHitKind](req, octollm.ContextKeyCacheHitKind)
+		kind, ok := octollm.GetCtxValue[common.CacheHitKind](req, octollm.ContextKeyCacheHitKind)
 		if !ok {
-			kind = octollm.CacheMiss
+			kind = common.CacheMiss
 		}
 		e.mu.Lock()
 		e.kinds = append(e.kinds, kind)
 		e.mu.Unlock()
-		if kind == octollm.CacheHitStrong {
+		if kind == common.CacheHitStrong {
 			return &octollm.Response{StatusCode: 200}, nil
 		}
 		return nil, limiter.ErrRateLimitReached
@@ -99,7 +100,7 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 		assert.Equal(t, "hot", selectedBackend(t, req))
-		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheHitStrong}, hot.kindsCopy())
+		assert.Equal(t, []common.CacheHitKind{common.CacheHitStrong}, hot.kindsCopy())
 		assert.Empty(t, cool.kindsCopy())
 	})
 
@@ -124,8 +125,8 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 		assert.Equal(t, "cool", selectedBackend(t, req))
-		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheHitWeak}, hotCap.kindsCopy())
-		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheMiss}, cool.kindsCopy())
+		assert.Equal(t, []common.CacheHitKind{common.CacheHitWeak}, hotCap.kindsCopy())
+		assert.Equal(t, []common.CacheHitKind{common.CacheMiss}, cool.kindsCopy())
 	})
 
 	t.Run("all limiter rejects return last limiter error", func(t *testing.T) {
@@ -318,7 +319,7 @@ func TestShardKeyWRR_PLoadFailover(t *testing.T) {
 		require.NotNil(t, resp)
 		assert.Equal(t, "b", selectedBackend(t, req))
 		assert.Empty(t, nextA.kindsCopy())
-		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheMiss}, nextB.kindsCopy())
+		assert.Equal(t, []common.CacheHitKind{common.CacheMiss}, nextB.kindsCopy())
 	})
 
 	t.Run("strong headroom is not inherited by B", func(t *testing.T) {
@@ -375,7 +376,7 @@ func TestShardKeyWRR_PLoadFailover(t *testing.T) {
 		require.NotNil(t, resp)
 		assert.Equal(t, "b", selectedBackend(t, req))
 		assert.Empty(t, nextA.kindsCopy())
-		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheMiss}, nextB.kindsCopy())
+		assert.Equal(t, []common.CacheHitKind{common.CacheMiss}, nextB.kindsCopy())
 	})
 
 	t.Run("score error after rate limit is not a rate limit", func(t *testing.T) {

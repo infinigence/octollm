@@ -3,8 +3,6 @@ package limiter
 import (
 	"context"
 	"fmt"
-
-	"github.com/infinigence/octollm/pkg/octollm"
 )
 
 func priorityFromNamespace(ctx context.Context, nameSpace string) (int, bool) {
@@ -25,19 +23,6 @@ func setPriorityToContext(ctx context.Context, nameSpace string, priority int) c
 	priorityStr := fmt.Sprintf("%s%d", ContextValuePrefixPriority, priority)
 	key := contextKey(fmt.Sprintf("%s:%s", nameSpace, ContextKeyPriority))
 	return context.WithValue(ctx, key, priorityStr)
-}
-
-func cacheHitKindFromRequest(req *octollm.Request) octollm.CacheHitKind {
-	kind, ok := octollm.GetCtxValue[octollm.CacheHitKind](req, octollm.ContextKeyCacheHitKind)
-	if !ok {
-		return octollm.CacheMiss
-	}
-	switch kind {
-	case octollm.CacheHitStrong, octollm.CacheHitWeak, octollm.CacheMiss:
-		return kind
-	default:
-		return octollm.CacheMiss
-	}
 }
 
 // qosIndex maps a request priority onto the high-to-low QoS arrays.

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/infinigence/octollm/pkg/engines/limiter"
+	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
 	ruleengine "github.com/infinigence/octollm/pkg/engines/rule-engine"
 	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/exprenv"
@@ -606,7 +607,7 @@ func TestShardKeyConcurrency_HitKindAndLimiterFailover(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 		assert.Equal(t, "hot", selectedBackend(t, req))
-		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheHitStrong}, hot.kindsCopy())
+		assert.Equal(t, []common.CacheHitKind{common.CacheHitStrong}, hot.kindsCopy())
 		assert.Empty(t, cool.kindsCopy())
 	})
 
@@ -634,8 +635,8 @@ func TestShardKeyConcurrency_HitKindAndLimiterFailover(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 		assert.Equal(t, "cool", selectedBackend(t, req))
-		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheHitWeak}, hotCap.kindsCopy())
-		assert.Equal(t, []octollm.CacheHitKind{octollm.CacheMiss}, cool.kindsCopy())
+		assert.Equal(t, []common.CacheHitKind{common.CacheHitWeak}, hotCap.kindsCopy())
+		assert.Equal(t, []common.CacheHitKind{common.CacheMiss}, cool.kindsCopy())
 	})
 
 	t.Run("all limiter rejects return last limiter error", func(t *testing.T) {

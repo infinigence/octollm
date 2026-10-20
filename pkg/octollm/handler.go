@@ -45,15 +45,6 @@ const (
 	ContextKeyCacheHitKind contextKey = "cache_hit_kind"
 )
 
-// CacheHitKind is the cache-affinity outcome of one backend attempt.
-type CacheHitKind string
-
-const (
-	CacheHitStrong CacheHitKind = "strong"
-	CacheHitWeak   CacheHitKind = "weak"
-	CacheMiss      CacheHitKind = "miss"
-)
-
 type Server struct {
 	mu     sync.RWMutex
 	engine Engine

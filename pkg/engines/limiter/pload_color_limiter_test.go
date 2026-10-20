@@ -5,6 +5,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,7 +53,7 @@ func TestEffectivePLoadLimitStrongBoundaries(t *testing.T) {
 		{base: 90, atLimit: 199, below: 198},
 	}
 	for _, band := range bands {
-		limit := effectivePLoadLimit(band.base, 1.2, octollm.CacheHitStrong)
+		limit := effectivePLoadLimit(band.base, 1.2, common.CacheHitStrong)
 		assert.Equal(t, band.atLimit, limit)
 		assert.False(t, band.atLimit > limit)
 		assert.False(t, band.below > limit)
@@ -62,21 +63,21 @@ func TestEffectivePLoadLimitStrongBoundaries(t *testing.T) {
 
 func TestEffectivePLoadLimitHeadroomOnlyForStrong(t *testing.T) {
 	const score = 250.0
-	miss := effectivePLoadLimit(200, 1.2, octollm.CacheMiss)
+	miss := effectivePLoadLimit(200, 1.2, common.CacheMiss)
 	assert.True(t, score > miss)
 
-	weak := effectivePLoadLimit(200, 1.2, octollm.CacheHitWeak)
+	weak := effectivePLoadLimit(200, 1.2, common.CacheHitWeak)
 	assert.True(t, score > weak)
 
-	strong := effectivePLoadLimit(200, 1.2, octollm.CacheHitStrong)
+	strong := effectivePLoadLimit(200, 1.2, common.CacheHitStrong)
 	assert.False(t, score > strong)
 
-	noHeadroom := effectivePLoadLimit(200, 0, octollm.CacheHitStrong)
+	noHeadroom := effectivePLoadLimit(200, 0, common.CacheHitStrong)
 	assert.Equal(t, 200.0, noHeadroom)
 }
 
 func TestEffectivePLoadLimitKeepsFraction(t *testing.T) {
-	limit := effectivePLoadLimit(200.5, 1.2, octollm.CacheHitStrong)
+	limit := effectivePLoadLimit(200.5, 1.2, common.CacheHitStrong)
 	assert.Equal(t, 442.0, limit)
 	assert.False(t, limit > limit)
 	assert.True(t, 442.1 > limit)
@@ -98,32 +99,32 @@ func TestPLoadColorLimiterEngineBands(t *testing.T) {
 	cases := []struct {
 		name     string
 		priority *int
-		kind     octollm.CacheHitKind
+		kind     common.CacheHitKind
 		score    float64
 		allow    bool
 	}{
-		{name: "p2 miss at base", priority: intPtr(2), kind: octollm.CacheMiss, score: 200, allow: true},
-		{name: "p2 miss above", priority: intPtr(2), kind: octollm.CacheMiss, score: 201, allow: false},
-		{name: "p2 miss below", priority: intPtr(2), kind: octollm.CacheMiss, score: 199, allow: true},
-		{name: "p1 miss at base", priority: intPtr(1), kind: octollm.CacheMiss, score: 100, allow: true},
-		{name: "p1 miss above", priority: intPtr(1), kind: octollm.CacheMiss, score: 101, allow: false},
-		{name: "p0 miss at base", priority: intPtr(0), kind: octollm.CacheMiss, score: 90, allow: true},
-		{name: "p0 miss above", priority: intPtr(0), kind: octollm.CacheMiss, score: 91, allow: false},
-		{name: "p0 miss below", priority: intPtr(0), kind: octollm.CacheMiss, score: 89, allow: true},
-		{name: "p2 strong at ceil", priority: intPtr(2), kind: octollm.CacheHitStrong, score: 441, allow: true},
-		{name: "p2 strong above ceil", priority: intPtr(2), kind: octollm.CacheHitStrong, score: 442, allow: false},
-		{name: "p2 strong below ceil", priority: intPtr(2), kind: octollm.CacheHitStrong, score: 440, allow: true},
-		{name: "p1 strong at ceil", priority: intPtr(1), kind: octollm.CacheHitStrong, score: 221, allow: true},
-		{name: "p1 strong above ceil", priority: intPtr(1), kind: octollm.CacheHitStrong, score: 222, allow: false},
-		{name: "p0 strong at ceil", priority: intPtr(0), kind: octollm.CacheHitStrong, score: 199, allow: true},
-		{name: "p0 strong above ceil", priority: intPtr(0), kind: octollm.CacheHitStrong, score: 200, allow: false},
-		{name: "missing priority uses p0", kind: octollm.CacheMiss, score: 91, allow: false},
-		{name: "negative priority uses p0", priority: intPtr(-1), kind: octollm.CacheMiss, score: 91, allow: false},
-		{name: "priority above range uses p2", priority: intPtr(9), kind: octollm.CacheMiss, score: 200, allow: true},
-		{name: "weak uses base", priority: intPtr(2), kind: octollm.CacheHitWeak, score: 200, allow: true},
-		{name: "weak above base", priority: intPtr(2), kind: octollm.CacheHitWeak, score: 201, allow: false},
-		{name: "invalid kind uses miss", priority: intPtr(2), kind: octollm.CacheHitKind("bogus"), score: 200, allow: true},
-		{name: "strong allows score above base", priority: intPtr(2), kind: octollm.CacheHitStrong, score: 250, allow: true},
+		{name: "p2 miss at base", priority: intPtr(2), kind: common.CacheMiss, score: 200, allow: true},
+		{name: "p2 miss above", priority: intPtr(2), kind: common.CacheMiss, score: 201, allow: false},
+		{name: "p2 miss below", priority: intPtr(2), kind: common.CacheMiss, score: 199, allow: true},
+		{name: "p1 miss at base", priority: intPtr(1), kind: common.CacheMiss, score: 100, allow: true},
+		{name: "p1 miss above", priority: intPtr(1), kind: common.CacheMiss, score: 101, allow: false},
+		{name: "p0 miss at base", priority: intPtr(0), kind: common.CacheMiss, score: 90, allow: true},
+		{name: "p0 miss above", priority: intPtr(0), kind: common.CacheMiss, score: 91, allow: false},
+		{name: "p0 miss below", priority: intPtr(0), kind: common.CacheMiss, score: 89, allow: true},
+		{name: "p2 strong at ceil", priority: intPtr(2), kind: common.CacheHitStrong, score: 441, allow: true},
+		{name: "p2 strong above ceil", priority: intPtr(2), kind: common.CacheHitStrong, score: 442, allow: false},
+		{name: "p2 strong below ceil", priority: intPtr(2), kind: common.CacheHitStrong, score: 440, allow: true},
+		{name: "p1 strong at ceil", priority: intPtr(1), kind: common.CacheHitStrong, score: 221, allow: true},
+		{name: "p1 strong above ceil", priority: intPtr(1), kind: common.CacheHitStrong, score: 222, allow: false},
+		{name: "p0 strong at ceil", priority: intPtr(0), kind: common.CacheHitStrong, score: 199, allow: true},
+		{name: "p0 strong above ceil", priority: intPtr(0), kind: common.CacheHitStrong, score: 200, allow: false},
+		{name: "missing priority uses p0", kind: common.CacheMiss, score: 91, allow: false},
+		{name: "negative priority uses p0", priority: intPtr(-1), kind: common.CacheMiss, score: 91, allow: false},
+		{name: "priority above range uses p2", priority: intPtr(9), kind: common.CacheMiss, score: 200, allow: true},
+		{name: "weak uses base", priority: intPtr(2), kind: common.CacheHitWeak, score: 200, allow: true},
+		{name: "weak above base", priority: intPtr(2), kind: common.CacheHitWeak, score: 201, allow: false},
+		{name: "invalid kind uses miss", priority: intPtr(2), kind: common.CacheHitKind("bogus"), score: 200, allow: true},
+		{name: "strong allows score above base", priority: intPtr(2), kind: common.CacheHitStrong, score: 250, allow: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

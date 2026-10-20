@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
@@ -117,7 +118,7 @@ func (e *ConcurrencyColorLimiterEngine) allow(req *octollm.Request) (done func()
 		priority = p
 	}
 	i := qosIndex(priority, len(limits.AvailableTotalMax))
-	kind := cacheHitKindFromRequest(req)
+	kind := common.CacheHitKindFromRequest(req)
 	ownBase := limits.AvailableTotalMax[i]
 	totalBase := limits.PriorityLevelMax[i]
 	effectiveOwn, effectiveTotal := effectiveOwnAndTotalLimits(ownBase, totalBase, limits.HeadroomRatio, kind)
@@ -200,8 +201,8 @@ func (e *ConcurrencyColorLimiterEngine) Process(req *octollm.Request) (*octollm.
 	return resp, err
 }
 
-func effectiveOwnAndTotalLimits(ownBase, totalBase int, headroomRatio float64, kind octollm.CacheHitKind) (int, int) {
-	if kind != octollm.CacheHitStrong || headroomRatio <= 0 {
+func effectiveOwnAndTotalLimits(ownBase, totalBase int, headroomRatio float64, kind common.CacheHitKind) (int, int) {
+	if kind != common.CacheHitStrong || headroomRatio <= 0 {
 		return ownBase, totalBase
 	}
 	factor := 1 + headroomRatio
