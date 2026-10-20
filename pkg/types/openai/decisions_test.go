@@ -221,3 +221,32 @@ func TestDecisionsResponse_String(t *testing.T) {
 		})
 	}
 }
+
+func TestDecisionsRequest_ExtractText(t *testing.T) {
+	testCases := []struct {
+		Name          string
+		JSON          string
+		ExtractedText string
+	}{
+		{
+			Name:          "StringInput",
+			JSON:          `{"model":"m","input":"hello","questions":[{"type":"predicate","instructions":"Is it a greeting?"}]}`,
+			ExtractedText: "helloIs it a greeting?",
+		},
+		{
+			Name: "MessageInput_ChoiceAndScore",
+			JSON: `{"model":"m","input":[{"role":"user","content":[{"type":"input_text","text":"look"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}],"questions":[` +
+				`{"type":"choice","instructions":"C","choices":[{"value":"billing","description":"pay"},{"value":true}]},` +
+				`{"type":"score","instructions":"S","levels":[{"label":"low"},{"label":"high","description":"bad"}]}]}`,
+			ExtractedText: "look[img:data:image/png;base64,AAAA]CbillingpaySlowhighbad", // images are marked as in Responses
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run("ExtractText_"+tc.Name, func(t *testing.T) {
+			var req DecisionsRequest
+			require.NoError(t, json.Unmarshal([]byte(tc.JSON), &req))
+			assert.Equal(t, tc.ExtractedText, req.ExtractText())
+		})
+	}
+}

@@ -55,3 +55,33 @@ type DecisionsLevel struct {
 	Label       string `json:"label"`
 	Description string `json:"description,omitempty"`
 }
+
+// ExtractText returns the text of the input and of every question, in
+// question order.
+func (r *DecisionsRequest) ExtractText() string {
+	text := ""
+	if r.Input != nil {
+		text = r.Input.ExtractText()
+	}
+	for _, q := range r.Questions {
+		text += q.ExtractText()
+	}
+	return text
+}
+
+// ExtractText returns the instructions, choice and level text of the question.
+// Boolean choice values carry no text and are skipped.
+func (q DecisionsQuestion) ExtractText() string {
+	text := q.Instructions
+	for _, c := range q.Choices {
+		var value string
+		if json.Unmarshal(c.Value, &value) == nil {
+			text += value
+		}
+		text += c.Description
+	}
+	for _, l := range q.Levels {
+		text += l.Label + l.Description
+	}
+	return text
+}

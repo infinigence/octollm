@@ -206,3 +206,37 @@ func TestClaudeErrorMiddleware_DerivesProtocolType(t *testing.T) {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
 }
+
+func TestSystemOneErrorMiddleware_WrapsHandlerError(t *testing.T) {
+	h := SystemOneErrorMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		*r = *WithError(r, errors.New("boom"), http.StatusBadRequest, "bad request", "invalid_request_error", "ignored_by_systemone")
+	})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/systemone", nil))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	want := `{"detail":{"error_type":"invalid_request_error","message":"bad request"}}`
+	if got := rec.Body.String(); got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+func TestSystemOneErrorMiddleware_DerivesErrorType(t *testing.T) {
+	h := SystemOneErrorMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		*r = *WithError(r, errors.New("boom"), http.StatusUnauthorized, "", "", "")
+	})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/systemone", nil))
+
+	want := `{"detail":{"error_type":"authentication_error","message":"Unauthorized"}}`
+	if got := rec.Body.String(); got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
 	"github.com/infinigence/octollm/pkg/types/rerank"
+	"github.com/infinigence/octollm/pkg/types/systemone"
 	"github.com/infinigence/octollm/pkg/types/vertex"
 )
 
@@ -280,6 +281,10 @@ func (r *RuleComposerEngine) Process(req *octollm.Request) (*octollm.Response, e
 			case *openai.ResponsesRequest:
 				r.Model = body.Model
 			case *rerank.RerankRequest:
+				r.Model = body.Model
+			case *systemone.SystemOneRequest:
+				r.Model = body.Model
+			case *openai.DecisionsRequest:
 				r.Model = body.Model
 			case *anthropic.ClaudeMessagesRequest:
 				r.Model = body.Model

@@ -104,6 +104,8 @@ func main() {
 	r.POST("/v1/embeddings", s.EmbeddingsHandler())
 	r.POST("/v1/rerank", s.RerankHandler())
 	r.POST("/v1/responses", s.ResponsesHandler())
+	r.POST("/v1/systemone", s.SystemOneHandler())
+	r.POST("/v1/decisions", s.DecisionsHandler())
 	// Vertex AI / Gemini API endpoints
 	// modelName includes the action suffix (e.g., "gemini-2.0-flash:generateContent")
 	// This matches Google's API format where the action is part of the model identifier

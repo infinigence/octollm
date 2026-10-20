@@ -17,6 +17,7 @@ import (
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
 	"github.com/infinigence/octollm/pkg/types/rerank"
+	"github.com/infinigence/octollm/pkg/types/systemone"
 	"github.com/infinigence/octollm/pkg/types/vertex"
 )
 
@@ -48,6 +49,8 @@ var DefaultURLPathVertex = "/v1beta/models/{modelNameWithAction}" // Path for Ve
 var DefaultURLPathEmbeddings = "/v1/embeddings"
 var DefaultURLPathRerank = "/v1/rerank"
 var DefaultURLPathResponses = "/v1/responses"
+var DefaultURLPathSystemOne = "/v1/systemone"
+var DefaultURLPathDecisions = "/v1/decisions"
 
 func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 	apiKey := conf.APIKey
@@ -78,6 +81,10 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 					endpoint = DefaultURLPathRerank
 				case octollm.APIFormatResponses:
 					endpoint = DefaultURLPathResponses
+				case octollm.APIFormatSystemOne:
+					endpoint = DefaultURLPathSystemOne
+				case octollm.APIFormatDecisions:
+					endpoint = DefaultURLPathDecisions
 				default:
 					return "", fmt.Errorf("invalid format: %s", req.Format)
 				}
@@ -110,6 +117,10 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 					return &octollm.JSONParser[rerank.RerankResponse]{}
 				case octollm.APIFormatResponses:
 					return &octollm.JSONParser[openai.ResponsesResponse]{}
+				case octollm.APIFormatSystemOne:
+					return &octollm.JSONParser[systemone.SystemOneResponse]{}
+				case octollm.APIFormatDecisions:
+					return &octollm.JSONParser[openai.DecisionsResponse]{}
 				default:
 					return &octollm.JSONParser[json.RawMessage]{}
 				}

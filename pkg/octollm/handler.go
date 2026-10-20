@@ -18,6 +18,7 @@ import (
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
 	"github.com/infinigence/octollm/pkg/types/rerank"
+	"github.com/infinigence/octollm/pkg/types/systemone"
 	"github.com/infinigence/octollm/pkg/types/vertex"
 )
 
@@ -235,6 +236,20 @@ func EmbeddingsHandler(engine Engine) http.HandlerFunc {
 func RerankHandler(engine Engine) http.HandlerFunc {
 	return errutils.DefaultErrorMiddleware(
 		httpSSEHandler(engine, APIFormatRerank, &JSONParser[rerank.RerankRequest]{}),
+	)
+}
+
+// SystemOneHandler handles TypeSafe System One /v1/systemone requests.
+func SystemOneHandler(engine Engine) http.HandlerFunc {
+	return errutils.SystemOneErrorMiddleware(
+		httpSSEHandler(engine, APIFormatSystemOne, &JSONParser[systemone.SystemOneRequest]{}),
+	)
+}
+
+// DecisionsHandler handles OpenAI /v1/decisions requests.
+func DecisionsHandler(engine Engine) http.HandlerFunc {
+	return errutils.OpenAIErrorMiddleware(
+		httpSSEHandler(engine, APIFormatDecisions, &JSONParser[openai.DecisionsRequest]{}),
 	)
 }
 

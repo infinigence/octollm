@@ -111,6 +111,28 @@ func (s *Server) ResponsesHandler() gin.HandlerFunc {
 	}
 }
 
+func (s *Server) SystemOneHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		orgName := c.GetString("org")
+		userName := c.GetString("user")
+
+		engine := s.ruleComposer.GetEngine(userName, orgName, "")
+		handler := octollm.SystemOneHandler(engine)
+		handler(c.Writer, c.Request)
+	}
+}
+
+func (s *Server) DecisionsHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		orgName := c.GetString("org")
+		userName := c.GetString("user")
+
+		engine := s.ruleComposer.GetEngine(userName, orgName, "")
+		handler := octollm.DecisionsHandler(engine)
+		handler(c.Writer, c.Request)
+	}
+}
+
 func (s *Server) VertexAIHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		orgName := c.GetString("org")
