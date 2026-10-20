@@ -26,6 +26,8 @@ const (
 	APIFormatEmbeddings            APIFormat = "embeddings"
 	APIFormatRerank                APIFormat = "rerank"
 	APIFormatResponses             APIFormat = "responses"
+	APIFormatSystemOne             APIFormat = "systemone"
+	APIFormatDecisions             APIFormat = "decisions"
 )
 
 // Parser parses and serializes body of requests or responses.

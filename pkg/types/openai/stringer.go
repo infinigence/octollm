@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -418,21 +419,27 @@ func (r ResponsesResponse) String() string {
 		fmt.Fprintf(w, "    %s\n", responsesOutputItemString(item))
 	}
 	if u := r.Usage; u != nil {
-		fmt.Fprintf(w, "  Usage: input=%d, output=%d, total=%d", u.InputTokens, u.OutputTokens, u.TotalTokens)
-		if d := u.InputTokensDetails; d != nil {
-			if d.CachedTokens != nil && *d.CachedTokens > 0 {
-				fmt.Fprintf(w, ", cached=%d", *d.CachedTokens)
-			}
-			if d.CacheWriteTokens != nil && *d.CacheWriteTokens > 0 {
-				fmt.Fprintf(w, ", cache_write=%d", *d.CacheWriteTokens)
-			}
-		}
-		if d := u.OutputTokensDetails; d != nil && d.ReasoningTokens != nil && *d.ReasoningTokens > 0 {
-			fmt.Fprintf(w, ", reasoning=%d", *d.ReasoningTokens)
-		}
-		w.WriteString("\n")
+		fmt.Fprintf(w, "  Usage: %s\n", responsesUsageString(u))
 	}
 	return fmt.Sprintf("(ResponsesResponse) {\n%s}", w.String())
+}
+
+// responsesUsageString formats a ResponsesUsage safely for logging.
+func responsesUsageString(u *ResponsesUsage) string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "input=%d, output=%d, total=%d", u.InputTokens, u.OutputTokens, u.TotalTokens)
+	if d := u.InputTokensDetails; d != nil {
+		if d.CachedTokens != nil && *d.CachedTokens > 0 {
+			fmt.Fprintf(w, ", cached=%d", *d.CachedTokens)
+		}
+		if d.CacheWriteTokens != nil && *d.CacheWriteTokens > 0 {
+			fmt.Fprintf(w, ", cache_write=%d", *d.CacheWriteTokens)
+		}
+	}
+	if d := u.OutputTokensDetails; d != nil && d.ReasoningTokens != nil && *d.ReasoningTokens > 0 {
+		fmt.Fprintf(w, ", reasoning=%d", *d.ReasoningTokens)
+	}
+	return w.String()
 }
 
 // responsesInputContentPartString formats one Responses input content part
@@ -483,6 +490,23 @@ func responsesInputContentPartsString(parts []*ResponsesInputMessageContentPart)
 }
 
 // responsesInputItemString formats one Responses input item safely for logging.
+// writeResponsesInput writes the "  Input: ..." lines shared by the Responses
+// and Decisions request stringers.
+func writeResponsesInput(w *strings.Builder, input ResponsesInputValue) {
+	switch in := input.(type) {
+	case ResponsesInputString:
+		fmt.Fprintf(w, "  Input: string(len=%d)\n", len(in))
+	case ResponsesInputItemArray:
+		fmt.Fprintf(w, "  Input: len(%d)\n", len(in))
+		for _, item := range in {
+			if item == nil {
+				continue
+			}
+			fmt.Fprintf(w, "    %s\n", responsesInputItemString(item))
+		}
+	}
+}
+
 func responsesInputItemString(item ResponsesInputItem) string {
 	w := &strings.Builder{}
 	switch v := item.(type) {
@@ -543,18 +567,7 @@ func (r ResponsesRequest) String() string {
 	if r.Instructions != "" {
 		fmt.Fprintf(w, "  Instructions: len(%d)\n", len(r.Instructions))
 	}
-	switch in := r.Input.(type) {
-	case ResponsesInputString:
-		fmt.Fprintf(w, "  Input: string(len=%d)\n", len(in))
-	case ResponsesInputItemArray:
-		fmt.Fprintf(w, "  Input: len(%d)\n", len(in))
-		for _, item := range in {
-			if item == nil {
-				continue
-			}
-			fmt.Fprintf(w, "    %s\n", responsesInputItemString(item))
-		}
-	}
+	writeResponsesInput(w, r.Input)
 	if len(r.Tools) > 0 {
 		fmt.Fprintf(w, "  Tools: len(%d)\n", len(r.Tools))
 		for _, t := range r.Tools {
@@ -583,4 +596,123 @@ func (r ResponsesRequest) String() string {
 		fmt.Fprintf(w, "  ParallelToolCalls: %t\n", *r.ParallelToolCalls)
 	}
 	return fmt.Sprintf("(ResponsesRequest) {\n%s}", w.String())
+}
+
+// String formats the struct safely for logging (no sensitive data).
+func (r DecisionsRequest) String() string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "  Model: %q\n", r.Model)
+	writeResponsesInput(w, r.Input)
+	fmt.Fprintf(w, "  Questions: len(%d)\n", len(r.Questions))
+	for _, q := range r.Questions {
+		fmt.Fprintf(w, "    %s\n", q.String())
+	}
+	return fmt.Sprintf("(DecisionsRequest) {\n%s}", w.String())
+}
+
+// String formats the struct safely for logging (no sensitive data).
+func (q DecisionsQuestion) String() string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "{name=%q, type=%s, instructions=len(%d)", q.Name, q.Type, len(q.Instructions))
+	if len(q.Choices) > 0 {
+		w.WriteString(", choices=[")
+		for i, c := range q.Choices {
+			if i > 0 {
+				w.WriteString(", ")
+			}
+			w.WriteString(rawScalarString(c.Value))
+		}
+		w.WriteString("]")
+	}
+	if len(q.Levels) > 0 {
+		w.WriteString(", levels=[")
+		for i, l := range q.Levels {
+			if i > 0 {
+				w.WriteString(", ")
+			}
+			fmt.Fprintf(w, "%q", l.Label)
+		}
+		w.WriteString("]")
+	}
+	w.WriteString("}")
+	return w.String()
+}
+
+// String formats the struct safely for logging (no sensitive data).
+func (r DecisionsResponse) String() string {
+	w := &strings.Builder{}
+	if r.ID != "" {
+		fmt.Fprintf(w, "  ID: %q\n", r.ID)
+	}
+	fmt.Fprintf(w, "  Model: %q\n", r.Model)
+	fmt.Fprintf(w, "  Answers: len(%d)\n", len(r.Answers))
+	for _, a := range r.Answers {
+		fmt.Fprintf(w, "    %s\n", a.String())
+	}
+	if u := r.Usage; u != nil {
+		fmt.Fprintf(w, "  Usage: %s\n", responsesUsageString(u))
+	}
+	return fmt.Sprintf("(DecisionsResponse) {\n%s}", w.String())
+}
+
+// String formats the struct safely for logging (no sensitive data).
+func (a DecisionsAnswer) String() string {
+	w := &strings.Builder{}
+	fmt.Fprintf(w, "{name=%q, type=%s", a.Name, a.Type)
+	if a.Probability != nil {
+		fmt.Fprintf(w, ", probability=%g", *a.Probability)
+	}
+	if len(a.Choice) > 0 {
+		fmt.Fprintf(w, ", choice=%s", rawScalarString(a.Choice))
+	}
+	if a.Score != nil {
+		fmt.Fprintf(w, ", score=%g", *a.Score)
+	}
+	if a.Confidence != nil {
+		fmt.Fprintf(w, ", confidence=%g", *a.Confidence)
+	}
+	if len(a.Probabilities) > 0 {
+		w.WriteString(", probabilities=[")
+		for i, p := range a.Probabilities {
+			if i > 0 {
+				w.WriteString(", ")
+			}
+			w.WriteString(rawScalarString(p.Value))
+			if p.Label != "" {
+				fmt.Fprintf(w, "(%q)", p.Label)
+			}
+			fmt.Fprintf(w, ": %g", p.Probability)
+		}
+		w.WriteString("]")
+	}
+	w.WriteString("}")
+	return w.String()
+}
+
+// rawString describes a raw JSON value by its kind and byte length, without
+// exposing its content.
+func rawString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "<nil>"
+	}
+	switch raw[0] {
+	case '"':
+		return fmt.Sprintf("string(len=%d)", len(raw))
+	case '{':
+		return fmt.Sprintf("object(len=%d)", len(raw))
+	case '[':
+		return fmt.Sprintf("array(len=%d)", len(raw))
+	default:
+		return fmt.Sprintf("other(len=%d)", len(raw))
+	}
+}
+
+// rawScalarString prints identifier-like raw values (choice values, score
+// levels) verbatim when they are strings, numbers or booleans, and falls back
+// to rawString for anything else.
+func rawScalarString(raw json.RawMessage) string {
+	if len(raw) == 0 || raw[0] == '{' || raw[0] == '[' {
+		return rawString(raw)
+	}
+	return string(raw)
 }
