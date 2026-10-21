@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/infinigence/octollm/pkg/engines/limiter"
-	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
 	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 )
@@ -20,12 +19,10 @@ type BackendItem struct {
 	Name   string // optional
 	Weight int
 	Engine octollm.Engine
-	// MaxConcurrencyFn is optional; ShardKeyConcurrency uses it as the request-time
-	// ratio denominator. When nil, Weight is used as a static denominator.
-	MaxConcurrencyFn ShardMaxConcurrencyFn
+	// MaxConcurrencyFn returns this backend's maximum concurrency for the request.
+	MaxConcurrencyFn func(req *octollm.Request) int
 	// ConcurrencyKeyFn returns this backend's in-flight Redis ZSET key for the request.
-	// Required by shard-key LBs that read concurrency for ratio-based selection.
-	ConcurrencyKeyFn func(*octollm.Request) string
+	ConcurrencyKeyFn func(req *octollm.Request) string
 }
 
 type wrrBackend struct {
@@ -76,51 +73,31 @@ func isNotRetriableError(err error) bool {
 	return false
 }
 
-// isIgnoredAttemptError reports errors that are not recorded as backend
+// isNotBackendFailureError reports errors that are not recorded as backend
 // failures: client cancellation, limiter rejects, upstream HTTP 413/429, and
 // gateway HandlerError 413/429. Failover still uses isNotRetriableError.
-func isIgnoredAttemptError(err error) bool {
+func isBackendFailureError(err error) bool {
 	if errors.Is(err, context.Canceled) {
-		return true
+		return false
 	}
 	if errors.Is(err, limiter.ErrRateLimitReached) {
-		return true
+		return false
 	}
 	var upstreamErr *errutils.UpstreamRespError
 	if errors.As(err, &upstreamErr) {
 		switch upstreamErr.StatusCode {
 		case http.StatusRequestEntityTooLarge, http.StatusTooManyRequests:
-			return true
+			return false
 		}
 	}
 	var handlerErr *errutils.HandlerError
 	if errors.As(err, &handlerErr) && handlerErr != nil {
 		switch handlerErr.StatusCode {
 		case http.StatusRequestEntityTooLarge, http.StatusTooManyRequests:
-			return true
+			return false
 		}
 	}
-	return false
-}
-
-func attemptCacheHitKind(prioritized, strongCacheHit bool) common.CacheHitKind {
-	if !prioritized {
-		return common.CacheMiss
-	}
-	if strongCacheHit {
-		return common.CacheHitStrong
-	}
-	return common.CacheHitWeak
-}
-
-func exhaustAfterNoBackend(realResp *octollm.Response, realErr, limiterErr error) (*octollm.Response, error) {
-	if realErr != nil {
-		return realResp, realErr
-	}
-	if limiterErr != nil {
-		return nil, limiterErr
-	}
-	return nil, fmt.Errorf("no backend engine available")
+	return true
 }
 
 func NewWeightedRoundRobin(backends []BackendItem, retryTimeout time.Duration, retryMaxCount int) (*WeightedRoundRobin, error) {

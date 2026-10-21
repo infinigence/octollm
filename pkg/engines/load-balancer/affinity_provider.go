@@ -14,8 +14,7 @@ import (
 // (high-confidence) cache hit. LB implementations use Name to look up their internal backend.
 type PrioritizedBackend struct {
 	Name string
-	// StrongCacheHit marks high-confidence affinity. Load balancers write strong/weak/miss
-	// onto the attempt request; Color Limiter applies headroom from that HitKind.
+	// StrongCacheHit marks high-confidence affinity.
 	StrongCacheHit bool
 }
 

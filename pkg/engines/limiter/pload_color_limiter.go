@@ -14,8 +14,11 @@ import (
 // The returned score must use the same unit as PLoadLimits.AvailableTotalMax.
 type PLoadScoreFunc func(req *octollm.Request) (float64, error)
 
-// PLoadColorLimiterEngine admits a request when that score is below the priority band.
-// A strong cache hit uses the ceiled headroom limit. Over limit returns ErrRateLimitReached.
+// PLoadColorLimiterEngine is a prefill-load limiter.
+// limits is the static band config.
+// currentScoreFunc reads the selected backend's current prefill load, in the same unit as limits.
+// nameSpace is the context namespace used to read the request priority.
+// next is the downstream engine called after admission.
 type PLoadColorLimiterEngine struct {
 	limits           PLoadLimits
 	currentScoreFunc PLoadScoreFunc
@@ -120,7 +123,11 @@ func (e *PLoadColorLimiterEngine) Process(req *octollm.Request) (*octollm.Respon
 	}
 	if score > limit {
 		slog.WarnContext(ctx, fmt.Sprintf("p_load limit reached, priority %d, hit %s, score %v, limit %v", priority, kind, score, limit))
-		return nil, ErrRateLimitReached
+		limitErr := ErrPLoadRateLimitReached
+		if kind == common.CacheHitStrong {
+			limitErr = ErrPLoadStrongCacheRateLimitReached
+		}
+		return nil, limitErr
 	}
 	slog.InfoContext(ctx, fmt.Sprintf("p_load allowed, priority %d, hit %s, score %v, limit %v", priority, kind, score, limit))
 	return e.next.Process(req)

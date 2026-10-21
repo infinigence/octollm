@@ -18,7 +18,7 @@ import (
 )
 
 // QoSLimits is the dual-bucket configuration for one request.
-// AvailableTotalMax[i] is the own-bucket cap and PriorityLevelMax[i] is the public-bucket cap.
+// AvailableTotalMax[i] is the public-bucket cap and PriorityLevelMax[i] is the own-bucket cap.
 // The limiter maps priority and cache-hit kind onto those caps.
 type QoSLimits struct {
 	AvailableTotalMax []int
@@ -27,8 +27,7 @@ type QoSLimits struct {
 }
 
 // LimitsFunc resolves per-request QoSLimits for the dual-bucket Lua scripts.
-// A non-nil result with both arrays empty (or a nil result) pass-through that request.
-// Errors fail the request.
+// A nil result or invalid QoSLimits fails the request. Errors fail the request.
 type LimitsFunc func(req *octollm.Request) (*QoSLimits, error)
 
 type ConcurrencyColorLimiterEngine struct {
@@ -46,35 +45,22 @@ type ConcurrencyColorLimiterEngine struct {
 var _ octollm.Engine = (*ConcurrencyColorLimiterEngine)(nil)
 
 // NewConcurrencyColorLimiterEngine creates a limiter with static QoSLimits.
-// Empty AvailableTotalMax and PriorityLevelMax disable the limiter (pass-through).
-func NewConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, limits QoSLimits, timeout time.Duration, nameSpace string, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
-	if len(limits.AvailableTotalMax) == 0 && len(limits.PriorityLevelMax) == 0 {
-		return NewConcurrencyColorLimiterEngineWithLimitsFunc(redisClient, key, timeout, nameSpace, nil, next)
-	}
+// limits must be non-nil, and both limit arrays must be non-empty.
+func NewConcurrencyColorLimiterEngine(redisClient *redis.Client, key string, limits *QoSLimits, timeout time.Duration, nameSpace string, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
 	if err := validateQoSLimits(limits); err != nil {
 		return nil, err
 	}
-	cloned := cloneQoSLimits(limits)
+	cloned := cloneQoSLimits(*limits)
 	return NewConcurrencyColorLimiterEngineWithLimitsFunc(redisClient, key, timeout, nameSpace, func(*octollm.Request) (*QoSLimits, error) {
 		return &cloned, nil
 	}, next)
 }
 
 // NewConcurrencyColorLimiterEngineWithLimitsFunc creates a limiter that resolves QoSLimits per request.
-// A nil limitsFunc constructs a disabled pass-through limiter.
+// limitsFunc must be non-nil. A nil or invalid QoSLimits from the function fails that request.
 func NewConcurrencyColorLimiterEngineWithLimitsFunc(redisClient *redis.Client, key string, timeout time.Duration, nameSpace string, limitsFunc LimitsFunc, next octollm.Engine) (*ConcurrencyColorLimiterEngine, error) {
 	if limitsFunc == nil {
-		return &ConcurrencyColorLimiterEngine{
-			redisClient:   redisClient,
-			key:           key,
-			limitsFunc:    nil,
-			timeout:       timeout,
-			nameSpace:     nameSpace,
-			acquireScript: nil,
-			releaseScript: nil,
-			renewScript:   nil,
-			next:          next,
-		}, nil
+		return nil, fmt.Errorf("limitsFunc must be provided")
 	}
 
 	if timeout <= 0 {
@@ -99,17 +85,11 @@ func NewConcurrencyColorLimiterEngineWithLimitsFunc(redisClient *redis.Client, k
 
 func (e *ConcurrencyColorLimiterEngine) allow(req *octollm.Request) (done func(), priority int, err error) {
 	ctx := req.Context()
-	if e.limitsFunc == nil {
-		return func() {}, 0, nil
-	}
 	limits, err := e.limitsFunc(req)
 	if err != nil {
 		return func() {}, 0, err
 	}
-	if limits == nil || (len(limits.AvailableTotalMax) == 0 && len(limits.PriorityLevelMax) == 0) || e.acquireScript == nil {
-		return func() {}, 0, nil
-	}
-	if err := validateQoSLimits(*limits); err != nil {
+	if err := validateQoSLimits(limits); err != nil {
 		return func() {}, 0, err
 	}
 
@@ -119,8 +99,8 @@ func (e *ConcurrencyColorLimiterEngine) allow(req *octollm.Request) (done func()
 	}
 	i := qosIndex(priority, len(limits.AvailableTotalMax))
 	kind := common.CacheHitKindFromRequest(req)
-	ownBase := limits.AvailableTotalMax[i]
-	totalBase := limits.PriorityLevelMax[i]
+	ownBase := limits.PriorityLevelMax[i]
+	totalBase := limits.AvailableTotalMax[i]
 	effectiveOwn, effectiveTotal := effectiveOwnAndTotalLimits(ownBase, totalBase, limits.HeadroomRatio, kind)
 
 	nowUnix := time.Now().Unix()
@@ -149,7 +129,11 @@ func (e *ConcurrencyColorLimiterEngine) allow(req *octollm.Request) (done func()
 	if acquiredInt == 0 {
 		slog.WarnContext(ctx, fmt.Sprintf("concurrency limit reached for priority %d (qosIndex %d), ownCount: %d/%d, publicCount: %d/%d, hitKind: %s",
 			priority, i, ownCount, effectiveOwn, publicCount, effectiveTotal, kind))
-		return func() {}, priority, ErrRateLimitReached
+		limitErr := ErrRateLimitReached
+		if kind == common.CacheHitStrong {
+			limitErr = ErrStrongCacheRateLimitReached
+		}
+		return func() {}, priority, limitErr
 	}
 
 	renewCtx, renewCancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -209,7 +193,10 @@ func effectiveOwnAndTotalLimits(ownBase, totalBase int, headroomRatio float64, k
 	return int(math.Floor(float64(ownBase) * factor)), int(math.Floor(float64(totalBase) * factor))
 }
 
-func validateQoSLimits(limits QoSLimits) error {
+func validateQoSLimits(limits *QoSLimits) error {
+	if limits == nil {
+		return fmt.Errorf("qos limits must be provided")
+	}
 	if len(limits.AvailableTotalMax) != len(limits.PriorityLevelMax) {
 		return fmt.Errorf("available_total_max and priority_level_max must have the same length")
 	}

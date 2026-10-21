@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/infinigence/octollm/pkg/engines/limiter"
+	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
 )
@@ -153,6 +154,7 @@ func (l *ShardKeyWeightedRoundRobin) resolveAffinity(req *octollm.Request) ([]*p
 }
 
 func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Response, error) {
+	// Materialize the request body once so every retry can read it again.
 	if _, err := req.Body.Bytes(); err != nil {
 		return nil, fmt.Errorf("failed to cache request body for retries: %w", err)
 	}
@@ -169,10 +171,11 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 
 	start := time.Now()
 	retryCount := 0
-	expectKind := affinityKindMiss
+	expectKind := common.CacheMiss
 	var lastRealResp *octollm.Response
-	var lastRealErr, lastLimiterErr error
-	var lastN, lastActualKind string
+	var lastRealErr error
+	var lastN string
+	var lastActualKind common.CacheHitKind
 	for {
 		var prioritizedBackend *prioritizedWrrBackend
 		if prioritizedIndex < len(prioritizedBackends) {
@@ -190,35 +193,38 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			prioritizedName = prioritizedBackend.backend.name
 			strongCacheHit = prioritizedBackend.strongCacheHit
 			if strongCacheHit {
-				expectKind = affinityKindStrongCacheAware
-			} else if expectKind != affinityKindStrongCacheAware {
-				expectKind = affinityKindWeakCacheAware
+				expectKind = common.CacheHitStrong
+			} else if expectKind != common.CacheHitStrong {
+				expectKind = common.CacheHitWeak
 			}
 		}
 		selection := l.selectNextEngine(req.Context(), prioritizedName, excludeNames)
 		if selection == nil || selection.sharedKeyRoundRobinBackend == nil || selection.sharedKeyRoundRobinBackend.engine == nil {
 			if retryCount > 0 {
 				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] no backend engine available on failover, returning previous error: %v", lastRealErr))
-				cacheAwareRouteCounter.WithLabelValues(expectKind, lastActualKind, modelName, lastN).Inc()
+				cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(lastActualKind), modelName, lastN).Inc()
 			}
-			return exhaustAfterNoBackend(lastRealResp, lastRealErr, lastLimiterErr)
+			if lastRealErr != nil {
+				return lastRealResp, lastRealErr
+			}
+			return nil, fmt.Errorf("no backend engine available")
 		}
 		selected := selection.sharedKeyRoundRobinBackend
 		n, eng, isAllZero := selected.name, selected.engine, selection.isAllZero
 		isPrioritizedHit := prioritizedBackend != nil && n == prioritizedName
-		var actualKind string
+		var actualKind common.CacheHitKind
 		if isPrioritizedHit {
 			if strongCacheHit {
-				actualKind = affinityKindStrongCacheAware
+				actualKind = common.CacheHitStrong
 			} else {
-				actualKind = affinityKindWeakCacheAware
+				actualKind = common.CacheHitWeak
 			}
 			slog.InfoContext(req.Context(),
 				fmt.Sprintf("[ShardKey WRR load balancer] prioritized backend hit (strongCacheHit=%t): %s (index %d/%d)", strongCacheHit, n, prioritizedIndex, len(prioritizedBackends)),
 				slog.String("backend_name", n),
 			)
 		} else {
-			actualKind = affinityKindMiss
+			actualKind = common.CacheMiss
 			slog.InfoContext(req.Context(),
 				fmt.Sprintf("[ShardKey WRR load balancer] no prioritized backend available (exhausted %d), fallback to WRR: %s", len(prioritizedBackends), n),
 				slog.String("backend_name", n),
@@ -239,70 +245,73 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			}
 		}
 
-		kind := attemptCacheHitKind(isPrioritizedHit, strongCacheHit)
-		attemptReq := req.WithContext(context.WithValue(req.Context(), octollm.ContextKeyCacheHitKind, kind))
+		attemptReq := req.WithContext(context.WithValue(req.Context(), common.ContextKeyCacheHitKind, actualKind))
 		attemptReq.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(attemptReq)
-		if errors.Is(err, limiter.ErrRateLimitReached) {
-			slog.InfoContext(req.Context(),
-				fmt.Sprintf("[ShardKey WRR load balancer] limiter rejected backend %s, failover", n),
-				slog.String("backend_name", n),
-			)
-			excludeNames[n] = true
-			lastLimiterErr = err
-			if len(excludeNames) >= len(l.backends) {
-				return exhaustAfterNoBackend(lastRealResp, lastRealErr, lastLimiterErr)
+		if done != nil {
+			if err == nil {
+				done(true)
+			} else {
+				if isBackendFailureError(err) {
+					done(false)
+				}
 			}
-			if req.Context().Err() != nil {
-				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] request context error: %v", req.Context().Err()))
-				return exhaustAfterNoBackend(lastRealResp, lastRealErr, lastLimiterErr)
-			}
-			if time.Since(start) >= l.retryTimeout {
-				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] retry period %v reached, return last limiter err", l.retryTimeout))
-				return exhaustAfterNoBackend(lastRealResp, lastRealErr, lastLimiterErr)
-			}
-			continue
 		}
-		if done != nil && !isIgnoredAttemptError(err) {
-			done(err == nil)
-		}
+
 		if err == nil {
 			if commit != nil && !isAllZero {
 				if commitErr := commit(n); commitErr != nil {
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] failed to commit shard key mapping: %v", commitErr))
 				}
 			}
-			cacheAwareRouteCounter.WithLabelValues(expectKind, actualKind, modelName, n).Inc()
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return resp, nil
 		}
+
+		// The following logic handles the case where err is non-nil.
 		if isNotRetriableError(err) {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] error is not retriable, return without retry: %v", err))
-			cacheAwareRouteCounter.WithLabelValues(expectKind, actualKind, modelName, n).Inc()
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return resp, err
 		}
+
+		if errors.Is(err, limiter.ErrRateLimitReached) {
+			slog.InfoContext(req.Context(),
+				fmt.Sprintf("[ShardKey WRR load balancer] limiter rejected backend %s, failover", n),
+				slog.String("backend_name", n),
+			)
+			// When lastRealErr is nil, lastRealResp must also be nil: the response is written only in the non-rate-limit error branch, paired with the error.
+			if lastRealErr == nil {
+				lastRealErr = err
+			}
+		} else {
+			lastRealResp, lastRealErr = resp, err
+			lastN, lastActualKind = n, actualKind
+			retryCount++
+		}
 		excludeNames[n] = true
-		lastRealResp, lastRealErr = resp, err
-		lastN, lastActualKind = n, actualKind
-		retryCount++
 		if req.Context().Err() != nil {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] request context error: %v", req.Context().Err()))
-			cacheAwareRouteCounter.WithLabelValues(expectKind, actualKind, modelName, n).Inc()
-			return resp, err
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
+			return lastRealResp, lastRealErr
 		}
 		if time.Since(start) >= l.retryTimeout {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] retry period %v reached, return last resp and err", l.retryTimeout))
-			cacheAwareRouteCounter.WithLabelValues(expectKind, actualKind, modelName, n).Inc()
-			return resp, err
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
+			return lastRealResp, lastRealErr
 		}
 		if retryCount >= l.retryMaxCount {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] retry max count %d reached, return last resp and err", l.retryMaxCount))
-			cacheAwareRouteCounter.WithLabelValues(expectKind, actualKind, modelName, n).Inc()
-			return resp, err
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
+			return lastRealResp, lastRealErr
 		}
 		if len(excludeNames) >= len(l.backends) {
 			slog.WarnContext(req.Context(), "[ShardKey WRR load balancer] all backends have been tried, return last resp and err")
-			cacheAwareRouteCounter.WithLabelValues(expectKind, actualKind, modelName, n).Inc()
-			return exhaustAfterNoBackend(lastRealResp, lastRealErr, lastLimiterErr)
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
+			if lastRealErr != nil {
+				return lastRealResp, lastRealErr
+			}
+			return nil, fmt.Errorf("no backend engine available")
 		}
 		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] will retry, count %d, time %v", retryCount, time.Since(start)))
 		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()

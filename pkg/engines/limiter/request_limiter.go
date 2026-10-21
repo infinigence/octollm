@@ -29,6 +29,12 @@ var _ octollm.Engine = (*RequestLimiterEngine)(nil)
 
 var ErrRateLimitReached = errors.New("rate limit reached")
 
+var ErrStrongCacheRateLimitReached = fmt.Errorf("%w: strong cache hit rate limit reached", ErrRateLimitReached)
+
+var ErrPLoadRateLimitReached = fmt.Errorf("%w: p_load rate limit reached", ErrRateLimitReached)
+
+var ErrPLoadStrongCacheRateLimitReached = fmt.Errorf("%w: p_load strong cache hit rate limit reached", ErrRateLimitReached)
+
 // NewRequestLimiterEngine creates a token bucket-based request rate limiter engine
 // redisClient: Redis client
 // key: Redis key for storing token bucket state

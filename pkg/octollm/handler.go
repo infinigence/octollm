@@ -39,10 +39,6 @@ const (
 	// expressions can read it via req.OriginalFormat() to tell the entry
 	// protocol apart from the current (possibly converted) one.
 	ContextKeyOriginalFormat contextKey = "original_format"
-	// ContextKeyCacheHitKind is the cache-affinity outcome of one backend
-	// attempt. Load balancer writes it onto a derived attempt request;
-	// limiter reads it. Missing or illegal values are treated as a miss.
-	ContextKeyCacheHitKind contextKey = "cache_hit_kind"
 )
 
 type Server struct {

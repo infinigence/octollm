@@ -4,12 +4,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-const (
-	affinityKindStrongCacheAware = "strong_cache"
-	affinityKindWeakCacheAware   = "weak_cache"
-	affinityKindMiss             = "miss"
-)
-
 var (
 	totalFailoverRequestsCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "octollm_total_failover_requests",

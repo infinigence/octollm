@@ -138,7 +138,12 @@ func TestPLoadColorLimiterEngineBands(t *testing.T) {
 				assert.Equal(t, 1, next.callCount)
 				return
 			}
-			require.ErrorIs(t, err, ErrRateLimitReached)
+			want := ErrPLoadRateLimitReached
+			if tc.kind == common.CacheHitStrong {
+				want = ErrPLoadStrongCacheRateLimitReached
+			}
+			require.ErrorIs(t, err, want)
+			assert.ErrorIs(t, err, ErrRateLimitReached)
 			assert.Equal(t, 0, next.callCount)
 		})
 	}

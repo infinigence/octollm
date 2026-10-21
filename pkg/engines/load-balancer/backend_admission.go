@@ -5,7 +5,8 @@ import (
 )
 
 // AttemptDoneFunc is invoked after a real backend Engine.Process returns.
-// Callers skip it on 413/429. ok is true when err == nil.
+// Callers may skip it when the error does not indicate backend service status,
+// for example HTTP 413/429. ok is true when err == nil.
 // A nil admission, or a nil done from BeforeAttempt, means no completion callback.
 type AttemptDoneFunc func(ok bool)
 

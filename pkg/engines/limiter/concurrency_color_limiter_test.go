@@ -32,11 +32,11 @@ func newConcurrencyColorLimiterTestRequest(t *testing.T, ns string, priority *in
 }
 
 func withHitKind(req *octollm.Request, kind common.CacheHitKind) *octollm.Request {
-	return req.WithContext(context.WithValue(req.Context(), octollm.ContextKeyCacheHitKind, kind))
+	return req.WithContext(context.WithValue(req.Context(), common.ContextKeyCacheHitKind, kind))
 }
 
-func staticQoS(own, pub []int, ratio float64) QoSLimits {
-	return QoSLimits{AvailableTotalMax: own, PriorityLevelMax: pub, HeadroomRatio: ratio}
+func staticQoS(own, pub []int, ratio float64) *QoSLimits {
+	return &QoSLimits{AvailableTotalMax: pub, PriorityLevelMax: own, HeadroomRatio: ratio}
 }
 
 func zcard(t *testing.T, client *redis.Client, key string) int64 {
@@ -117,10 +117,9 @@ func TestNewConcurrencyColorLimiterEngine_Validation(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "redisClient")
 
-	e, err := NewConcurrencyColorLimiterEngine(nil, "k", QoSLimits{}, time.Second, "ns", next)
-	assert.NoError(t, err)
-	assert.Nil(t, e.limitsFunc)
-	assert.Nil(t, e.acquireScript)
+	_, err = NewConcurrencyColorLimiterEngine(nil, "k", &QoSLimits{}, time.Second, "ns", next)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "empty")
 
 	_, err = NewConcurrencyColorLimiterEngine(client, "k", staticQoS([]int{2}, []int{1}, 0), 0, "ns", next)
 	assert.Error(t, err)
@@ -131,7 +130,7 @@ func TestNewConcurrencyColorLimiterEngine_Validation(t *testing.T) {
 	_, err = NewConcurrencyColorLimiterEngine(client, "k", staticQoS([]int{1}, []int{1}, -0.1), time.Second, "ns", next)
 	assert.Error(t, err)
 
-	e, err = NewConcurrencyColorLimiterEngine(client, "k", staticQoS([]int{10, 5}, []int{10, 8}, 0.1), time.Second, "ns", next)
+	e, err := NewConcurrencyColorLimiterEngine(client, "k", staticQoS([]int{10, 5}, []int{10, 8}, 0.1), time.Second, "ns", next)
 	assert.NoError(t, err)
 	assert.NotNil(t, e.limitsFunc)
 	assert.NotNil(t, e.acquireScript)
@@ -144,26 +143,13 @@ func TestConcurrencyColorLimiter_PassThroughWhenDisabled(t *testing.T) {
 	defer mr.Close()
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	next := &nextStubEngine{resp: &octollm.Response{StatusCode: 200}}
-	e, err := NewConcurrencyColorLimiterEngine(client, "k", QoSLimits{}, time.Second, "ns", next)
-	assert.NoError(t, err)
+	_, err := NewConcurrencyColorLimiterEngine(client, "k", &QoSLimits{}, time.Second, "ns", next)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "empty")
 
-	req := newConcurrencyColorLimiterTestRequest(t, "ns", nil)
-	resp, err := e.Process(req)
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
-	assert.Equal(t, 1, next.callCount)
-	assertLimiterAllow(t, req, 0)
-
-	nextFromLimitsFunc := &nextStubEngine{resp: &octollm.Response{StatusCode: 200}}
-	disabled, err := NewConcurrencyColorLimiterEngineWithLimitsFunc(client, "k2", time.Second, "ns", nil, nextFromLimitsFunc)
-	assert.NoError(t, err)
-	assert.Nil(t, disabled.limitsFunc)
-	assert.Nil(t, disabled.acquireScript)
-
-	resp, err = disabled.Process(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
-	assert.NoError(t, err)
-	assert.NotNil(t, resp)
-	assert.Equal(t, 1, nextFromLimitsFunc.callCount)
+	_, err = NewConcurrencyColorLimiterEngineWithLimitsFunc(client, "k2", time.Second, "ns", nil, next)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "limitsFunc")
 }
 
 func TestConcurrencyColorLimiter_HighestPriorityWritesBothKeys(t *testing.T) {
@@ -293,8 +279,10 @@ func TestConcurrencyColorLimiter_StrongHeadroomVsMiss(t *testing.T) {
 	}
 	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheMiss))
 	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assert.NotErrorIs(t, err, ErrStrongCacheRateLimitReached)
 	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheHitWeak))
 	assert.ErrorIs(t, err, ErrRateLimitReached)
+	assert.NotErrorIs(t, err, ErrStrongCacheRateLimitReached)
 
 	strong, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheHitStrong))
 	require.NoError(t, err)
@@ -302,6 +290,7 @@ func TestConcurrencyColorLimiter_StrongHeadroomVsMiss(t *testing.T) {
 	assert.Equal(t, int64(11), zcard(t, client, "hr-key:own_1"))
 
 	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheHitStrong))
+	assert.ErrorIs(t, err, ErrStrongCacheRateLimitReached)
 	assert.ErrorIs(t, err, ErrRateLimitReached)
 
 	require.NoError(t, strong.Body.Close())
@@ -324,6 +313,7 @@ func TestConcurrencyColorLimiter_ZeroHeadroomStrongEqualsMiss(t *testing.T) {
 	resp, err := e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheMiss))
 	require.NoError(t, err)
 	_, err = e.Process(withHitKind(newConcurrencyColorLimiterTestRequest(t, ns, &p0), common.CacheHitStrong))
+	assert.ErrorIs(t, err, ErrStrongCacheRateLimitReached)
 	assert.ErrorIs(t, err, ErrRateLimitReached)
 	require.NoError(t, resp.Body.Close())
 }
@@ -426,7 +416,7 @@ func TestConcurrencyColorLimiter_LimitsFuncError(t *testing.T) {
 	assert.Equal(t, 0, next.callCount)
 }
 
-func TestConcurrencyColorLimiter_LimitsFuncEmptyPassThrough(t *testing.T) {
+func TestConcurrencyColorLimiter_LimitsFuncNilFails(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	defer mr.Close()
@@ -437,13 +427,10 @@ func TestConcurrencyColorLimiter_LimitsFuncEmptyPassThrough(t *testing.T) {
 	}, next)
 	require.NoError(t, err)
 
-	resp1, err := e.Process(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
-	require.NoError(t, err)
-	resp2, err := e.Process(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
-	require.NoError(t, err)
-	assert.Equal(t, 2, next.callCount)
-	require.NoError(t, resp1.Body.Close())
-	require.NoError(t, resp2.Body.Close())
+	_, err = e.Process(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "qos limits must be provided")
+	assert.Equal(t, 0, next.callCount)
 }
 
 func TestConcurrencyColorLimiter_StaticLimitsImmutableAfterInit(t *testing.T) {
@@ -456,11 +443,11 @@ func TestConcurrencyColorLimiter_StaticLimitsImmutableAfterInit(t *testing.T) {
 	require.NoError(t, err)
 	limits, err := e.limitsFunc(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
 	require.NoError(t, err)
-	assert.Equal(t, []int{5, 6}, limits.AvailableTotalMax)
+	assert.Equal(t, []int{5, 6}, limits.PriorityLevelMax)
 	own[0] = 999
 	limits, err = e.limitsFunc(newConcurrencyColorLimiterTestRequest(t, "ns", nil))
 	require.NoError(t, err)
-	assert.Equal(t, []int{5, 6}, limits.AvailableTotalMax)
+	assert.Equal(t, []int{5, 6}, limits.PriorityLevelMax)
 }
 
 func TestConcurrencyColorLimiter_PublicBucketNoOverAdmit(t *testing.T) {

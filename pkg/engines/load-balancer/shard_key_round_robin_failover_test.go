@@ -25,7 +25,7 @@ type captureHitKindEngine struct {
 }
 
 func (e *captureHitKindEngine) Process(req *octollm.Request) (*octollm.Response, error) {
-	kind, ok := octollm.GetCtxValue[common.CacheHitKind](req, octollm.ContextKeyCacheHitKind)
+	kind, ok := octollm.GetCtxValue[common.CacheHitKind](req, common.ContextKeyCacheHitKind)
 	if !ok {
 		kind = common.CacheMiss
 	}
@@ -48,7 +48,7 @@ func (e *captureHitKindEngine) kindsCopy() []common.CacheHitKind {
 
 func rejectUnlessStrong(e *captureHitKindEngine) octollm.Engine {
 	return octollm.EngineFunc(func(req *octollm.Request) (*octollm.Response, error) {
-		kind, ok := octollm.GetCtxValue[common.CacheHitKind](req, octollm.ContextKeyCacheHitKind)
+		kind, ok := octollm.GetCtxValue[common.CacheHitKind](req, common.ContextKeyCacheHitKind)
 		if !ok {
 			kind = common.CacheMiss
 		}
@@ -335,7 +335,7 @@ func TestShardKeyWRR_PLoadFailover(t *testing.T) {
 		provider := affinity(t, rd, keyPrefix, StrongHitPolicyLastTwo, items)
 
 		_, err := newWRR(t, items, provider, rd).Process(testhelper.CreateTestRequest())
-		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
+		require.ErrorIs(t, err, limiter.ErrPLoadStrongCacheRateLimitReached)
 		assert.Empty(t, nextA.kindsCopy())
 		assert.Empty(t, nextB.kindsCopy())
 	})
@@ -353,7 +353,7 @@ func TestShardKeyWRR_PLoadFailover(t *testing.T) {
 		provider := affinity(t, rd, keyPrefix, StrongHitPolicyLeaf, items)
 
 		_, err := newWRR(t, items, provider, rd).Process(testhelper.CreateTestRequest())
-		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
+		require.ErrorIs(t, err, limiter.ErrPLoadRateLimitReached)
 		assert.Empty(t, nextA.kindsCopy())
 		assert.Empty(t, nextB.kindsCopy())
 	})

@@ -73,7 +73,7 @@ func buildBackendWithLimiter(t *testing.T, rd *redis.Client, cfg backendConfig) 
 	engine, err := limiter.NewConcurrencyColorLimiterEngine(
 		rd,
 		"concurrency_rate:service:gpt-4:"+cfg.svcName,
-		limiter.QoSLimits{
+		&limiter.QoSLimits{
 			AvailableTotalMax: []int{cfg.rate},
 			PriorityLevelMax:  []int{cfg.rate},
 		},
