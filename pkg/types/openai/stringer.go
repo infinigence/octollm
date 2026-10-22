@@ -185,8 +185,11 @@ func (r ChatCompletionRequest) String() string {
 				continue
 			}
 			name := ""
-			if t.Function.Name != nil {
+			switch {
+			case t.Function != nil && t.Function.Name != nil:
 				name = *t.Function.Name
+			case t.Custom != nil:
+				name = t.Custom.Name
 			}
 			fmt.Fprintf(w, "    Tool{type=%s, name=%s}\n", t.Type, name)
 		}
@@ -196,6 +199,9 @@ func (r ChatCompletionRequest) String() string {
 	}
 	if r.Thinking != nil {
 		fmt.Fprintf(w, "  Thinking: type=%s\n", r.Thinking.Type)
+	}
+	if r.ReasoningEffort != nil {
+		fmt.Fprintf(w, "  ReasoningEffort: %s\n", *r.ReasoningEffort)
 	}
 	return fmt.Sprintf("(ChatCompletionRequest) {\n%s}", w.String())
 }
@@ -325,6 +331,24 @@ func (r EmbeddingResponse) String() string {
 	return fmt.Sprintf("(EmbeddingResponse) {\n%s}", w.String())
 }
 
+// writeReasoningFields appends the summary part lengths and encrypted content
+// length of a Responses reasoning item.
+func writeReasoningFields(w *strings.Builder, summary []*ResponsesReasoningSummaryPart, encryptedContent string) {
+	if len(summary) > 0 {
+		w.WriteString(", summary=[")
+		for _, part := range summary {
+			if part == nil {
+				continue
+			}
+			fmt.Fprintf(w, "%s(len=%d), ", part.Type, len(part.Text))
+		}
+		w.WriteString("]")
+	}
+	if encryptedContent != "" {
+		fmt.Fprintf(w, ", encrypted_len=%d", len(encryptedContent))
+	}
+}
+
 // responsesOutputItemString formats a ResponsesOutputItem safely for logging.
 func responsesOutputItemString(i *ResponsesOutputItem) string {
 	if i == nil {
@@ -343,6 +367,9 @@ func responsesOutputItemString(i *ResponsesOutputItem) string {
 			fmt.Fprintf(w, ", name=%s", i.Name)
 		}
 		fmt.Fprintf(w, ", args_len=%d", len(i.Arguments))
+	}
+	if i.Type == "reasoning" {
+		writeReasoningFields(w, i.Summary, i.EncryptedContent)
 	}
 	if len(i.Content) > 0 {
 		fmt.Fprintf(w, ", content=[")
@@ -369,8 +396,19 @@ func responsesOutputItemString(i *ResponsesOutputItem) string {
 func (r ResponsesResponse) String() string {
 	w := &strings.Builder{}
 	fmt.Fprintf(w, "  ID: %q\n", r.Id)
+	if r.Object != "" {
+		fmt.Fprintf(w, "  Object: %q\n", r.Object)
+	}
+	fmt.Fprintf(w, "  Created: %d\n", r.Created)
 	if r.Status != "" {
 		fmt.Fprintf(w, "  Status: %q\n", r.Status)
+	}
+	if r.IncompleteDetails != nil {
+		fmt.Fprintf(w, "  IncompleteDetails: reason=%s\n", r.IncompleteDetails.Reason)
+	}
+	if e := r.Error; e != nil {
+		// The upstream message may echo request content, so only its length is logged.
+		fmt.Fprintf(w, "  Error: type=%s, code=%s, param=%s, message_len=%d\n", e.Type, e.Code, e.Param, len(e.Message))
 	}
 	if r.Model != "" {
 		fmt.Fprintf(w, "  Model: %q\n", r.Model)
@@ -470,19 +508,7 @@ func responsesInputItemString(item ResponsesInputItem) string {
 		w.WriteString("}")
 	case *ResponsesInputReasoning:
 		fmt.Fprintf(w, "{type=reasoning, id=%s", v.ID)
-		if len(v.Summary) > 0 {
-			w.WriteString(", summary=[")
-			for _, part := range v.Summary {
-				if part == nil {
-					continue
-				}
-				fmt.Fprintf(w, "%s(len=%d), ", part.Type, len(part.Text))
-			}
-			w.WriteString("]")
-		}
-		if v.EncryptedContent != "" {
-			fmt.Fprintf(w, ", encrypted_len=%d", len(v.EncryptedContent))
-		}
+		writeReasoningFields(w, v.Summary, v.EncryptedContent)
 		w.WriteString("}")
 	case *ResponsesInputRawItem:
 		fmt.Fprintf(w, "{type=raw, len=%d}", len(v.Raw))

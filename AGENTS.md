@@ -62,6 +62,7 @@ Engines can be arbitrarily nested, each handling specific concerns (client commu
 - **`/pkg/types/openai`** - OpenAI ChatCompletion types
 - **`/pkg/types/UNION_TYPES.md`** - READ before adding/editing any `/pkg/types` type: the polymorphic-JSON convention (Interface + `xxxField` pattern, dispatch, marshaling)
 - **`/pkg/types/TESTING_GUIDE.md`** - READ before testing those types: table-driven Marshal/Unmarshal conventions
+- **`/pkg/types/*/stringer.go`** - Log-safe `String()` methods; when adding fields to a type, add them to its stringer too, following the existing conventions
 - **`/cmd/octollm-server`** - Standalone server entry point with Gin routes and auth middleware
 
 ### Request Flow

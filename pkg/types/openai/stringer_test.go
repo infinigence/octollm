@@ -256,6 +256,41 @@ func TestChatCompletionRequest_String(t *testing.T) {
     (Message) {Role: "user", Content: [text(len=19), image_url(len=27,detail=high), ], }
 }`,
 		},
+		{
+			name: "thinking and reasoning_effort",
+			json: `{
+				"model": "o3",
+				"messages": [{"role": "user", "content": "Hi"}],
+				"thinking": {"type": "enabled"},
+				"reasoning_effort": "high"
+			}`,
+			expected: `(ChatCompletionRequest) {
+  Model: "o3"
+  Messages: len(1)
+    (Message) {Role: "user", Content: len(2), }
+  Thinking: type=enabled
+  ReasoningEffort: high
+}`,
+		},
+		{
+			name: "function and custom tools",
+			json: `{
+				"model": "gpt-5",
+				"messages": [{"role": "user", "content": "Hi"}],
+				"tools": [
+					{"type": "function", "function": {"name": "get_weather"}},
+					{"type": "custom", "custom": {"name": "code_exec"}}
+				]
+			}`,
+			expected: `(ChatCompletionRequest) {
+  Model: "gpt-5"
+  Messages: len(1)
+    (Message) {Role: "user", Content: len(2), }
+  Tools: len(2)
+    Tool{type=function, name=get_weather}
+    Tool{type=custom, name=code_exec}
+}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -576,6 +611,8 @@ func TestResponsesResponse_String(t *testing.T) {
 			name: "output_text and refusal with detailed usage",
 			json: `{
 				"id": "resp_1",
+				"object": "response",
+				"created_at": 1730000000,
 				"output": [{
 					"id": "msg_1",
 					"type": "message",
@@ -596,6 +633,8 @@ func TestResponsesResponse_String(t *testing.T) {
 			// "Hello" = 5, "Cannot" = 6
 			expected: `(ResponsesResponse) {
   ID: "resp_1"
+  Object: "response"
+  Created: 1730000000
   Output: len(1)
     {id=msg_1, type=message, role=assistant, content=[output_text(len=5), refusal(len=6), ]}
   Usage: input=10, output=5, total=15, cached=2, reasoning=3
@@ -610,6 +649,7 @@ func TestResponsesResponse_String(t *testing.T) {
 			}`,
 			expected: `(ResponsesResponse) {
   ID: "resp_2"
+  Created: 0
   Output: len(0)
   Usage: input=1, output=2, total=3
 }`,
@@ -628,8 +668,48 @@ func TestResponsesResponse_String(t *testing.T) {
 			}`,
 			expected: `(ResponsesResponse) {
   ID: "resp_3"
+  Created: 0
   Output: len(0)
   Usage: input=100, output=5, total=105, cached=20, cache_write=30
+}`,
+		},
+		{
+			name: "incomplete with reasoning output item",
+			json: `{
+				"id": "resp_4",
+				"status": "incomplete",
+				"incomplete_details": {"reason": "max_output_tokens"},
+				"output": [{
+					"id": "rs_1",
+					"type": "reasoning",
+					"summary": [{"type": "summary_text", "text": "Thinking"}],
+					"encrypted_content": "abcdef"
+				}]
+			}`,
+			// "Thinking" = 8, "abcdef" = 6
+			expected: `(ResponsesResponse) {
+  ID: "resp_4"
+  Created: 0
+  Status: "incomplete"
+  IncompleteDetails: reason=max_output_tokens
+  Output: len(1)
+    {id=rs_1, type=reasoning, summary=[summary_text(len=8), ], encrypted_len=6}
+}`,
+		},
+		{
+			name: "failed with error",
+			json: `{
+				"id": "resp_5",
+				"status": "failed",
+				"error": {"type": "server_error", "code": "rate_limit_exceeded", "param": "model", "message": "Slow down"}
+			}`,
+			// "Slow down" = 9
+			expected: `(ResponsesResponse) {
+  ID: "resp_5"
+  Created: 0
+  Status: "failed"
+  Error: type=server_error, code=rate_limit_exceeded, param=model, message_len=9
+  Output: len(0)
 }`,
 		},
 	}
