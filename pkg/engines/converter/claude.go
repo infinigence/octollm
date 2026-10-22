@@ -88,6 +88,18 @@ func (e *ChatCompletionToClaudeMessages) convertRequestBody(ctx context.Context,
 		dst.ReasoningEffort = src.OutputConfig.Effort
 	}
 
+	// Structured outputs. Anthropic's format carries no schema name, but chat
+	// completions requires one, so a fixed placeholder name is used.
+	if src.OutputConfig != nil && src.OutputConfig.Format != nil && src.OutputConfig.Format.Type == "json_schema" {
+		dst.ResponseFormat = &openai.ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &openai.ResponseFormatJSONSchema{
+				Name:   "output",
+				Schema: src.OutputConfig.Format.Schema,
+			},
+		}
+	}
+
 	// Model
 	dst.Model = src.Model
 

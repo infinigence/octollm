@@ -397,8 +397,14 @@ type ToolChoice struct {
 }
 
 type OutputConfig struct {
-	Effort *string `json:"effort,omitempty"` // "none", "low", "medium", "high"
-	// Additional output configuration fields can be added here
+	Effort *string           `json:"effort,omitempty"` // "low", "medium", "high", "xhigh", "max"
+	Format *JSONOutputFormat `json:"format,omitempty"`
+}
+
+// JSONOutputFormat constrains the model output to a JSON schema (structured outputs).
+type JSONOutputFormat struct {
+	Type   string          `json:"type"` // "json_schema"
+	Schema json.RawMessage `json:"schema,omitempty"`
 }
 
 func (r *ClaudeMessagesRequest) UnmarshalJSON(data []byte) error {

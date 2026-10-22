@@ -27,6 +27,14 @@ func TestClaudeMessagesRequestJLexerParser_Parse(t *testing.T) {
 			JSON: `{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"messages":[{"role":"user","content":{"type":"text","text":"Hello, Claude!"}}]}`,
 		},
 		{
+			Name: "OutputConfigFormat",
+			JSON: `{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"high","format":{"type":"json_schema","schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}}`,
+		},
+		{
+			Name: "OutputConfigFormatNullFields",
+			JSON: `{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"output_config":{"format":{"type":null,"schema":null}}}`,
+		},
+		{
 			Name: "SystemString",
 			JSON: `{"model":"claude-3-5-sonnet-20241022","max_tokens":1024,"system":"You are a helpful assistant","messages":[{"role":"user","content":"Hello, Claude!"}]}`,
 		},

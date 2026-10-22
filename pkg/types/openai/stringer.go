@@ -197,6 +197,9 @@ func (r ChatCompletionRequest) String() string {
 	if r.Thinking != nil {
 		fmt.Fprintf(w, "  Thinking: type=%s\n", r.Thinking.Type)
 	}
+	if r.ResponseFormat != nil {
+		fmt.Fprintf(w, "  ResponseFormat: type=%s\n", r.ResponseFormat.Type)
+	}
 	return fmt.Sprintf("(ChatCompletionRequest) {\n%s}", w.String())
 }
 

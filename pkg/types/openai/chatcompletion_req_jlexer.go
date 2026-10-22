@@ -3,7 +3,7 @@
 // This file contains jlexer streaming parsers for the structs defined in:
 //   pkg/types/openai/chatcompletion_req.go
 //
-// Source file SHA-256: 8e524205801dba6b7ef79957c1e404bdff93e67403007ac956a737506a7be1e6
+// Source file SHA-256: ebf4b7fbae4692070db6c9a4265097c3309ac5234faa72eecade4797160eaebf
 //
 // Generation guide: pkg/types/JLEXER_PARSER_GUIDE.md
 // Polymorphic field patterns: pkg/types/UNION_TYPES.md
@@ -147,6 +147,14 @@ func (r *ChatCompletionRequest) ParseJLexer(in *jlexer.Lexer) {
 			}
 		case "tool_choice":
 			r.ToolChoice = parseToolChoiceValueJLexer(in)
+		case "response_format":
+			if in.IsNull() {
+				in.Skip()
+				r.ResponseFormat = nil
+			} else {
+				r.ResponseFormat = &ResponseFormat{}
+				r.ResponseFormat.ParseJLexer(in)
+			}
 		default:
 			in.SkipRecursive()
 		}
@@ -178,6 +186,100 @@ func (t *Thinking) ParseJLexer(in *jlexer.Lexer) {
 				t.Type = ""
 			} else {
 				t.Type = in.String()
+			}
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+
+func (f *ResponseFormat) ParseJLexer(in *jlexer.Lexer) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		switch key {
+		case "type":
+			if in.IsNull() {
+				in.Skip()
+				f.Type = ""
+			} else {
+				f.Type = in.String()
+			}
+		case "json_schema":
+			if in.IsNull() {
+				in.Skip()
+				f.JSONSchema = nil
+			} else {
+				f.JSONSchema = &ResponseFormatJSONSchema{}
+				f.JSONSchema.ParseJLexer(in)
+			}
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+
+func (s *ResponseFormatJSONSchema) ParseJLexer(in *jlexer.Lexer) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		switch key {
+		case "name":
+			if in.IsNull() {
+				in.Skip()
+				s.Name = ""
+			} else {
+				s.Name = in.String()
+			}
+		case "description":
+			if in.IsNull() {
+				in.Skip()
+				s.Description = ""
+			} else {
+				s.Description = in.String()
+			}
+		case "schema":
+			if in.IsNull() {
+				in.Skip()
+				s.Schema = json.RawMessage("null")
+			} else {
+				s.Schema = json.RawMessage(in.Raw())
+			}
+		case "strict":
+			if in.IsNull() {
+				in.Skip()
+				s.Strict = nil
+			} else {
+				v := in.Bool()
+				s.Strict = &v
 			}
 		default:
 			in.SkipRecursive()

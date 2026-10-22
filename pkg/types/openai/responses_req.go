@@ -23,6 +23,7 @@ type ResponsesRequest struct {
 	TopP              *float64           `json:"top_p,omitempty"`
 	Reasoning         *ResponseReasoning `json:"reasoning,omitempty"`
 	ParallelToolCalls *bool              `json:"parallel_tool_calls,omitempty"`
+	Text              *ResponsesText     `json:"text,omitempty"`
 }
 
 func (r *ResponsesRequest) UnmarshalJSON(data []byte) error {
@@ -45,6 +46,23 @@ func (r *ResponsesRequest) UnmarshalJSON(data []byte) error {
 // ResponseReasoning controls the reasoning effort for reasoning models.
 type ResponseReasoning struct {
 	Effort string `json:"effort,omitempty"`
+}
+
+// ResponsesText configures the text output of a response.
+type ResponsesText struct {
+	Format *ResponsesTextFormat `json:"format,omitempty"`
+}
+
+// ResponsesTextFormat is the Responses counterpart of the chat-completions
+// `response_format`. Type is one of "text", "json_object" or "json_schema". Unlike
+// the chat-completions shape, the json_schema fields sit at the top level rather
+// than nested under a `json_schema` object.
+type ResponsesTextFormat struct {
+	Type        string          `json:"type"`
+	Name        string          `json:"name,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Schema      json.RawMessage `json:"schema,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
 }
 
 // ResponseTool is a function tool definition in the Responses API. Unlike the

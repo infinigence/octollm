@@ -3,7 +3,7 @@
 // This file contains jlexer streaming parsers for the structs defined in:
 //   pkg/types/anthropic/messages_request.go
 //
-// Source file SHA-256: fd2dcd819288f6470bd5cce859d369b89a4422642001efa7fe2aca75001bf5ee
+// Source file SHA-256: fa0535c219dd5f79f10a4f5ae6e4ff2052c0c0aa85178444350e7813f8b34fdc
 //
 // Generation guide: pkg/types/JLEXER_PARSER_GUIDE.md
 // Polymorphic field patterns: pkg/types/UNION_TYPES.md
@@ -606,6 +606,53 @@ func (o *OutputConfig) ParseJLexer(in *jlexer.Lexer) {
 			} else {
 				v := in.String()
 				o.Effort = &v
+			}
+		case "format":
+			if in.IsNull() {
+				in.Skip()
+				o.Format = nil
+			} else {
+				o.Format = &JSONOutputFormat{}
+				o.Format.ParseJLexer(in)
+			}
+		default:
+			in.SkipRecursive()
+		}
+		in.WantComma()
+	}
+	in.Delim('}')
+	if isTopLevel {
+		in.Consumed()
+	}
+}
+
+func (f *JSONOutputFormat) ParseJLexer(in *jlexer.Lexer) {
+	isTopLevel := in.IsStart()
+	if in.IsNull() {
+		if isTopLevel {
+			in.Consumed()
+		}
+		in.Skip()
+		return
+	}
+	in.Delim('{')
+	for !in.IsDelim('}') {
+		key := in.UnsafeFieldName(false)
+		in.WantColon()
+		switch key {
+		case "type":
+			if in.IsNull() {
+				in.Skip()
+				f.Type = ""
+			} else {
+				f.Type = in.String()
+			}
+		case "schema":
+			if in.IsNull() {
+				in.Skip()
+				f.Schema = json.RawMessage("null")
+			} else {
+				f.Schema = json.RawMessage(in.Raw())
 			}
 		default:
 			in.SkipRecursive()

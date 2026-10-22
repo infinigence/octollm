@@ -79,6 +79,22 @@ func TestChatCompletionRequest_ParseJLexer(t *testing.T) {
 			JSON: `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"max_tokens":200,"max_completion_tokens":300,"temperature":0.5,"top_p":0.9,"top_k":40,"stream":true}`,
 		},
 		{
+			Name: "response_format json_schema",
+			JSON: `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_schema","json_schema":{"name":"city_extract","description":"Extract a city","schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}}}`,
+		},
+		{
+			Name: "response_format json_object",
+			JSON: `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}`,
+		},
+		{
+			Name: "response_format null fields",
+			JSON: `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"response_format":{"type":null,"json_schema":{"name":null,"description":null,"schema":null,"strict":null}}}`,
+		},
+		{
+			Name: "response_format null",
+			JSON: `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"response_format":null}`,
+		},
+		{
 			Name: "custom tool",
 			JSON: `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"custom","custom":{"name":"my_tool","description":"A custom tool","format":{"type":"object"}}}]}`,
 		},

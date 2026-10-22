@@ -239,6 +239,79 @@ func TestChatCompletionToResponses_convertRequestBody_SamplingAndReasoning(t *te
 	testChatCompletionToResponses_convertRequestBody(t, responsesReqJSON, expectedChatReqJSON)
 }
 
+func TestChatCompletionToResponses_convertRequestBody_TextFormatJSONSchema(t *testing.T) {
+	responsesReqJSON := `{
+		"model": "deepseek",
+		"input": "I live in Tokyo. Extract my city.",
+		"max_output_tokens": 100,
+		"reasoning": {"effort": "high"},
+		"text": {
+			"format": {
+				"type": "json_schema",
+				"name": "city_extract",
+				"description": "Extract the user's city",
+				"strict": true,
+				"schema": {
+					"type": "object",
+					"properties": {"city": {"type": "string"}},
+					"required": ["city"],
+					"additionalProperties": false
+				}
+			}
+		}
+	}`
+	expectedChatReqJSON := `{
+		"model": "deepseek",
+		"max_tokens": 100,
+		"reasoning_effort": "high",
+		"messages": [{"role": "user", "content": "I live in Tokyo. Extract my city."}],
+		"response_format": {
+			"type": "json_schema",
+			"json_schema": {
+				"name": "city_extract",
+				"description": "Extract the user's city",
+				"strict": true,
+				"schema": {
+					"type": "object",
+					"properties": {"city": {"type": "string"}},
+					"required": ["city"],
+					"additionalProperties": false
+				}
+			}
+		}
+	}`
+
+	testChatCompletionToResponses_convertRequestBody(t, responsesReqJSON, expectedChatReqJSON)
+}
+
+func TestChatCompletionToResponses_convertRequestBody_TextFormatJSONObjectAndText(t *testing.T) {
+	testCases := []struct {
+		Name       string
+		FormatType string
+	}{
+		{Name: "JSONObject", FormatType: "json_object"},
+		{Name: "Text", FormatType: "text"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.Name, func(t *testing.T) {
+			responsesReqJSON := `{"model": "gpt-5", "input": "hi", "text": {"format": {"type": "` + tc.FormatType + `"}}}`
+			expectedChatReqJSON := `{
+				"model": "gpt-5",
+				"messages": [{"role": "user", "content": "hi"}],
+				"response_format": {"type": "` + tc.FormatType + `"}
+			}`
+			testChatCompletionToResponses_convertRequestBody(t, responsesReqJSON, expectedChatReqJSON)
+		})
+	}
+}
+
+func TestChatCompletionToResponses_convertRequestBody_TextWithoutFormat(t *testing.T) {
+	responsesReqJSON := `{"model": "gpt-5", "input": "hi", "text": {"verbosity": "low"}}`
+	expectedChatReqJSON := `{"model": "gpt-5", "messages": [{"role": "user", "content": "hi"}]}`
+
+	testChatCompletionToResponses_convertRequestBody(t, responsesReqJSON, expectedChatReqJSON)
+}
+
 func testChatCompletionToResponses_convertNonStreamResponseBody(t *testing.T, chatRespJSON, expectedResponsesRespJSON string) {
 	ctx := context.Background()
 	srcBody := octollm.NewBodyFromBytes([]byte(chatRespJSON), &octollm.JSONParser[openai.ChatCompletionResponse]{})

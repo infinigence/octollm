@@ -269,6 +269,45 @@ func TestChatCompletionsToClaudeMessages_convertRequestBody_ThinkingAndEffort(t 
 	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
 }
 
+func TestChatCompletionsToClaudeMessages_convertRequestBody_OutputFormat(t *testing.T) {
+	claudeReqJSON := `{
+		"model": "claude-sonnet-4-5",
+		"max_tokens": 1024,
+		"output_config": {
+			"format": {
+				"type": "json_schema",
+				"schema": {
+					"type": "object",
+					"properties": {"city": {"type": "string"}},
+					"required": ["city"],
+					"additionalProperties": false
+				}
+			}
+		},
+		"messages": [{"role": "user", "content": "I live in Tokyo. Extract my city."}]
+	}`
+
+	expectedOpenaiReqJSON := `{
+		"model": "claude-sonnet-4-5",
+		"max_tokens": 1024,
+		"response_format": {
+			"type": "json_schema",
+			"json_schema": {
+				"name": "output",
+				"schema": {
+					"type": "object",
+					"properties": {"city": {"type": "string"}},
+					"required": ["city"],
+					"additionalProperties": false
+				}
+			}
+		},
+		"messages": [{"role": "user", "content": [{"type": "text", "text": "I live in Tokyo. Extract my city."}]}]
+	}`
+
+	testChatCompletionsToClaudeMessages_convertRequestBody(t, claudeReqJSON, expectedOpenaiReqJSON)
+}
+
 func TestChatCompletionsToClaudeMessages_convertRequestBody_MultipleSystem(t *testing.T) {
 	claudeReqJSON := `{
 		"model": "claude-3-5-haiku",
