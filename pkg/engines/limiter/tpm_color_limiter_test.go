@@ -251,3 +251,73 @@ func TestTPMColorMarkerAndLimiter_Chain(t *testing.T) {
 	_, err = marker.Process(newLimiterTestRequest(t))
 	assert.ErrorIs(t, err, ErrTPMRateLimitReached)
 }
+
+func TestTPMColorLimiter_ReservationSeenByConcurrentRequests(t *testing.T) {
+	_, client := newTPMTestRedis(t)
+	e, err := NewTPMColorLimiterEngine(client, "svc", staticQoS([]int{150}, []int{1000}, 0), "ns", usageEngine(10, false))
+	require.NoError(t, err)
+	e.WithTokenEstimate(estimateOf(80))
+
+	// No response is closed: the second request sees own TPM 80, the third 160.
+	for range 2 {
+		_, err := e.Process(newLimiterTestRequest(t))
+		require.NoError(t, err)
+	}
+	_, err = e.Process(newLimiterTestRequest(t))
+	assert.ErrorIs(t, err, ErrTPMRateLimitReached)
+	assert.Equal(t, int64(160), mustReadTPM(t, client, "svc:own_1"))
+	assert.Equal(t, int64(160), mustReadTPM(t, client, "svc:public"))
+}
+
+func TestTPMColorLimiter_SettlesReservationInOwnAndPublic(t *testing.T) {
+	boom := errors.New("boom")
+	tests := []struct {
+		name    string
+		next    octollm.Engine
+		wantErr error
+		want    int64
+	}{
+		{"settled to usage", usageEngine(30, false), nil, 30},
+		{"settled to stream usage", usageEngine(130, true), nil, 130},
+		{"kept without usage", &nextStubEngine{}, nil, 80},
+		{"refunded when next fails", &nextStubEngine{err: boom}, boom, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, client := newTPMTestRedis(t)
+			e, err := NewTPMColorLimiterEngine(client, "svc", staticQoS([]int{1000}, []int{1000}, 0), "ns", tt.next)
+			require.NoError(t, err)
+			e.WithTokenEstimate(estimateOf(80))
+
+			resp, err := e.Process(newLimiterTestRequest(t))
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, int64(80), mustReadTPM(t, client, "svc:public"))
+				closeResponse(t, resp)
+			}
+			assert.Equal(t, tt.want, mustReadTPM(t, client, "svc:own_1"))
+			assert.Equal(t, tt.want, mustReadTPM(t, client, "svc:public"))
+		})
+	}
+}
+
+// TestTPMColorMarkerAndLimiter_LimiterRejectRefundsMarker checks that a request
+// the backend limiter rejects gives back what the marker reserved for it.
+func TestTPMColorMarkerAndLimiter_LimiterRejectRefundsMarker(t *testing.T) {
+	_, client := newTPMTestRedis(t)
+	mustRecordTPM(t, client, "svc:public", 1000)
+
+	lim, err := NewTPMColorLimiterEngine(client, "svc", staticQoS([]int{1000}, []int{1000}, 0), "ns", usageEngine(5, false))
+	require.NoError(t, err)
+	lim.WithTokenEstimate(estimateOf(80))
+	marker, err := NewTPMColorMarkerEngine(client, "tenant", []int{1000}, "ns", lim)
+	require.NoError(t, err)
+	marker.WithTokenEstimate(estimateOf(80))
+
+	_, err = marker.Process(newLimiterTestRequest(t))
+	assert.ErrorIs(t, err, ErrTPMRateLimitReached)
+	assert.Equal(t, int64(0), mustReadTPM(t, client, "tenant"))
+	assert.Equal(t, int64(1000), mustReadTPM(t, client, "svc:public"))
+}
