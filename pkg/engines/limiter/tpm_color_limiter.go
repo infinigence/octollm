@@ -23,15 +23,20 @@ import (
 // raises for strong cache hits. Over a cap returns ErrTPMRateLimitReached, or
 // ErrTPMStrongCacheRateLimitReached for a strong cache hit.
 //
-// Once the response is closed, the usage a usage.CollectorEngine below it
-// recorded is added to both windows. Wrap each backend with its own limiter
-// below the load balancer, so every attempt, retries and replicated requests
-// included, is counted against the backend that served it.
+// An admitted request is counted in both windows: with WithTokenEstimate, its
+// estimated tokens are reserved right away, so concurrent requests see one
+// another before any has finished. The reservation is settled to the usage a
+// usage.CollectorEngine below it recorded once the response is closed; it is
+// refunded when the next engine fails, and kept when the response closes
+// without usage recorded. Wrap each backend with its own limiter below the
+// load balancer, so every attempt, retries and replicated requests included,
+// is counted against the backend that served it.
 type TPMColorLimiterEngine struct {
 	redisClient *redis.Client
 	key         string
 	limitsFunc  LimitsFunc
 	nameSpace   string
+	estimate    TokenEstimateFunc
 	next        octollm.Engine
 }
 
@@ -70,8 +75,18 @@ func NewTPMColorLimiterEngineWithLimitsFunc(redisClient *redis.Client, key strin
 	}, nil
 }
 
-// allow returns the window keys the request's usage is recorded into.
-func (e *TPMColorLimiterEngine) allow(req *octollm.Request) (keys []string, priority int, err error) {
+// WithTokenEstimate makes the limiter reserve fn's estimate of each admitted
+// request in the backend TPM; without it, a request only counts once its
+// response is closed. It must be called before the engine serves requests.
+func (e *TPMColorLimiterEngine) WithTokenEstimate(fn TokenEstimateFunc) *TPMColorLimiterEngine {
+	e.estimate = fn
+	return e
+}
+
+const tpmLimiterLogPrefix = "[TPMColorLimiterEngine]"
+
+// allow admits the request and returns what it reserved in the backend windows.
+func (e *TPMColorLimiterEngine) allow(req *octollm.Request) (res *tpmReservation, priority int, err error) {
 	ctx := req.Context()
 	limits, err := e.limitsFunc(req)
 	if err != nil {
@@ -90,18 +105,20 @@ func (e *TPMColorLimiterEngine) allow(req *octollm.Request) (keys []string, prio
 
 	ownKey := fmt.Sprintf("%s:own_%d", e.key, i+1)
 	publicKey := e.key + ":public"
-	keys = []string{ownKey, publicKey}
+	keys := []string{ownKey, publicKey}
+	caps := []int64{int64(effectiveOwn), int64(effectiveTotal)}
 
-	tpm, err := readTPM(ctx, e.redisClient, keys)
+	tokens := estimateTokens(req, e.estimate, tpmLimiterLogPrefix)
+	res, tpm, err := reserveTPM(ctx, e.redisClient, keys, caps, tokens, tpmLimiterLogPrefix)
 	if err != nil {
-		slog.ErrorContext(ctx, fmt.Sprintf("[TPMColorLimiterEngine] %v, ownKey: %s, publicKey: %s", err, ownKey, publicKey))
+		slog.ErrorContext(ctx, fmt.Sprintf("%s %v, ownKey: %s, publicKey: %s", tpmLimiterLogPrefix, err, ownKey, publicKey))
 		return nil, 0, err
 	}
 	ownTPM, publicTPM := tpm[0], tpm[1]
 
-	if ownTPM >= int64(effectiveOwn) || publicTPM >= int64(effectiveTotal) {
-		slog.WarnContext(ctx, fmt.Sprintf("[TPMColorLimiterEngine] tpm limit reached for priority %d (qosIndex %d), ownTPM: %d/%d, publicTPM: %d/%d, hitKind: %s",
-			priority, i, ownTPM, effectiveOwn, publicTPM, effectiveTotal, kind))
+	if res == nil {
+		slog.WarnContext(ctx, fmt.Sprintf("%s tpm limit reached for priority %d (qosIndex %d), ownTPM: %d/%d, publicTPM: %d/%d, hitKind: %s",
+			tpmLimiterLogPrefix, priority, i, ownTPM, effectiveOwn, publicTPM, effectiveTotal, kind))
 		limitErr := ErrTPMRateLimitReached
 		if kind == common.CacheHitStrong {
 			limitErr = ErrTPMStrongCacheRateLimitReached
@@ -109,15 +126,15 @@ func (e *TPMColorLimiterEngine) allow(req *octollm.Request) (keys []string, prio
 		return nil, priority, limitErr
 	}
 
-	slog.InfoContext(ctx, fmt.Sprintf("[TPMColorLimiterEngine] tpm allowed for priority %d (qosIndex %d), ownTPM: %d/%d, publicTPM: %d/%d, hitKind: %s",
-		priority, i, ownTPM, effectiveOwn, publicTPM, effectiveTotal, kind))
-	return keys, priority, nil
+	slog.InfoContext(ctx, fmt.Sprintf("%s tpm allowed for priority %d (qosIndex %d), ownTPM: %d/%d, publicTPM: %d/%d, reserved: %d, hitKind: %s",
+		tpmLimiterLogPrefix, priority, i, ownTPM, effectiveOwn, publicTPM, effectiveTotal, tokens, kind))
+	return res, priority, nil
 }
 
 func (e *TPMColorLimiterEngine) Process(req *octollm.Request) (*octollm.Response, error) {
-	keys, priority, err := e.allow(req)
+	res, priority, err := e.allow(req)
 	if err != nil {
-		slog.ErrorContext(req.Context(), fmt.Sprintf("[TPMColorLimiterEngine] tpm rate limiter error: %v, key: %s", err, e.key))
+		slog.ErrorContext(req.Context(), fmt.Sprintf("%s tpm rate limiter error: %v, key: %s", tpmLimiterLogPrefix, err, e.key))
 		if errors.Is(err, ErrRateLimitReached) {
 			recordLimiterDeny(req, priority)
 		}
@@ -125,12 +142,5 @@ func (e *TPMColorLimiterEngine) Process(req *octollm.Request) (*octollm.Response
 	}
 	recordLimiterAllow(req, priority)
 
-	resp, err := e.next.Process(req)
-	if err != nil || resp == nil {
-		return resp, err
-	}
-	onResponseClose(resp, func() {
-		recordTPMUsage(req, e.redisClient, keys, "[TPMColorLimiterEngine]")
-	})
-	return resp, nil
+	return processReserved(req, e.next, res)
 }

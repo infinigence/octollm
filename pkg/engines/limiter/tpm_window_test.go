@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -142,6 +143,144 @@ func TestTPMWindow_RedisError(t *testing.T) {
 	_, err := readTPM(context.Background(), client, []string{"k"})
 	assert.Error(t, err)
 	assert.Error(t, recordTPM(context.Background(), client, []string{"k"}, 1))
+	_, _, err = reserveTPM(context.Background(), client, []string{"k"}, []int64{1}, 1, "[test]")
+	assert.Error(t, err)
+	assert.Error(t, settleTPM(context.Background(), client, []string{"k"}, []int64{0}, -1))
+}
+
+func TestTPMWindow_ReserveSeesEarlierReservations(t *testing.T) {
+	mr, client := newTPMTestRedis(t)
+
+	mr.SetTime(at(0))
+	res, tpm := mustReserveTPM(t, client, []string{"k"}, []int64{100}, 60)
+	require.NotNil(t, res)
+	assert.Equal(t, []int64{0}, tpm)
+
+	// A request admitted while the first is still in flight sees its reservation.
+	mr.SetTime(at(1))
+	res, tpm = mustReserveTPM(t, client, []string{"k"}, []int64{100}, 60)
+	require.NotNil(t, res)
+	assert.Equal(t, []int64{60}, tpm)
+
+	// Once the reservations reach the cap, the next request is rejected and
+	// reserves nothing.
+	res, tpm = mustReserveTPM(t, client, []string{"k"}, []int64{100}, 60)
+	assert.Nil(t, res)
+	assert.Equal(t, []int64{120}, tpm)
+	assert.Equal(t, "120", mr.HGet("k", "bucket:00"))
+	assert.Equal(t, at(1).Unix(), mustInt64(t, mr.HGet("k", "last_sec")))
+	assert.Equal(t, tpmKeyTTL, mr.TTL("k"))
+}
+
+func TestTPMWindow_ReserveAllOrNothing(t *testing.T) {
+	mr, client := newTPMTestRedis(t)
+
+	mr.SetTime(at(0))
+	mustRecordTPM(t, client, "b", 10)
+
+	res, tpm := mustReserveTPM(t, client, []string{"a", "b"}, []int64{100, 10}, 5)
+	assert.Nil(t, res)
+	assert.Equal(t, []int64{0, 10}, tpm)
+	assert.False(t, mr.Exists("a"))
+	assert.Equal(t, int64(10), mustReadTPM(t, client, "b"))
+}
+
+func TestTPMWindow_ReserveNothingWritesNothing(t *testing.T) {
+	mr, client := newTPMTestRedis(t)
+
+	mr.SetTime(at(7))
+	res, _ := mustReserveTPM(t, client, []string{"a", "b"}, []int64{1, 1}, 0)
+	require.NotNil(t, res)
+	assert.Empty(t, mr.Keys())
+
+	// The usage still settles into the slice the request was admitted in.
+	mr.SetTime(at(12))
+	res.settle(newLimiterTestRequest(t), 4)
+	assert.Equal(t, "4", mr.HGet("a", "bucket:05"))
+	assert.Equal(t, "4", mr.HGet("b", "bucket:05"))
+}
+
+func TestTPMWindow_SettleIntoAdmissionSlice(t *testing.T) {
+	tests := []struct {
+		name   string
+		actual int64
+	}{
+		{"usage above estimate", 130},
+		{"usage below estimate", 40},
+		{"usage equals estimate", 100},
+		{"refund", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mr, client := newTPMTestRedis(t)
+
+			mr.SetTime(at(2))
+			mustRecordTPM(t, client, "k", 7) // another request in the same slice
+			res, _ := mustReserveTPM(t, client, []string{"k"}, []int64{1000}, 100)
+			require.NotNil(t, res)
+
+			mr.SetTime(at(40))
+			res.settle(newLimiterTestRequest(t), tt.actual)
+			assert.Equal(t, 7+tt.actual, mustReadTPM(t, client, "k"))
+			assert.Equal(t, fmt.Sprint(7+tt.actual), mr.HGet("k", "bucket:00"))
+			assert.Empty(t, mr.HGet("k", "bucket:40"))
+
+			// The correction rolls out together with the reservation.
+			assert.Equal(t, int64(0), readTPMAt(t, mr, client, "k", at(60)))
+		})
+	}
+}
+
+func TestTPMWindow_SettleAfterAdmissionSliceRolledOut(t *testing.T) {
+	tests := []struct {
+		name     string
+		settleAt int
+		actual   int64
+		want     int64
+	}{
+		{"admission slice at the window's edge", 59, 40, 20 + 40},
+		// At 60 the current slice reuses the admission slice's field.
+		{"overestimate takes nothing", 60, 40, 20},
+		{"excess usage goes to the current slice", 60, 130, 20 + 30},
+		{"late refund takes nothing", 90, 0, 20},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mr, client := newTPMTestRedis(t)
+
+			mr.SetTime(at(0))
+			res, _ := mustReserveTPM(t, client, []string{"k"}, []int64{1000}, 100)
+			require.NotNil(t, res)
+
+			mr.SetTime(at(tt.settleAt))
+			mustRecordTPM(t, client, "k", 20) // another request in the current slice
+			res.settle(newLimiterTestRequest(t), tt.actual)
+			assert.Equal(t, tt.want, mustReadTPM(t, client, "k"))
+		})
+	}
+}
+
+func TestTPMWindow_SettleNeverTakesSliceBelowZero(t *testing.T) {
+	mr, client := newTPMTestRedis(t)
+
+	mr.SetTime(at(0))
+	res, _ := mustReserveTPM(t, client, []string{"k"}, []int64{1000}, 100)
+	require.NotNil(t, res)
+	// The reservation is lost, e.g. the key was evicted, and the slice now
+	// holds less than the refund.
+	mr.Del("k")
+	mustRecordTPM(t, client, "k", 30)
+
+	res.settle(newLimiterTestRequest(t), 0)
+	assert.Equal(t, "0", mr.HGet("k", "bucket:00"))
+	assert.Equal(t, int64(0), mustReadTPM(t, client, "k"))
+}
+
+func mustReserveTPM(t *testing.T, client *redis.Client, keys []string, caps []int64, tokens int64) (*tpmReservation, []int64) {
+	t.Helper()
+	res, tpm, err := reserveTPM(context.Background(), client, keys, caps, tokens, "[test]")
+	require.NoError(t, err)
+	return res, tpm
 }
 
 // readTPMAt reads key with the Redis clock set to now.

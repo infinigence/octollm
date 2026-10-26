@@ -10,21 +10,26 @@ import (
 )
 
 // TPMColorMarkerEngine assigns a priority to each request from the TPM its
-// tenant used on the model over the last 60 seconds, and records the request's
-// final usage into that TPM once the response is closed.
+// tenant used on the model over the last 60 seconds, and counts the request's
+// usage into that TPM.
 //
 // It is the TPM counterpart of ConcurrencyColorMarkerEngine: the priority is
 // stored under the same nameSpace context key and color metadata, so the
 // concurrency and TPM color limiters read it alike.
 //
-// The recorded usage is the one a usage.CollectorEngine below it reports for
-// the response actually returned, so retries and replicated requests are not
-// counted twice. Without a collector, nothing is recorded.
+// With WithTokenEstimate, an admitted request reserves its estimated tokens
+// right away, so concurrent requests see one another before any has finished.
+// The reservation is settled to the usage a usage.CollectorEngine below it
+// reports for the response actually returned, so retries and replicated
+// requests are not counted twice; it is refunded when the next engine fails,
+// and kept when the response closes without usage recorded.
 type TPMColorMarkerEngine struct {
 	redisClient *redis.Client
 	key         string
 	rates       []int
+	ceiling     int64
 	nameSpace   string
+	estimate    TokenEstimateFunc
 	next        octollm.Engine
 }
 
@@ -68,7 +73,18 @@ func NewTPMColorMarkerEngine(redisClient *redis.Client, key string, rates []int,
 		slog.Warn(fmt.Sprintf("tpm marker rates normalized from %v to %v", rates, normalizedRates))
 	}
 	e.rates = normalizedRates
+	for _, rate := range normalizedRates {
+		e.ceiling += int64(rate)
+	}
 	return e, nil
+}
+
+// WithTokenEstimate makes the marker reserve fn's estimate of each admitted
+// request in the tenant TPM; without it, a request only counts once its
+// response is closed. It must be called before the engine serves requests.
+func (e *TPMColorMarkerEngine) WithTokenEstimate(fn TokenEstimateFunc) *TPMColorMarkerEngine {
+	e.estimate = fn
+	return e
 }
 
 func (e *TPMColorMarkerEngine) Process(req *octollm.Request) (*octollm.Response, error) {
@@ -78,29 +94,25 @@ func (e *TPMColorMarkerEngine) Process(req *octollm.Request) (*octollm.Response,
 		return e.next.Process(req)
 	}
 
-	tpm, err := readTPM(ctx, e.redisClient, []string{e.key})
+	const logPrefix = "[TPMColorMarkerEngine]"
+	tokens := estimateTokens(req, e.estimate, logPrefix)
+	res, tpm, err := reserveTPM(ctx, e.redisClient, []string{e.key}, []int64{e.ceiling}, tokens, logPrefix)
 	if err != nil {
-		slog.ErrorContext(ctx, fmt.Sprintf("[TPMColorMarkerEngine] marker error: %v, key: %s", err, e.key))
+		slog.ErrorContext(ctx, fmt.Sprintf("%s marker error: %v, key: %s", logPrefix, err, e.key))
 		return nil, err
 	}
-	priority, ok := tpmMarkerPriority(e.rates, tpm[0])
-	if !ok {
-		slog.WarnContext(ctx, fmt.Sprintf("[TPMColorMarkerEngine] all tiers exhausted, key: %s, tpm: %d, rates: %v", e.key, tpm[0], e.rates))
+	if res == nil {
+		slog.WarnContext(ctx, fmt.Sprintf("%s all tiers exhausted, key: %s, tpm: %d, rates: %v", logPrefix, e.key, tpm[0], e.rates))
 		recordMarkerDeny(req, 0)
 		return nil, ErrTPMRateLimitReached
 	}
+	// Admitted means tpm is below the sum of rates, so a band is found.
+	priority, _ := tpmMarkerPriority(e.rates, tpm[0])
 	req = req.WithContext(setPriorityToContext(ctx, e.nameSpace, priority))
 	recordMarkerAllow(req, priority)
-	slog.InfoContext(ctx, fmt.Sprintf("[TPMColorMarkerEngine] marked priority %d, key: %s, tpm: %d, rates: %v", priority, e.key, tpm[0], e.rates))
+	slog.InfoContext(ctx, fmt.Sprintf("%s marked priority %d, key: %s, tpm: %d, reserved: %d, rates: %v", logPrefix, priority, e.key, tpm[0], tokens, e.rates))
 
-	resp, err := e.next.Process(req)
-	if err != nil || resp == nil {
-		return resp, err
-	}
-	onResponseClose(resp, func() {
-		recordTPMUsage(req, e.redisClient, []string{e.key}, "[TPMColorMarkerEngine]")
-	})
-	return resp, nil
+	return processReserved(req, e.next, res)
 }
 
 // tpmMarkerPriority returns the priority of the first band whose cumulative

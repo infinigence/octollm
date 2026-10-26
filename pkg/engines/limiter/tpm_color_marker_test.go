@@ -212,3 +212,87 @@ func TestTPMColorMarker_RecordsReturnedAttemptOnly(t *testing.T) {
 	closeResponse(t, resp)
 	assert.Equal(t, int64(7), mustReadTPM(t, client, "tenant"))
 }
+
+func estimateOf(tokens int64) TokenEstimateFunc {
+	return func(*octollm.Request) (int64, error) { return tokens, nil }
+}
+
+func TestTPMColorMarker_ReservationSeenByConcurrentRequests(t *testing.T) {
+	_, client := newTPMTestRedis(t)
+	capture := &capturePriorityEngine{ns: "ns", next: usageEngine(10, false)}
+	e, err := NewTPMColorMarkerEngine(client, "tenant", []int{100, 100}, "ns", capture)
+	require.NoError(t, err)
+	e.WithTokenEstimate(estimateOf(80))
+
+	// No response is closed, so every request is still in flight when the next
+	// one arrives: they see TPM 0, 80 and 160.
+	var priorities []int
+	for range 3 {
+		_, err := e.Process(newLimiterTestRequest(t))
+		require.NoError(t, err)
+		priorities = append(priorities, capture.priority)
+	}
+	assert.Equal(t, []int{1, 1, 0}, priorities)
+	assert.Equal(t, int64(240), mustReadTPM(t, client, "tenant"))
+
+	_, err = e.Process(newLimiterTestRequest(t))
+	assert.ErrorIs(t, err, ErrTPMRateLimitReached)
+	assert.Equal(t, 3, capture.calls)
+	assert.Equal(t, int64(240), mustReadTPM(t, client, "tenant"))
+}
+
+func TestTPMColorMarker_SettlesReservation(t *testing.T) {
+	boom := errors.New("boom")
+	tests := []struct {
+		name    string
+		next    octollm.Engine
+		wantErr error
+		want    int64
+	}{
+		{"settled to usage", usageEngine(30, false), nil, 30},
+		{"settled to stream usage", usageEngine(130, true), nil, 130},
+		{"kept without usage", &nextStubEngine{}, nil, 80},
+		{"refunded when next fails", &nextStubEngine{err: boom}, boom, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, client := newTPMTestRedis(t)
+			e, err := NewTPMColorMarkerEngine(client, "tenant", []int{1000}, "ns", tt.next)
+			require.NoError(t, err)
+			e.WithTokenEstimate(estimateOf(80))
+
+			resp, err := e.Process(newLimiterTestRequest(t))
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, int64(80), mustReadTPM(t, client, "tenant"))
+				closeResponse(t, resp)
+			}
+			assert.Equal(t, tt.want, mustReadTPM(t, client, "tenant"))
+		})
+	}
+}
+
+func TestTPMColorMarker_NoEstimateReservesNothing(t *testing.T) {
+	estimates := map[string]TokenEstimateFunc{
+		"error": func(*octollm.Request) (int64, error) {
+			return 0, errors.New("non-text input")
+		},
+		"negative": estimateOf(-5),
+	}
+	for name, fn := range estimates {
+		t.Run(name, func(t *testing.T) {
+			mr, client := newTPMTestRedis(t)
+			e, err := NewTPMColorMarkerEngine(client, "tenant", []int{1000}, "ns", usageEngine(30, false))
+			require.NoError(t, err)
+			e.WithTokenEstimate(fn)
+
+			resp, err := e.Process(newLimiterTestRequest(t))
+			require.NoError(t, err)
+			assert.False(t, mr.Exists("tenant"))
+			closeResponse(t, resp)
+			assert.Equal(t, int64(30), mustReadTPM(t, client, "tenant"))
+		})
+	}
+}
