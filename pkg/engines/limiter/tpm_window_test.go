@@ -145,7 +145,6 @@ func TestTPMWindow_RedisError(t *testing.T) {
 	assert.Error(t, recordTPM(context.Background(), client, []string{"k"}, 1))
 	_, _, err = reserveTPM(context.Background(), client, []string{"k"}, []int64{1}, 1, "[test]")
 	assert.Error(t, err)
-	assert.Error(t, settleTPM(context.Background(), client, []string{"k"}, []int64{0}, -1))
 }
 
 func TestTPMWindow_ReserveSeesEarlierReservations(t *testing.T) {
@@ -193,22 +192,25 @@ func TestTPMWindow_ReserveNothingWritesNothing(t *testing.T) {
 	require.NotNil(t, res)
 	assert.Empty(t, mr.Keys())
 
-	// The usage still settles into the slice the request was admitted in.
+	// The usage is then recorded in full once settled.
 	mr.SetTime(at(12))
 	res.settle(newLimiterTestRequest(t), 4)
-	assert.Equal(t, "4", mr.HGet("a", "bucket:05"))
-	assert.Equal(t, "4", mr.HGet("b", "bucket:05"))
+	assert.Equal(t, "4", mr.HGet("a", "bucket:10"))
+	assert.Equal(t, "4", mr.HGet("b", "bucket:10"))
 }
 
-func TestTPMWindow_SettleIntoAdmissionSlice(t *testing.T) {
+func TestTPMWindow_SettleIntoCurrentSlice(t *testing.T) {
 	tests := []struct {
 		name   string
 		actual int64
+		// afterRollOut is the TPM once the reservation rolled out but the
+		// correction has not.
+		afterRollOut int64
 	}{
-		{"usage above estimate", 130},
-		{"usage below estimate", 40},
-		{"usage equals estimate", 100},
-		{"refund", 0},
+		{"usage above estimate", 130, 30},
+		{"usage below estimate", 40, 0},
+		{"usage equals estimate", 100, 0},
+		{"refund", 0, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -222,58 +224,46 @@ func TestTPMWindow_SettleIntoAdmissionSlice(t *testing.T) {
 			mr.SetTime(at(40))
 			res.settle(newLimiterTestRequest(t), tt.actual)
 			assert.Equal(t, 7+tt.actual, mustReadTPM(t, client, "k"))
-			assert.Equal(t, fmt.Sprint(7+tt.actual), mr.HGet("k", "bucket:00"))
-			assert.Empty(t, mr.HGet("k", "bucket:40"))
+			assert.Equal(t, "107", mr.HGet("k", "bucket:00"))
+			if tt.actual != 100 {
+				assert.Equal(t, fmt.Sprint(tt.actual-100), mr.HGet("k", "bucket:40"))
+			}
 
-			// The correction rolls out together with the reservation.
-			assert.Equal(t, int64(0), readTPMAt(t, mr, client, "k", at(60)))
+			assert.Equal(t, tt.afterRollOut, readTPMAt(t, mr, client, "k", at(60)))
+			assert.Equal(t, int64(0), readTPMAt(t, mr, client, "k", at(100)))
 		})
 	}
 }
 
-func TestTPMWindow_SettleAfterAdmissionSliceRolledOut(t *testing.T) {
-	tests := []struct {
-		name     string
-		settleAt int
-		actual   int64
-		want     int64
-	}{
-		{"admission slice at the window's edge", 59, 40, 20 + 40},
-		// At 60 the current slice reuses the admission slice's field.
-		{"overestimate takes nothing", 60, 40, 20},
-		{"excess usage goes to the current slice", 60, 130, 20 + 30},
-		{"late refund takes nothing", 90, 0, 20},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mr, client := newTPMTestRedis(t)
-
-			mr.SetTime(at(0))
-			res, _ := mustReserveTPM(t, client, []string{"k"}, []int64{1000}, 100)
-			require.NotNil(t, res)
-
-			mr.SetTime(at(tt.settleAt))
-			mustRecordTPM(t, client, "k", 20) // another request in the current slice
-			res.settle(newLimiterTestRequest(t), tt.actual)
-			assert.Equal(t, tt.want, mustReadTPM(t, client, "k"))
-		})
-	}
-}
-
-func TestTPMWindow_SettleNeverTakesSliceBelowZero(t *testing.T) {
+func TestTPMWindow_RecordNeverTakesWindowBelowZero(t *testing.T) {
 	mr, client := newTPMTestRedis(t)
 
 	mr.SetTime(at(0))
-	res, _ := mustReserveTPM(t, client, []string{"k"}, []int64{1000}, 100)
-	require.NotNil(t, res)
-	// The reservation is lost, e.g. the key was evicted, and the slice now
-	// holds less than the refund.
-	mr.Del("k")
 	mustRecordTPM(t, client, "k", 30)
-
-	res.settle(newLimiterTestRequest(t), 0)
-	assert.Equal(t, "0", mr.HGet("k", "bucket:00"))
+	// A refund larger than the window only takes what the window holds.
+	mr.SetTime(at(10))
+	mustRecordTPM(t, client, "k", -100)
+	assert.Equal(t, "-30", mr.HGet("k", "bucket:10"))
 	assert.Equal(t, int64(0), mustReadTPM(t, client, "k"))
+
+	mr.SetTime(at(20))
+	mustRecordTPM(t, client, "k", 50)
+	assert.Equal(t, int64(50), mustReadTPM(t, client, "k"))
+}
+
+func TestTPMWindow_NegativeSumReadsZero(t *testing.T) {
+	mr, client := newTPMTestRedis(t)
+
+	mr.SetTime(at(0))
+	mustRecordTPM(t, client, "k", 100)
+	mr.SetTime(at(30))
+	mustRecordTPM(t, client, "k", -100)
+
+	// Once the 100 rolls out, the slices sum to -100 until the refund does too.
+	assert.Equal(t, int64(0), readTPMAt(t, mr, client, "k", at(60)))
+	mustRecordTPM(t, client, "k", 40)
+	assert.Equal(t, int64(0), readTPMAt(t, mr, client, "k", at(60)))
+	assert.Equal(t, int64(40), readTPMAt(t, mr, client, "k", at(90)))
 }
 
 func mustReserveTPM(t *testing.T, client *redis.Client, keys []string, caps []int64, tokens int64) (*tpmReservation, []int64) {
