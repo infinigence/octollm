@@ -24,13 +24,11 @@ const tpmKeyTTL = 2 * time.Minute
 // since last_sec, so the 12 buckets only hold tokens from the last 60 seconds
 // and the window TPM is their sum.
 //
-// A request is counted in the slice it was admitted in: admission reserves an
-// estimate of its tokens there, atomically with the cap check, so concurrent
-// requests see one another before any has finished. Once the actual usage is
-// known, the difference is settled into that same slice, so the reservation and
-// its correction roll out together. Should the slice have rolled out already (a
-// request over a minute long), only a positive difference is added, to the
-// current slice: a late refund never drives the window below what it holds.
+// Admission reserves an estimate of a request's tokens in the current slice,
+// atomically with the cap check, so concurrent requests see one another before
+// any has finished. Once the actual usage is known, the difference is added to
+// the then current slice. A negative difference never takes the window TPM
+// below zero, and a window whose slices sum below zero reads as zero.
 //
 // "now" is the Redis server's clock, not the gateway's: every gateway pod then
 // rolls a key by the same clock, so a pod whose clock runs ahead cannot clear
@@ -79,19 +77,21 @@ local function roll(key, now)
     return now
 end
 
--- windowSum returns the TPM of a rolled key.
+-- windowSum returns the TPM of a rolled key. A refund settled after its
+-- reservation rolled out can leave the slices summing below zero; that reads
+-- as zero.
 local function windowSum(key)
     local vals = redis.call('HMGET', key, unpack(bucketFields))
     local sum = 0
     for _, v in ipairs(vals) do
         sum = sum + (tonumber(v) or 0)
     end
-    return sum
+    return math.max(sum, 0)
 end
 
--- add adds tokens to the slice of slot and keeps the key alive.
-local function add(key, slot, tokens, effective, ttl)
-    redis.call('HINCRBY', key, bucketField(slot), tokens)
+-- add adds tokens to the current slice and keeps the key alive.
+local function add(key, tokens, effective, ttl)
+    redis.call('HINCRBY', key, bucketField(math.floor(effective / BUCKET_SECONDS)), tokens)
     redis.call('HSET', key, 'last_sec', effective)
     redis.call('EXPIRE', key, ttl)
 end
@@ -116,18 +116,16 @@ return sums
 // ARGV[1]: tokens to reserve; nothing is written when not positive
 // ARGV[2]: ttl in seconds
 // ARGV[3..]: cap of each key, in key order
-// Returns: {admitted (1 or 0), tpm_1, ..., tpm_n, slot_1, ..., slot_n}, where
-// tpm is the window TPM before the reservation and slot is the absolute index
-// of the current slice.
+// Returns: {admitted (1 or 0), tpm_1, ..., tpm_n}, where tpm is the window TPM
+// before the reservation.
 const tpmReserveLuaScript = tpmWindowLuaPrelude + `
 local tokens = tonumber(ARGV[1])
 local ttl = tonumber(ARGV[2])
 local n = #KEYS
 local admitted = 1
-local effectives, sums, slots = {}, {}, {}
+local effectives, sums = {}, {}
 for i = 1, n do
     effectives[i] = roll(KEYS[i], now)
-    slots[i] = math.floor(effectives[i] / BUCKET_SECONDS)
     sums[i] = windowSum(KEYS[i])
     if sums[i] >= tonumber(ARGV[2 + i]) then
         admitted = 0
@@ -135,46 +133,32 @@ for i = 1, n do
 end
 if admitted == 1 and tokens > 0 then
     for i = 1, n do
-        add(KEYS[i], slots[i], tokens, effectives[i], ttl)
+        add(KEYS[i], tokens, effectives[i], ttl)
     end
 end
 local result = {admitted}
 for i = 1, n do
     result[1 + i] = sums[i]
-    result[1 + n + i] = slots[i]
 end
 return result
 `
 
-// tpmSettleLuaScript adds delta tokens to every key, into the slice a request
-// was admitted in while it is still in the window, and otherwise into the
-// current slice when delta is positive. A negative delta never takes a slice
-// below zero.
+// tpmRecordLuaScript adds tokens to the current slice of every key. Negative
+// tokens subtract, but never take a key's window TPM below zero.
 // KEYS: TPM window keys
-// ARGV[1]: delta tokens
+// ARGV[1]: tokens
 // ARGV[2]: ttl in seconds
-// ARGV[3..]: admission slot of each key, in key order; none for keys without one
-const tpmSettleLuaScript = tpmWindowLuaPrelude + `
-local delta = tonumber(ARGV[1])
+const tpmRecordLuaScript = tpmWindowLuaPrelude + `
+local tokens = tonumber(ARGV[1])
 local ttl = tonumber(ARGV[2])
 for i = 1, #KEYS do
-    local key = KEYS[i]
-    local effective = roll(key, now)
-    local nowSlot = math.floor(effective / BUCKET_SECONDS)
-    local slot = tonumber(ARGV[2 + i])
-    local target = nil
-    local tokens = delta
-    if slot ~= nil and slot <= nowSlot and nowSlot - slot < BUCKET_COUNT then
-        target = slot
-        if tokens < 0 then
-            local held = tonumber(redis.call('HGET', key, bucketField(slot))) or 0
-            tokens = math.max(tokens, -held)
-        end
-    elseif tokens > 0 then
-        target = nowSlot
+    local effective = roll(KEYS[i], now)
+    local delta = tokens
+    if delta < 0 then
+        delta = math.max(delta, -windowSum(KEYS[i]))
     end
-    if target ~= nil and tokens ~= 0 then
-        add(key, target, tokens, effective, ttl)
+    if delta ~= 0 then
+        add(KEYS[i], delta, effective, ttl)
     end
 end
 return 1
@@ -183,7 +167,7 @@ return 1
 var (
 	tpmReadScript    = redis.NewScript(tpmReadLuaScript)
 	tpmReserveScript = redis.NewScript(tpmReserveLuaScript)
-	tpmSettleScript  = redis.NewScript(tpmSettleLuaScript)
+	tpmRecordScript  = redis.NewScript(tpmRecordLuaScript)
 )
 
 // readTPM returns the TPM of the last 60 seconds for each key, in key order.
@@ -199,22 +183,12 @@ func readTPM(ctx context.Context, client *redis.Client, keys []string) ([]int64,
 	return sums, nil
 }
 
-// recordTPM adds tokens to the current 5-second slice of each key.
+// recordTPM adds tokens to the current 5-second slice of each key. Negative
+// tokens subtract, but never take a key's window TPM below zero.
 func recordTPM(ctx context.Context, client *redis.Client, keys []string, tokens int64) error {
-	return settleTPM(ctx, client, keys, nil, tokens)
-}
-
-// settleTPM adds delta tokens to each key, into slots[i] while that slice is
-// still in the window, and otherwise into the current slice when delta is
-// positive. slots may be nil.
-func settleTPM(ctx context.Context, client *redis.Client, keys []string, slots []int64, delta int64) error {
-	args := make([]any, 0, 2+len(slots))
-	args = append(args, delta, int64(tpmKeyTTL.Seconds()))
-	for _, slot := range slots {
-		args = append(args, slot)
-	}
-	if _, err := tpmSettleScript.Run(ctx, client, keys, args...).Result(); err != nil {
-		return fmt.Errorf("tpm settle script error: %w", err)
+	_, err := tpmRecordScript.Run(ctx, client, keys, tokens, int64(tpmKeyTTL.Seconds())).Result()
+	if err != nil {
+		return fmt.Errorf("tpm record script error: %w", err)
 	}
 	return nil
 }
@@ -242,7 +216,6 @@ func estimateTokens(req *octollm.Request, fn TokenEstimateFunc, logPrefix string
 type tpmReservation struct {
 	redisClient *redis.Client
 	keys        []string
-	slots       []int64
 	tokens      int64
 	logPrefix   string
 }
@@ -261,33 +234,32 @@ func reserveTPM(ctx context.Context, client *redis.Client, keys []string, caps [
 	if err != nil {
 		return nil, nil, fmt.Errorf("tpm reserve script error: %w", err)
 	}
-	values, err := int64sFromScript(result, 1+2*len(keys))
+	values, err := int64sFromScript(result, 1+len(keys))
 	if err != nil {
 		return nil, nil, fmt.Errorf("unexpected tpm reserve script result format: %w", err)
 	}
-	tpm := values[1 : 1+len(keys)]
+	tpm := values[1:]
 	if values[0] != 1 {
 		return nil, tpm, nil
 	}
 	return &tpmReservation{
 		redisClient: client,
 		keys:        keys,
-		slots:       values[1+len(keys):],
 		tokens:      tokens,
 		logPrefix:   logPrefix,
 	}, tpm, nil
 }
 
-// settle replaces the reserved estimate with actual tokens. It runs on a
-// context detached from req's, so it still takes effect when the client has
-// disconnected.
+// settle replaces the reserved estimate with actual tokens, adding the
+// difference to the current slice of every key. It runs on a context detached
+// from req's, so it still takes effect when the client has disconnected.
 func (r *tpmReservation) settle(req *octollm.Request, actual int64) {
 	delta := max(actual, 0) - r.tokens
 	if delta == 0 {
 		return
 	}
 	ctx := context.WithoutCancel(req.Context())
-	if err := settleTPM(ctx, r.redisClient, r.keys, r.slots, delta); err != nil {
+	if err := recordTPM(ctx, r.redisClient, r.keys, delta); err != nil {
 		slog.ErrorContext(ctx, fmt.Sprintf("%s failed to settle tpm: %v, keys: %v, reserved: %d, actual: %d", r.logPrefix, err, r.keys, r.tokens, actual))
 	}
 }
