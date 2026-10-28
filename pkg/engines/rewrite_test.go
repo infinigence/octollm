@@ -42,6 +42,22 @@ func TestRewriteJSON_RemoveKey(t *testing.T) {
 	assert.Equal(t, want, got)
 }
 
+// Removing an absent key must hand back the same slice: sjson.DeleteBytes would
+// otherwise copy the whole body on every request.
+func TestRewriteJSON_RemoveAbsentKeyDoesNotCopy(t *testing.T) {
+	rewriter := &llmJSONRewriter{
+		policy: &RewritePolicy{RemoveKeys: []string{"absent"}},
+		ctx:    context.Background(),
+	}
+	origin := []byte(`{"key1": "value1"}`)
+
+	rewritten := rewriter.RewriteJSON(origin)
+
+	require.NotEmpty(t, rewritten)
+	assert.Same(t, &origin[0], &rewritten[0])
+	assert.Zero(t, testing.AllocsPerRun(10, func() { rewriter.RewriteJSON(origin) }))
+}
+
 func TestRewriteJSON_SetKey(t *testing.T) {
 	policy := &RewritePolicy{
 		SetKeys: map[string]any{

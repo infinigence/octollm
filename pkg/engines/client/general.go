@@ -175,6 +175,11 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 			compressed := buf.Bytes()
 			httpReq.Body = io.NopCloser(bytes.NewReader(compressed))
 			httpReq.ContentLength = int64(len(compressed))
+			// net/http re-sends the body through GetBody (retry on a fresh connection,
+			// redirects); NewRequest's GetBody would still return the uncompressed bytes.
+			httpReq.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(compressed)), nil
+			}
 			httpReq.Header.Set("Content-Encoding", "gzip")
 			return httpReq
 		})
@@ -196,6 +201,11 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 			compressed := buf.Bytes()
 			httpReq.Body = io.NopCloser(bytes.NewReader(compressed))
 			httpReq.ContentLength = int64(len(compressed))
+			// net/http re-sends the body through GetBody (retry on a fresh connection,
+			// redirects); NewRequest's GetBody would still return the uncompressed bytes.
+			httpReq.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(compressed)), nil
+			}
 			httpReq.Header.Set("Content-Encoding", "zstd")
 			return httpReq
 		})

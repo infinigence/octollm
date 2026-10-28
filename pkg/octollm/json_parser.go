@@ -1,10 +1,10 @@
 package octollm
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/mailru/easyjson/jlexer"
 )
@@ -19,8 +19,11 @@ type JLexerParser interface {
 
 var ErrStreamDone = fmt.Errorf("stream done")
 
+var streamDoneMarker = []byte("[DONE]")
+
 func (p *JSONParser[T]) Parse(data []byte) (any, error) {
-	if strings.TrimSpace(string(data)) == "[DONE]" {
+	// Compare as bytes: string(data) would copy the whole body on every parse.
+	if bytes.Equal(bytes.TrimSpace(data), streamDoneMarker) {
 		return nil, fmt.Errorf("%w", ErrStreamDone)
 	}
 

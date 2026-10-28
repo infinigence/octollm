@@ -57,6 +57,48 @@ func newEchoServer(t *testing.T, captured *capturedRequest) *httptest.Server {
 	}))
 }
 
+// A 307 redirect makes net/http re-send the body through GetBody. With compression,
+// GetBody must return the compressed bytes, or the re-sent body goes out uncompressed
+// under the compressed Content-Length and Content-Encoding.
+func TestGeneralEndpoint_RequestCompression_ResendUsesCompressedBody(t *testing.T) {
+	for _, compression := range []string{"gzip", "zstd"} {
+		t.Run(compression, func(t *testing.T) {
+			var captured capturedRequest
+			echo := newEchoServer(t, &captured)
+			defer echo.Close()
+
+			redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				http.Redirect(w, r, echo.URL+r.URL.Path, http.StatusTemporaryRedirect)
+			}))
+			defer redirect.Close()
+
+			endpoint := NewGeneralEndpoint(GeneralEndpointConfig{
+				BaseURL: redirect.URL,
+				Endpoints: map[octollm.APIFormat]string{
+					octollm.APIFormatChatCompletions: "/v1/chat/completions",
+				},
+				RequestCompression: compression,
+			})
+
+			req := testhelper.CreateTestRequest()
+			originalBody, err := req.Body.Bytes()
+			require.NoError(t, err)
+
+			_, err = endpoint.Process(req)
+			require.NoError(t, err)
+
+			assert.Equal(t, compression, captured.header.Get("Content-Encoding"))
+			decoded := captured.bodyGunzip
+			if compression == "zstd" {
+				decoded = captured.bodyUnzstd
+			}
+			assert.JSONEq(t, string(originalBody), string(decoded),
+				"re-sent body should decompress to the original")
+		})
+	}
+}
+
 func TestGeneralEndpoint_RequestCompression_Gzip(t *testing.T) {
 	var captured capturedRequest
 	srv := newEchoServer(t, &captured)
