@@ -100,3 +100,4 @@ See `docs/config.md` for the full config reference and `docs/expr-guide.md` for 
 - Builder pattern for HTTPEndpoint configuration
 - Custom error types: `UpstreamHTTPError` vs handler errors
 - Use `octollm.SafeGo(req, fn)` instead of bare `go` for any goroutine spawned inside request or stream processing (e.g. fire-and-forget replication, async stream draining). gin.Recovery and similar middleware only recover panics on the handler goroutine; a panic on a separately spawned goroutine will crash the process.
+- Use `req.ReleaseBody()` when the request body is no longer needed but the request keeps being referenced — a stream goroutine can outlive the call, and `http.Transport` holds the `*http.Request` until the response body is read, which for a stream is the whole stream. Read anything derived from the body (token estimates, metrics labels) *before* releasing: the released copy's `Body` is nil.

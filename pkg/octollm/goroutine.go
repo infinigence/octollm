@@ -12,10 +12,11 @@ import (
 // Any panic is logged as an error with its stack trace using the request's context and does
 // not propagate — callers that need to know about failures should use an explicit error channel.
 func SafeGo(req *Request, fn func()) {
+	ctx := req.Context()
 	go func() {
 		defer func() {
 			if err := recover(); err != nil {
-				slog.ErrorContext(req.Context(), "panic in goroutine",
+				slog.ErrorContext(ctx, "panic in goroutine",
 					"err", err,
 					"stack", string(debug.Stack()),
 				)

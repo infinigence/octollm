@@ -143,6 +143,8 @@ func (e *TrafficReplicationEngine) Process(req *octollm.Request) (*octollm.Respo
 			octollm.SafeGo(reqC, func() {
 				defer cancel()
 				resp, err := item.TrafficReplicationEngine.Process(reqC)
+				// Draining the stream below can take minutes; drop the cloned body so it can be GC'd.
+				reqC = reqC.ReleaseBody()
 				if err != nil {
 					slog.ErrorContext(reqC.Context(), fmt.Sprintf("[TrafficReplication] replication error: %v", err))
 					return

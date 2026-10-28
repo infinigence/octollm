@@ -163,6 +163,8 @@ func (e *TextModeratorEngine) Process(req *octollm.Request) (*octollm.Response, 
 	}
 
 	// stream response
+	// The stream goroutine below lives as long as the stream; drop the request body so it can be GC'd.
+	req = req.ReleaseBody()
 	newChunks := make(chan *octollm.StreamChunk)
 	originalChunks := resp.Stream
 	ctx, cancel := context.WithCancel(req.Context())

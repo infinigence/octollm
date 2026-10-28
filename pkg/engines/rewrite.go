@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/expr-lang/expr"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
 	"github.com/infinigence/octollm/pkg/exprenv"
@@ -66,6 +67,10 @@ func (r *llmJSONRewriter) RewriteJSON(reqBody []byte) []byte {
 
 	var err error
 	for _, k := range r.policy.RemoveKeys {
+		// sjson.DeleteBytes copies the whole body even when the key is absent.
+		if !gjson.GetBytes(reqBody, k).Exists() {
+			continue
+		}
 		reqBody, err = sjson.DeleteBytes(reqBody, k)
 		if err != nil {
 			slog.WarnContext(r.ctx, fmt.Sprintf("[llmJSONRewriter.RewriteJSON] delete key (%s) body error: %s", k, err))
