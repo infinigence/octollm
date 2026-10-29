@@ -248,6 +248,8 @@ func (e *HTTPEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 
 	// use a scanner to read SSE messages
 	streamParser, streamingType := e.streamParser(req)
+	// The stream goroutine lives as long as the stream; drop the request body so it can be GC'd.
+	req = req.ReleaseBody()
 	switch streamingType {
 	case StreamingTypeSSE:
 		octollm.SafeGo(req, func() { e.processSSEStream(ctx, req, resp, ch, streamParser) })

@@ -454,6 +454,13 @@ func (u *Request) WithBody(body *UnifiedBody) *Request {
 	return u2
 }
 
+// ReleaseBody returns a shallow copy of u without its body. Use it when the
+// body is no longer needed but the request keeps being referenced, so the body
+// can be garbage collected.
+func (u *Request) ReleaseBody() *Request {
+	return u.WithBody(nil)
+}
+
 func GetCtxValue[T any](req *Request, key any) (T, bool) {
 	var zero T
 	if req == nil || req.ctx == nil {
