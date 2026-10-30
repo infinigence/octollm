@@ -1,5 +1,7 @@
 package openai
 
+import "encoding/json"
+
 // CompletionResponse represents a completion response
 // For non-streaming: object = "text_completion", usage always present
 // For streaming: object = "text_completion.chunk", usage only in final chunk
@@ -11,6 +13,10 @@ type CompletionResponse struct {
 	Choices           []CompletionChoice `json:"choices"`
 	Usage             *Usage             `json:"usage,omitempty"`
 	SystemFingerprint *string            `json:"system_fingerprint,omitempty"`
+
+	// Error carries the raw error object of an in-stream error chunk (see
+	// ChatCompletionStreamChunk.Error).
+	Error json.RawMessage `json:"error,omitempty"`
 }
 
 // CompletionStreamChunk is an alias for CompletionResponse

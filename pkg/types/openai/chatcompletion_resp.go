@@ -6,6 +6,10 @@
 
 package openai
 
+import (
+	"encoding/json"
+)
+
 // ChatCompletionResponse represents a non-streaming chat completion response
 type ChatCompletionResponse struct {
 	ID                string                  `json:"id"`
@@ -29,6 +33,12 @@ type ChatCompletionStreamChunk struct {
 	Usage             *Usage                        `json:"usage,omitempty"` // Only present in the final chunk
 	SystemFingerprint *string                       `json:"system_fingerprint,omitempty"`
 	ServiceTier       *string                       `json:"service_tier,omitempty"`
+
+	// Error carries the raw error object of an in-stream error chunk. Some
+	// upstreams (vLLM and friends) answer HTTP 200 and then emit
+	// {"error":{...}} as a data event; the raw JSON is kept verbatim so
+	// callers can match any field without a second full-body parse.
+	Error json.RawMessage `json:"error,omitempty"`
 }
 
 // ChatCompletionChoice represents a non-streaming choice

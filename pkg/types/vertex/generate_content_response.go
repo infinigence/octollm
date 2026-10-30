@@ -1,5 +1,7 @@
 package vertex
 
+import "encoding/json"
+
 // GenerateContentResponse represents the response from Vertex AI generateContent API
 type GenerateContentResponse struct {
 	Candidates    []Candidate    `json:"candidates,omitempty"`
@@ -85,4 +87,13 @@ type StreamGenerateContentResponse struct {
 	UsageMetadata *UsageMetadata `json:"usageMetadata,omitempty"`
 	ModelVersion  string         `json:"modelVersion,omitempty"`
 	ResponseID    string         `json:"responseId,omitempty"`
+
+	// Error carries the raw error object of an in-stream error chunk. Google
+	// APIs report errors with the standard envelope
+	// ({"error":{"code":429,"message":"...","status":"RESOURCE_EXHAUSTED"}}),
+	// and a streamGenerateContent call that has already answered HTTP 200 can
+	// emit it as a stream element (an SSE data event, or an element of the
+	// JSON array). The raw JSON is kept verbatim so callers can match any
+	// field without a second full-body parse.
+	Error json.RawMessage `json:"error,omitempty"`
 }
