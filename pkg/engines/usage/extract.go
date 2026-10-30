@@ -4,6 +4,7 @@ import (
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
 	"github.com/infinigence/octollm/pkg/types/rerank"
+	"github.com/infinigence/octollm/pkg/types/systemone"
 	"github.com/infinigence/octollm/pkg/types/vertex"
 )
 
@@ -25,6 +26,8 @@ func extract(parsed any) Usage {
 			return nil
 		}
 		return responses(b.Response.Usage)
+	case *openai.DecisionsResponse:
+		return responses(b.Usage)
 	case *anthropic.ClaudeMessagesResponse:
 		return claude(b.Usage)
 	case *anthropic.ClaudeMessagesStreamEvent:
@@ -42,6 +45,8 @@ func extract(parsed any) Usage {
 		return (*Embedding)(&b.Usage)
 	case *rerank.RerankResponse:
 		return (*Rerank)(&b.Usage)
+	case *systemone.SystemOneResponse:
+		return systemOne(b.Usage)
 	default:
 		return nil
 	}
@@ -76,4 +81,11 @@ func vertexUsage(u *vertex.UsageMetadata) Usage {
 		return nil
 	}
 	return (*Vertex)(u)
+}
+
+func systemOne(u *systemone.SystemOneUsage) Usage {
+	if u == nil {
+		return nil
+	}
+	return (*SystemOne)(u)
 }
