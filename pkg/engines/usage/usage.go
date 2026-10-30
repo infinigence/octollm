@@ -4,6 +4,7 @@ import (
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
 	"github.com/infinigence/octollm/pkg/types/rerank"
+	"github.com/infinigence/octollm/pkg/types/systemone"
 	"github.com/infinigence/octollm/pkg/types/vertex"
 )
 
@@ -27,6 +28,7 @@ type Usage interface {
 // ChatCompletions is the usage of chat/completions and completions.
 type ChatCompletions openai.Usage
 
+// Responses is the usage of responses and decisions, which share a schema.
 type Responses openai.ResponsesUsage
 
 type Claude anthropic.Usage
@@ -37,6 +39,8 @@ type Embedding openai.EmbeddingUsage
 
 type Rerank rerank.RerankUsage
 
+type SystemOne systemone.SystemOneUsage
+
 var (
 	_ Usage = (*ChatCompletions)(nil)
 	_ Usage = (*Responses)(nil)
@@ -44,6 +48,7 @@ var (
 	_ Usage = (*Vertex)(nil)
 	_ Usage = (*Embedding)(nil)
 	_ Usage = (*Rerank)(nil)
+	_ Usage = (*SystemOne)(nil)
 )
 
 func (u *ChatCompletions) GetTotalTokens() int64 {
@@ -161,6 +166,20 @@ func (u *Rerank) GetTotalTokens() int64 {
 // Accumulate returns later: rerank is never streamed, so a later report is a
 // complete one.
 func (u *Rerank) Accumulate(later Usage) Usage { return later }
+
+// GetTotalTokens sums input and output: System One reports no total, and some
+// providers omit the output count.
+func (u *SystemOne) GetTotalTokens() int64 {
+	total := int64(u.InputTokens)
+	if u.OutputTokens != nil {
+		total += int64(*u.OutputTokens)
+	}
+	return total
+}
+
+// Accumulate returns later: System One is never streamed, so a later report is
+// a complete one.
+func (u *SystemOne) Accumulate(later Usage) Usage { return later }
 
 // orSum returns total when it is reported, else the sum of parts.
 func orSum(total int, parts ...int) int64 {

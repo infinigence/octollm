@@ -14,6 +14,7 @@ import (
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
 	"github.com/infinigence/octollm/pkg/types/rerank"
+	"github.com/infinigence/octollm/pkg/types/systemone"
 	"github.com/infinigence/octollm/pkg/types/vertex"
 )
 
@@ -101,6 +102,23 @@ func TestCollector_NonStream(t *testing.T) {
 			next: nonStreamEngine[rerank.RerankResponse](
 				`{"results":[],"usage":{"total_tokens":9}}`),
 			want: &Rerank{TotalTokens: 9},
+		},
+		{
+			name: "decisions",
+			next: nonStreamEngine[openai.DecisionsResponse](
+				`{"id":"d1","model":"m","answers":[],"usage":{"input_tokens":30,"output_tokens":2,"total_tokens":32}}`),
+			want: &Responses{InputTokens: 30, OutputTokens: 2, TotalTokens: 32},
+		},
+		{
+			name: "systemone",
+			next: nonStreamEngine[systemone.SystemOneResponse](
+				`{"model":"m","answers":{},"usage":{"input_tokens":125,"output_tokens":20}}`),
+			want: &SystemOne{InputTokens: 125, OutputTokens: ptr(20)},
+		},
+		{
+			name: "systemone without usage",
+			next: nonStreamEngine[systemone.SystemOneResponse](`{"model":"m","answers":{}}`),
+			want: nil,
 		},
 		{
 			name: "no usage reported",

@@ -63,6 +63,16 @@ func TestGetTotalTokens(t *testing.T) {
 			usage: &Rerank{TotalTokens: 9},
 			want:  9,
 		},
+		{
+			name:  "systemone sums input and output",
+			usage: &SystemOne{InputTokens: 125, OutputTokens: ptr(20)},
+			want:  145,
+		},
+		{
+			name:  "systemone without output counts only input",
+			usage: &SystemOne{InputTokens: 296},
+			want:  296,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -125,6 +135,12 @@ func TestAccumulate(t *testing.T) {
 			prev:  &Rerank{TotalTokens: 8},
 			later: &Rerank{TotalTokens: 9},
 			want:  &Rerank{TotalTokens: 9},
+		},
+		{
+			name:  "systemone takes the later report",
+			prev:  &SystemOne{InputTokens: 8},
+			later: &SystemOne{InputTokens: 9},
+			want:  &SystemOne{InputTokens: 9},
 		},
 		{
 			name:  "a report of another type replaces",
