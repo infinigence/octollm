@@ -1,10 +1,12 @@
 package streammerge
 
 import (
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
 
+	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/openai"
 )
@@ -62,6 +64,21 @@ func (m *chatCompletionMerger) Merge(chunk *octollm.StreamChunk) error {
 	resp, ok := parsed.(*openai.ChatCompletionStreamChunk)
 	if !ok || resp == nil {
 		return nil // unexpected type or terminator
+	}
+
+	// An in-stream error chunk carries no choices and must not be merged into
+	// a successful (partial or empty) response: fail the merge so the
+	// non-stream call fails and, at the gateway, the load balancer can retry
+	// another backend.
+	if nonNullRaw(resp.Error) {
+		// Parsed() succeeded above, so Bytes() hits the cached bytes; on the
+		// (unreachable) error path Body is simply empty — ErrorJSON still
+		// carries the full error object for matching and logs.
+		chunkRaw, _ := chunk.Body.Bytes()
+		return &errutils.UpstreamChunkError{
+			ErrorJSON: append(json.RawMessage(nil), resp.Error...),
+			Body:      chunkRaw,
+		}
 	}
 
 	if resp.ID != "" {

@@ -2,11 +2,13 @@ package engines
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/tidwall/gjson"
 
+	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/openai"
 )
@@ -173,5 +175,45 @@ func TestNonStreamToStream_AllowlistBypass(t *testing.T) {
 	}
 	if resp.Stream != nil {
 		t.Error("response should pass through unchanged")
+	}
+}
+
+// TestNonStreamToStream_MergeErrorCarriesUpstreamHeader confirms an in-stream
+// error chunk leaves the engine as an UpstreamChunkError carrying the header of
+// the upstream response that produced it, so the caller can answer with the same
+// upstream metadata (rate-limit hints and the like) as for a non-200 response.
+func TestNonStreamToStream_MergeErrorCarriesUpstreamHeader(t *testing.T) {
+	upstreamHeader := http.Header{
+		"Retry-After":           []string{"7"},
+		"X-Ratelimit-Remaining": []string{"0"},
+		"Content-Type":          []string{"text/event-stream"},
+	}
+	next := octollm.EngineFunc(func(req *octollm.Request) (*octollm.Response, error) {
+		ch := make(chan *octollm.StreamChunk, 2)
+		ch <- &octollm.StreamChunk{Body: octollm.NewBodyFromBytes(
+			[]byte(`{"id":"cmpl-1","choices":[{"index":0,"delta":{"content":"partial"}}]}`),
+			&octollm.JSONParser[openai.ChatCompletionStreamChunk]{})}
+		ch <- &octollm.StreamChunk{Body: octollm.NewBodyFromBytes(
+			[]byte(`{"error":{"message":"RPM limit exceeded","type":"rate_limit_error"}}`),
+			&octollm.JSONParser[openai.ChatCompletionStreamChunk]{})}
+		close(ch)
+		return octollm.NewStreamResponse(200, upstreamHeader, octollm.NewStreamChan(ch, func() {})), nil
+	})
+
+	_, err := NewNonStreamToStreamEngine(next).Process(chatReq(context.Background()))
+	var chunkErr *errutils.UpstreamChunkError
+	if !errors.As(err, &chunkErr) {
+		t.Fatalf("error = %v, want UpstreamChunkError", err)
+	}
+	if got := chunkErr.Header.Get("Retry-After"); got != "7" {
+		t.Errorf("Header[Retry-After] = %q, want %q", got, "7")
+	}
+	if got := chunkErr.Header.Get("X-Ratelimit-Remaining"); got != "0" {
+		t.Errorf("Header[X-Ratelimit-Remaining] = %q, want %q", got, "0")
+	}
+	// Clone, not alias: later mutation of the upstream header must not leak in.
+	upstreamHeader.Set("Retry-After", "99")
+	if got := chunkErr.Header.Get("Retry-After"); got != "7" {
+		t.Errorf("Header aliases the upstream header: got %q after mutation", got)
 	}
 }

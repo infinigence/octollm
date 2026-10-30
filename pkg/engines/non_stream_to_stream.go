@@ -2,11 +2,13 @@ package engines
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/tidwall/sjson"
 
+	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/streammerge"
 )
@@ -113,6 +115,10 @@ func (e *NonStreamToStreamEngine) Process(req *octollm.Request) (*octollm.Respon
 
 	for chunk := range resp.Stream.Chan() {
 		if err := merger.Merge(chunk); err != nil {
+			var chunkErr *errutils.UpstreamChunkError
+			if errors.As(err, &chunkErr) && chunkErr.Header == nil {
+				chunkErr.Header = resp.Header.Clone()
+			}
 			return nil, fmt.Errorf("merge stream chunk: %w", err)
 		}
 	}
