@@ -1,5 +1,7 @@
 package openai
 
+import "encoding/json"
+
 // ResponsesResponse is a POST /v1/responses (Responses API) response object.
 // Only the fields the gateway or the converter engine needs are typed; any
 // other JSON keys are ignored on unmarshal.
@@ -141,4 +143,9 @@ type ResponseStreamChunk struct {
 	Name       string `json:"name,omitempty"`
 	// response.function_call_arguments.done
 	Arguments string `json:"arguments,omitempty"`
+
+	// Error carries the raw top-level error object of an in-stream error
+	// event (see ChatCompletionStreamChunk.Error). Lifecycle snapshot errors
+	// are on Response.Error instead.
+	Error json.RawMessage `json:"error,omitempty"`
 }

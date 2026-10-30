@@ -232,6 +232,26 @@ func TestChatCompletionStreamChunk_ParseJLexer(t *testing.T) {
 			Name: "UsageWithNullDetails",
 			JSON: `{"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"completion_tokens_details":null,"prompt_tokens_details":null}}`,
 		},
+		{
+			Name: "ErrorObject",
+			JSON: `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4","choices":[],"error":{"message":"Rate limit reached","type":"rate_limit_error","code":"rate_limit_exceeded"}}`,
+		},
+		{
+			Name: "ErrorObjectWithNumericCode",
+			JSON: `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4","choices":[],"error":{"code":502,"type":"upstream_error"}}`,
+		},
+		{
+			Name: "ErrorObjectWithUnknownFields",
+			JSON: `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4","choices":[],"error":{"message":"busy","type":"server_error","param":null,"headers":{"x-ms-fe-error":"true"}}}`,
+		},
+		{
+			Name: "ErrorNull",
+			JSON: `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4","choices":[],"error":null}`,
+		},
+		{
+			Name: "ErrorString",
+			JSON: `{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1694268190,"model":"gpt-4","choices":[],"error":"busy"}`,
+		},
 	}
 
 	for _, tc := range testCases {

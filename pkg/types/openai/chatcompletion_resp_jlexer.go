@@ -3,7 +3,7 @@
 // This file contains jlexer streaming parsers for the structs defined in:
 //   pkg/types/openai/chatcompletion_resp.go
 //
-// Source file SHA-256: b631d369a27cde452655c8f5fe3a9d81455461a541b270ad35230b071e11d66b
+// Source file SHA-256: e038485f02bf8ec8a569f4d682367d8fbb772c944825e49af7407c0fa8735887
 //
 // Generation guide: pkg/types/JLEXER_PARSER_GUIDE.md
 // Polymorphic field patterns: pkg/types/UNION_TYPES.md
@@ -15,6 +15,8 @@
 package openai
 
 import (
+	"encoding/json"
+
 	"github.com/mailru/easyjson/jlexer"
 )
 
@@ -239,6 +241,12 @@ func (c *ChatCompletionStreamChunk) ParseJLexer(in *jlexer.Lexer) {
 				c.Usage = &Usage{}
 				c.Usage.ParseJLexer(in)
 			}
+		case "error":
+			// Raw keeps the error value verbatim: null → literal "null"
+			// (matching encoding/json RawMessage; consumers treat it as
+			// "no error"), object/string/number as-is. Copied so later
+			// mutation of the lexer buffer cannot alias it.
+			c.Error = append(json.RawMessage(nil), in.Raw()...)
 		default:
 			in.SkipRecursive()
 		}
