@@ -170,7 +170,7 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 		assert.NotEqual(t, beforeA, lb.backends[0].currentWeight)
 	})
 
-	t.Run("real upstream error wins over later limiter rejects", func(t *testing.T) {
+	t.Run("later limiter reject overwrites an earlier upstream error", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 		upstreamErr := assert.AnError
@@ -195,8 +195,8 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 		}, rd, keyPrefix, time.Minute, items)
 
 		resp, err := newWRR(t, items, provider, rd).Process(testhelper.CreateTestRequest())
-		require.ErrorIs(t, err, upstreamErr)
-		require.NotErrorIs(t, err, limiter.ErrRateLimitReached)
+		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
+		require.NotErrorIs(t, err, upstreamErr)
 		assert.Nil(t, resp)
 	})
 
@@ -224,7 +224,7 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 		assert.Equal(t, int32(1), calls.Load())
 	})
 
-	t.Run("limiter timeout keeps an earlier upstream error", func(t *testing.T) {
+	t.Run("limiter timeout returns the later limiter error and skips the next backend", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 		upstreamErr := assert.AnError
@@ -256,8 +256,8 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 		}
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
-		require.ErrorIs(t, err, upstreamErr)
-		require.NotErrorIs(t, err, limiter.ErrRateLimitReached)
+		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
+		require.NotErrorIs(t, err, upstreamErr)
 		assert.Nil(t, resp)
 		assert.Equal(t, int32(0), cCalls.Load())
 	})
@@ -335,7 +335,8 @@ func TestShardKeyWRR_PLoadFailover(t *testing.T) {
 		provider := affinity(t, rd, keyPrefix, StrongHitPolicyLastTwo, items)
 
 		_, err := newWRR(t, items, provider, rd).Process(testhelper.CreateTestRequest())
-		require.ErrorIs(t, err, limiter.ErrPLoadStrongCacheRateLimitReached)
+		require.ErrorIs(t, err, limiter.ErrPLoadRateLimitReached)
+		require.NotErrorIs(t, err, limiter.ErrPLoadStrongCacheRateLimitReached)
 		assert.Empty(t, nextA.kindsCopy())
 		assert.Empty(t, nextB.kindsCopy())
 	})
