@@ -682,7 +682,7 @@ func TestShardKeyConcurrency_HitKindAndLimiterFailover(t *testing.T) {
 		assert.Equal(t, int32(1), calls.Load())
 	})
 
-	t.Run("limiter timeout keeps an earlier upstream error", func(t *testing.T) {
+	t.Run("limiter timeout returns the later limiter error and skips the next backend", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -707,13 +707,13 @@ func TestShardKeyConcurrency_HitKindAndLimiterFailover(t *testing.T) {
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
-		require.ErrorIs(t, err, upstreamErr)
-		require.NotErrorIs(t, err, limiter.ErrRateLimitReached)
+		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
+		require.NotErrorIs(t, err, upstreamErr)
 		assert.Nil(t, resp)
 		assert.Equal(t, int32(0), cCalls.Load())
 	})
 
-	t.Run("real upstream error wins over later limiter rejects", func(t *testing.T) {
+	t.Run("later limiter reject overwrites an earlier upstream error", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -739,8 +739,8 @@ func TestShardKeyConcurrency_HitKindAndLimiterFailover(t *testing.T) {
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
-		require.ErrorIs(t, err, upstreamErr)
-		require.NotErrorIs(t, err, limiter.ErrRateLimitReached)
+		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
+		require.NotErrorIs(t, err, upstreamErr)
 		assert.Nil(t, resp)
 	})
 }

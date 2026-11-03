@@ -2,14 +2,12 @@ package loadbalancer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
 	"sync"
 	"time"
 
-	"github.com/infinigence/octollm/pkg/engines/limiter"
 	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/redis/go-redis/v9"
@@ -275,20 +273,9 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			return resp, err
 		}
 
-		if errors.Is(err, limiter.ErrRateLimitReached) {
-			slog.InfoContext(req.Context(),
-				fmt.Sprintf("[ShardKey WRR load balancer] limiter rejected backend %s, failover", n),
-				slog.String("backend_name", n),
-			)
-			// When lastRealErr is nil, lastRealResp must also be nil: the response is written only in the non-rate-limit error branch, paired with the error.
-			if lastRealErr == nil {
-				lastRealErr = err
-			}
-		} else {
-			lastRealResp, lastRealErr = resp, err
-			lastN, lastActualKind = n, actualKind
-			retryCount++
-		}
+		lastRealResp, lastRealErr = resp, err
+		lastN, lastActualKind = n, actualKind
+		retryCount++
 		excludeNames[n] = true
 		if req.Context().Err() != nil {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] request context error: %v", req.Context().Err()))
