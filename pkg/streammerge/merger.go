@@ -13,10 +13,19 @@
 package streammerge
 
 import (
+	"encoding/json"
 	"errors"
 
 	"github.com/infinigence/octollm/pkg/octollm"
 )
+
+// nonNullRaw reports whether raw holds a JSON value other than the null
+// literal. RawMessage tokens are exact slices without surrounding whitespace
+// (both encoding/json and the jlexer Raw path guarantee this), so a plain
+// comparison suffices.
+func nonNullRaw(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
+}
 
 // ErrUnsupportedFormat is returned by For when no merger is implemented for the
 // requested API format. Callers should treat it as "do not merge" rather than a

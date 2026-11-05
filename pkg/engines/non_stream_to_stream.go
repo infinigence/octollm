@@ -2,11 +2,14 @@ package engines
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/tidwall/sjson"
 
+	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/streammerge"
 )
@@ -111,10 +114,41 @@ func (e *NonStreamToStreamEngine) Process(req *octollm.Request) (*octollm.Respon
 	}
 	defer resp.Stream.Close()
 
+	// chunkIndex is the 0-based position of the current chunk, reported on an
+	// in-stream error so the caller can tell "failed before any content" (0)
+	// from "failed mid-generation" (> 0).
+	chunkIndex := 0
 	for chunk := range resp.Stream.Chan() {
 		if err := merger.Merge(chunk); err != nil {
+			var badChunk *streammerge.BadChunkError
+			if errors.As(err, &badChunk) {
+				// An in-stream error chunk means the upstream is done (it follows
+				// with [DONE] or closes), so draining is cheap: it releases
+				// producers blocked mid-send so intermediate engines can run their
+				// end-of-stream bookkeeping before the deferred Close.
+				// See [octollm.StreamChan.DrainRemaining].
+				//
+				// Other merge errors (unparseable chunk, malformed event) are
+				// local: the upstream is likely still generating, so a drain would
+				// just burn the timeout on a failed call. Those rely on the
+				// deferred Close to cancel the transport right away.
+				drainCtx, cancelDrain := context.WithTimeout(context.WithoutCancel(req.Context()), octollm.DefaultDrainTimeout)
+				resp.Stream.DrainRemaining(drainCtx)
+				cancelDrain()
+
+				// The merger only knows the chunk bytes — it never sees the
+				// upstream response. Attach the header here and translate into
+				// the caller-owned errutils.UpstreamChunkError. ChunkBody
+				// aliases the body's cached bytes, so clone it.
+				return nil, fmt.Errorf("merge stream chunk: %w", &errutils.UpstreamChunkError{
+					Header:     resp.Header.Clone(),
+					ChunkBody:  slices.Clone(badChunk.ChunkBody),
+					ChunkIndex: chunkIndex,
+				})
+			}
 			return nil, fmt.Errorf("merge stream chunk: %w", err)
 		}
+		chunkIndex++
 	}
 	body, err := merger.Merged()
 	if err != nil {
