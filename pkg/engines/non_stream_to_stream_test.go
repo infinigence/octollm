@@ -2,11 +2,15 @@ package engines
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tidwall/gjson"
 
+	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/openai"
 )
@@ -173,5 +177,135 @@ func TestNonStreamToStream_AllowlistBypass(t *testing.T) {
 	}
 	if resp.Stream != nil {
 		t.Error("response should pass through unchanged")
+	}
+}
+
+// TestNonStreamToStream_MergeErrorCarriesUpstreamHeader confirms an in-stream
+// error chunk leaves the engine as an errutils.UpstreamChunkError carrying the
+// header of the upstream response that produced the chunk, so the caller can
+// answer with the same upstream metadata (rate-limit hints and the like) as
+// for a non-200 response.
+func TestNonStreamToStream_MergeErrorCarriesUpstreamHeader(t *testing.T) {
+	upstreamHeader := http.Header{
+		"Retry-After":           []string{"7"},
+		"X-Ratelimit-Remaining": []string{"0"},
+		"Content-Type":          []string{"text/event-stream"},
+	}
+	next := octollm.EngineFunc(func(req *octollm.Request) (*octollm.Response, error) {
+		ch := make(chan *octollm.StreamChunk, 2)
+		ch <- &octollm.StreamChunk{Body: octollm.NewBodyFromBytes(
+			[]byte(`{"id":"cmpl-1","choices":[{"index":0,"delta":{"content":"partial"}}]}`),
+			&octollm.JSONParser[openai.ChatCompletionStreamChunk]{})}
+		ch <- &octollm.StreamChunk{Body: octollm.NewBodyFromBytes(
+			[]byte(`{"error":{"message":"RPM limit exceeded","type":"rate_limit_error"}}`),
+			&octollm.JSONParser[openai.ChatCompletionStreamChunk]{})}
+		close(ch)
+		return octollm.NewStreamResponse(200, upstreamHeader, octollm.NewStreamChan(ch, func() {})), nil
+	})
+
+	_, err := NewNonStreamToStreamEngine(next).Process(chatReq(context.Background()))
+	var chunkErr *errutils.UpstreamChunkError
+	if !errors.As(err, &chunkErr) {
+		t.Fatalf("error = %v, want errutils.UpstreamChunkError", err)
+	}
+	if got := chunkErr.Header.Get("Retry-After"); got != "7" {
+		t.Errorf("Header[Retry-After] = %q, want %q", got, "7")
+	}
+	// The error chunk follows one content chunk: it failed mid-generation.
+	if chunkErr.ChunkIndex != 1 {
+		t.Errorf("ChunkIndex = %d, want 1", chunkErr.ChunkIndex)
+	}
+	if got := chunkErr.Header.Get("X-Ratelimit-Remaining"); got != "0" {
+		t.Errorf("Header[X-Ratelimit-Remaining] = %q, want %q", got, "0")
+	}
+	// 完整 chunk 原文保留在 ChunkBody（透传 body 用）。
+	if want := `{"error":{"message":"RPM limit exceeded","type":"rate_limit_error"}}`; !jsonEq(string(chunkErr.ChunkBody), want) {
+		t.Errorf("ChunkBody = %s, want %s", chunkErr.ChunkBody, want)
+	}
+	// Clone, not alias: later mutation of the upstream header must not leak in.
+	upstreamHeader.Set("Retry-After", "99")
+	if got := chunkErr.Header.Get("Retry-After"); got != "7" {
+		t.Errorf("Header aliases the upstream header: got %q after mutation", got)
+	}
+}
+
+// jsonEq reports whether two JSON documents are semantically equal.
+func jsonEq(a, b string) bool {
+	return gjson.Get(a, "@this").Raw == gjson.Get(b, "@this").Raw
+}
+
+// chatChunk wraps a raw chat.completion.chunk payload as a stream chunk.
+func chatChunk(raw string) *octollm.StreamChunk {
+	return &octollm.StreamChunk{Body: octollm.NewBodyFromBytes([]byte(raw), &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})}
+}
+
+// TestNonStreamToStream_ErrorChunkDrainsProducer confirms an in-stream error
+// chunk drains the leftover chunks, releasing a producer blocked on an
+// unbuffered send instead of abandoning it mid-send.
+func TestNonStreamToStream_ErrorChunkDrainsProducer(t *testing.T) {
+	var drained atomic.Bool
+	next := octollm.EngineFunc(func(req *octollm.Request) (*octollm.Response, error) {
+		ch := make(chan *octollm.StreamChunk) // unbuffered: producer blocks per send
+		go func() {
+			defer close(ch)
+			ch <- chatChunk(`{"error":{"message":"overloaded","type":"overloaded_error"}}`)
+			ch <- chatChunk(`[DONE]`) // only received by the drain
+			drained.Store(true)
+		}()
+		return octollm.NewStreamResponse(200, http.Header{}, octollm.NewStreamChan(ch, func() {})), nil
+	})
+
+	_, err := NewNonStreamToStreamEngine(next).Process(chatReq(context.Background()))
+	var chunkErr *errutils.UpstreamChunkError
+	if !errors.As(err, &chunkErr) {
+		t.Fatalf("error = %v, want errutils.UpstreamChunkError", err)
+	}
+	if chunkErr.ChunkIndex != 0 {
+		t.Errorf("ChunkIndex = %d, want 0 (error on the first chunk)", chunkErr.ChunkIndex)
+	}
+	if !drained.Load() {
+		t.Error("leftover chunks were not drained before returning")
+	}
+}
+
+// TestNonStreamToStream_LocalMergeErrorSkipsDrain confirms a merge error that
+// is not an in-stream error chunk (here: an unparseable chunk) returns
+// immediately and closes the stream, instead of draining an upstream that is
+// still generating until the drain timeout.
+func TestNonStreamToStream_LocalMergeErrorSkipsDrain(t *testing.T) {
+	stop := make(chan struct{})
+	next := octollm.EngineFunc(func(req *octollm.Request) (*octollm.Response, error) {
+		ch := make(chan *octollm.StreamChunk)
+		go func() {
+			defer close(ch)
+			ch <- chatChunk(`{not json`)
+			// Upstream still generating: keeps sending until the stream is closed.
+			for {
+				select {
+				case ch <- chatChunk(`{"id":"c","choices":[{"index":0,"delta":{"content":"x"}}]}`):
+				case <-stop:
+					return
+				}
+			}
+		}()
+		return octollm.NewStreamResponse(200, http.Header{}, octollm.NewStreamChan(ch, func() { close(stop) })), nil
+	})
+
+	start := time.Now()
+	_, err := NewNonStreamToStreamEngine(next).Process(chatReq(context.Background()))
+	if err == nil {
+		t.Fatal("expected merge error")
+	}
+	var chunkErr *errutils.UpstreamChunkError
+	if errors.As(err, &chunkErr) {
+		t.Fatalf("error = %v, must not be an UpstreamChunkError", err)
+	}
+	if elapsed := time.Since(start); elapsed >= octollm.DefaultDrainTimeout/2 {
+		t.Errorf("Process took %v: a local merge error must not wait on a drain", elapsed)
+	}
+	select {
+	case <-stop:
+	default:
+		t.Error("stream must be closed on a local merge error")
 	}
 }

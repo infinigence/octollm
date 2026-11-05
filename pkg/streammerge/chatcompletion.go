@@ -64,6 +64,20 @@ func (m *chatCompletionMerger) Merge(chunk *octollm.StreamChunk) error {
 		return nil // unexpected type or terminator
 	}
 
+	// An in-stream error chunk carries no choices and must not be merged into
+	// a successful (partial or empty) response: fail the merge so the
+	// non-stream call fails and, at the gateway, the load balancer can retry
+	// another backend.
+	if nonNullRaw(resp.Error) {
+		// Parsed() succeeded above, so Bytes() hits the cached bytes; on the
+		// (unreachable) error path ChunkBody is simply empty. The caller reads
+		// the error payload out of ChunkBody itself if it needs it.
+		chunkRaw, _ := chunk.Body.Bytes()
+		return &BadChunkError{
+			ChunkBody: chunkRaw,
+		}
+	}
+
 	if resp.ID != "" {
 		m.result.ID = resp.ID
 	}

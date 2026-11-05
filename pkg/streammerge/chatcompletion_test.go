@@ -1,8 +1,10 @@
 package streammerge
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/infinigence/octollm/pkg/octollm"
@@ -181,4 +183,45 @@ func TestChatCompletionMerger_UsageCacheWriteSplitAcrossChunks(t *testing.T) {
 		`{"id":"x","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":100,"total_tokens":150,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":10}}}`,
 		`[DONE]`,
 	}, `{"id":"x","created":1,"object":"chat.completion","model":"m","usage":{"completion_tokens":50,"prompt_tokens":100,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":10,"cache_write_tokens":40}},"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]}`)
+}
+
+func chatMergeChunk(t *testing.T, raw string) *octollm.StreamChunk {
+	t.Helper()
+	return &octollm.StreamChunk{Body: octollm.NewBodyFromBytes([]byte(raw), &octollm.JSONParser[openai.ChatCompletionStreamChunk]{})}
+}
+
+func TestChatCompletionMerger_InStreamError(t *testing.T) {
+	const textChunk = `{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`
+	const errChunk = `{"error":{"message":"RPM limit exceeded","type":"rate_limit_error","code":"rate_limit_exceeded"},"usage":null}`
+
+	t.Run("error chunk fails the merge", func(t *testing.T) {
+		m := NewChatCompletionMerger()
+		require.NoError(t, m.Merge(chatMergeChunk(t, textChunk)))
+		err := m.Merge(chatMergeChunk(t, errChunk))
+		require.Error(t, err)
+		var bce *BadChunkError
+		require.ErrorAs(t, err, &bce)
+		// merger 只认出坏 chunk 并原样保留字节；解析错误对象、补响应头、
+		// 映射 HTTP 状态都是调用方的事（见
+		// engines.NonStreamToStreamEngine 对 errutils.UpstreamChunkError 的翻译）。
+		assert.JSONEq(t, errChunk, string(bce.ChunkBody))
+	})
+
+	t.Run("error null is not an error", func(t *testing.T) {
+		m := NewChatCompletionMerger()
+		require.NoError(t, m.Merge(chatMergeChunk(t, `{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"error":null}`)))
+	})
+
+	t.Run("normal chunks merge unaffected", func(t *testing.T) {
+		m := NewChatCompletionMerger()
+		require.NoError(t, m.Merge(chatMergeChunk(t, textChunk)))
+		require.NoError(t, m.Merge(chatMergeChunk(t, `[DONE]`)))
+		body, err := m.Merged()
+		require.NoError(t, err)
+		raw, err := body.Bytes()
+		require.NoError(t, err)
+		var resp openai.ChatCompletionResponse
+		require.NoError(t, json.Unmarshal(raw, &resp))
+		assert.Equal(t, "partial", resp.Choices[0].Message.Content.ExtractText())
+	})
 }
