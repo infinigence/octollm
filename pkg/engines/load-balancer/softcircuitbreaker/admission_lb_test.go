@@ -207,7 +207,7 @@ func TestAdmission_WRR_ExcludedHTTPStatusIsNotRecorded(t *testing.T) {
 	reg := mustRegistry(t, policy)
 	hook := NewAdmission(reg, "m", &policy)
 
-	engine := &countingEngine{err: &errutils.UpstreamRespError{StatusCode: http.StatusTooManyRequests}}
+	engine := &countingEngine{err: &errutils.UpstreamRespError{StatusCode: http.StatusRequestEntityTooLarge}}
 	lb, err := loadbalancer.NewShardKeyWeightedRoundRobin(
 		withSoftCBKeys([]loadbalancer.BackendItem{{Name: "A", Weight: 1, Engine: engine}}),
 		time.Second, 3, 0, nil, hook, newHookLBRedis(t))
@@ -219,6 +219,41 @@ func TestAdmission_WRR_ExcludedHTTPStatusIsNotRecorded(t *testing.T) {
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "A"}, nil)
 	assert.Equal(t, ModeNormal, entry.Mode())
 	assert.Empty(t, entry.normalSamples)
+}
+
+func TestAdmission_WRR_Upstream429IsRecorded(t *testing.T) {
+	upstream429 := &errutils.UpstreamRespError{StatusCode: http.StatusTooManyRequests}
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "upstream response error", err: upstream429},
+		{name: "mapped to handler error", err: errutils.NewHandlerError(errors.New("quota exceeded"), http.StatusTooManyRequests, "limited", "rate_limit_error", "rate_limit_exceeded")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy, err := NewPolicy(
+				RateRule{Window: time.Second, MinRequests: 1, Rate: 1},
+				RateRule{Window: time.Minute, MinRequests: 100, Rate: 1},
+				TrafficRule{Window: time.Minute, MaxRequests: 1},
+			)
+			require.NoError(t, err)
+			reg := mustRegistry(t, policy)
+			hook := NewAdmission(reg, "m", &policy)
+
+			engine := &countingEngine{err: tt.err}
+			lb, err := loadbalancer.NewShardKeyWeightedRoundRobin(
+				withSoftCBKeys([]loadbalancer.BackendItem{{Name: "A", Weight: 1, Engine: engine}}),
+				time.Second, 3, 0, nil, hook, newHookLBRedis(t))
+			require.NoError(t, err)
+
+			_, err = lb.Process(testhelper.CreateTestRequest())
+			require.Error(t, err)
+
+			entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "A"}, nil)
+			assert.Equal(t, ModeDegraded, entry.Mode())
+		})
+	}
 }
 
 func newHookLBRedis(t *testing.T) *redis.Client {

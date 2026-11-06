@@ -78,8 +78,10 @@ func isNotRetriableError(err error) bool {
 }
 
 // isBackendFailureError reports whether err is recorded as a backend failure.
-// Client cancellation, limiter rejects, upstream HTTP 413/429, and gateway
-// HandlerError 429 are not. Failover still uses isNotRetriableError.
+// Client cancellation, limiter rejects, and upstream HTTP 413 are not. Upstream
+// 429 is, also when mapped to a HandlerError: a backend rejecting requests fast
+// holds few in-flight slots, so concurrency-based selection keeps preferring it
+// unless admission limits it. Failover still uses isNotRetriableError.
 func isBackendFailureError(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
@@ -89,15 +91,7 @@ func isBackendFailureError(err error) bool {
 	}
 	var upstreamErr *errutils.UpstreamRespError
 	if errors.As(err, &upstreamErr) {
-		switch upstreamErr.StatusCode {
-		case http.StatusRequestEntityTooLarge, http.StatusTooManyRequests:
-			return false
-		}
-	}
-	var handlerErr *errutils.HandlerError
-	if errors.As(err, &handlerErr) && handlerErr != nil {
-		switch handlerErr.StatusCode {
-		case http.StatusTooManyRequests:
+		if upstreamErr.StatusCode == http.StatusRequestEntityTooLarge {
 			return false
 		}
 	}
