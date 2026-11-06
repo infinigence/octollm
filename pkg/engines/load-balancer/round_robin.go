@@ -23,6 +23,10 @@ type BackendItem struct {
 	MaxConcurrencyFn func(req *octollm.Request) int
 	// ConcurrencyKeyFn returns this backend's in-flight Redis ZSET key for the request.
 	ConcurrencyKeyFn func(req *octollm.Request) string
+	// Layer is the non-negative scheduling priority; a higher value is tried first. Backends in a
+	// lower layer are selected only after every backend in the higher layers has been tried for the
+	// request. Weights apply within a layer. Only ShardKeyWeightedRoundRobin uses it.
+	Layer int
 }
 
 type wrrBackend struct {
@@ -73,9 +77,11 @@ func isNotRetriableError(err error) bool {
 	return false
 }
 
-// isNotBackendFailureError reports errors that are not recorded as backend
-// failures: client cancellation, limiter rejects, upstream HTTP 413/429, and
-// gateway HandlerError 413/429. Failover still uses isNotRetriableError.
+// isBackendFailureError reports whether err is recorded as a backend failure.
+// Client cancellation, limiter rejects, and upstream HTTP 413 are not. Upstream
+// 429 is, also when mapped to a HandlerError: a backend rejecting requests fast
+// holds few in-flight slots, so concurrency-based selection keeps preferring it
+// unless admission limits it. Failover still uses isNotRetriableError.
 func isBackendFailureError(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
@@ -85,15 +91,7 @@ func isBackendFailureError(err error) bool {
 	}
 	var upstreamErr *errutils.UpstreamRespError
 	if errors.As(err, &upstreamErr) {
-		switch upstreamErr.StatusCode {
-		case http.StatusRequestEntityTooLarge, http.StatusTooManyRequests:
-			return false
-		}
-	}
-	var handlerErr *errutils.HandlerError
-	if errors.As(err, &handlerErr) && handlerErr != nil {
-		switch handlerErr.StatusCode {
-		case http.StatusRequestEntityTooLarge, http.StatusTooManyRequests:
+		if upstreamErr.StatusCode == http.StatusRequestEntityTooLarge {
 			return false
 		}
 	}
