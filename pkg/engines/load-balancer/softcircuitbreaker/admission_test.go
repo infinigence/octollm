@@ -237,7 +237,7 @@ func TestAdmission_DoneFalseIsFailureWithoutWhitelist(t *testing.T) {
 	done(false)
 
 	entry := mustGetOrCreate(t, reg, BreakerKey{ModelName: "m", BackendName: "a"}, nil)
-	assert.Equal(t, ModeDegraded, entry.Mode(), "Admission records ok only; 413/429 skip is applied at the load balancer")
+	assert.Equal(t, ModeDegraded, entry.Mode(), "Admission records ok only; the 413 skip is applied at the load balancer")
 }
 
 func TestAdmission_Empty200IsSuccess(t *testing.T) {
