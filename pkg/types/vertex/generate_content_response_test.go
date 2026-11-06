@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStreamChunkErrorRawMessage covers the raw in-stream error field:
+// TestStreamGenerateContentResponse_Error covers the raw in-stream error field:
 // ordinary chunks must re-serialize without an error key, and the Google error
 // envelope must survive verbatim.
-func TestStreamChunkErrorRawMessage(t *testing.T) {
+func TestStreamGenerateContentResponse_Error(t *testing.T) {
 	t.Run("normal chunk has no error key after round trip", func(t *testing.T) {
 		raw := `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]}}],"modelVersion":"gemini-2.5-pro"}`
 		var chunk StreamGenerateContentResponse
