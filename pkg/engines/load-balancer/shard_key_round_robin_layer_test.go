@@ -23,7 +23,7 @@ func TestNewShardKeyWeightedRoundRobin_LayerIsStored(t *testing.T) {
 			{Name: "b", Weight: 0, Layer: 0, Engine: e},
 			{Name: "d", Weight: 5, Layer: 2, Engine: e},
 		}),
-		time.Second, 1, 0, nil, nil, newTestRedis(t),
+		time.Second, 1, nil, nil, newTestRedis(t),
 	)
 	require.NoError(t, err)
 	weights := map[string]int{}
@@ -38,7 +38,7 @@ func TestNewShardKeyWeightedRoundRobin_LayerIsStored(t *testing.T) {
 
 func TestSelectNextEngine_Layer_HigherLayerFirst(t *testing.T) {
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "low", weight: 100, layer: 0, engine: &stubEngine{}},
 			{name: "high", weight: 1, layer: 2, engine: &stubEngine{}},
 			{name: "mid", weight: 100, layer: 1, engine: &stubEngine{}},
@@ -47,27 +47,27 @@ func TestSelectNextEngine_Layer_HigherLayerFirst(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		sel := lb.selectNextEngine(context.Background(), "", nil)
-		require.NotNil(t, sel.sharedKeyRoundRobinBackend)
-		assert.Equal(t, "high", sel.sharedKeyRoundRobinBackend.name)
+		require.NotNil(t, sel.shardKeyRoundRobinBackend)
+		assert.Equal(t, "high", sel.shardKeyRoundRobinBackend.name)
 	}
 
 	sel := lb.selectNextEngine(context.Background(), "", map[string]bool{"high": true})
-	require.NotNil(t, sel.sharedKeyRoundRobinBackend)
-	assert.Equal(t, "mid", sel.sharedKeyRoundRobinBackend.name)
+	require.NotNil(t, sel.shardKeyRoundRobinBackend)
+	assert.Equal(t, "mid", sel.shardKeyRoundRobinBackend.name)
 
 	sel = lb.selectNextEngine(context.Background(), "", map[string]bool{"high": true, "mid": true})
-	require.NotNil(t, sel.sharedKeyRoundRobinBackend)
-	assert.Equal(t, "low", sel.sharedKeyRoundRobinBackend.name)
+	require.NotNil(t, sel.shardKeyRoundRobinBackend)
+	assert.Equal(t, "low", sel.shardKeyRoundRobinBackend.name)
 
 	sel = lb.selectNextEngine(context.Background(), "", map[string]bool{"high": true, "mid": true, "low": true})
-	assert.Nil(t, sel.sharedKeyRoundRobinBackend)
+	assert.Nil(t, sel.shardKeyRoundRobinBackend)
 }
 
 func TestSelectNextEngine_Layer_TotalWeightPerLayer(t *testing.T) {
 	// Layer 1: A=2, B=3 (total 5). Layer 0: C=100 must not contribute to layer 1's total weight,
 	// otherwise the smooth-WRR penalty is skewed and the 2:3 ratio is lost.
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "A", weight: 2, layer: 1, engine: &stubEngine{}},
 			{name: "B", weight: 3, layer: 1, engine: &stubEngine{}},
 			{name: "C", weight: 100, layer: 0, engine: &stubEngine{}},
@@ -77,8 +77,8 @@ func TestSelectNextEngine_Layer_TotalWeightPerLayer(t *testing.T) {
 	counts := map[string]int{}
 	for i := 0; i < 5; i++ {
 		sel := lb.selectNextEngine(context.Background(), "", nil)
-		require.NotNil(t, sel.sharedKeyRoundRobinBackend)
-		counts[sel.sharedKeyRoundRobinBackend.name]++
+		require.NotNil(t, sel.shardKeyRoundRobinBackend)
+		counts[sel.shardKeyRoundRobinBackend.name]++
 	}
 	assert.Equal(t, map[string]int{"A": 2, "B": 3}, counts)
 	// Smooth WRR returns to the initial state after one full cycle of the active layer.
@@ -92,7 +92,7 @@ func TestSelectNextEngine_Layer_ZeroWeightLayerIsSkipped(t *testing.T) {
 	// A layer whose backends all have weight 0 has nothing selectable, so it must not block the
 	// layers below it.
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "A", weight: 10, layer: 2, engine: &stubEngine{}},
 			{name: "Z", weight: 0, layer: 1, engine: &stubEngine{}},
 			{name: "C", weight: 10, layer: 0, engine: &stubEngine{}},
@@ -100,32 +100,32 @@ func TestSelectNextEngine_Layer_ZeroWeightLayerIsSkipped(t *testing.T) {
 	}
 
 	sel := lb.selectNextEngine(context.Background(), "", nil)
-	require.NotNil(t, sel.sharedKeyRoundRobinBackend)
-	assert.Equal(t, "A", sel.sharedKeyRoundRobinBackend.name)
+	require.NotNil(t, sel.shardKeyRoundRobinBackend)
+	assert.Equal(t, "A", sel.shardKeyRoundRobinBackend.name)
 
 	sel = lb.selectNextEngine(context.Background(), "Z", map[string]bool{"A": true})
-	require.NotNil(t, sel.sharedKeyRoundRobinBackend)
-	assert.Equal(t, "C", sel.sharedKeyRoundRobinBackend.name)
+	require.NotNil(t, sel.shardKeyRoundRobinBackend)
+	assert.Equal(t, "C", sel.shardKeyRoundRobinBackend.name)
 }
 
-func TestSelectNextEngine_Layer_AffinityRestrictedToActiveLayer(t *testing.T) {
+func TestSelectNextEngine_Layer_AffinityBeatsLayer(t *testing.T) {
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "A", weight: 1, layer: 1, engine: &stubEngine{}},
 			{name: "C", weight: 1, layer: 0, engine: &stubEngine{}, currentWeight: -5},
 			{name: "D", weight: 1, layer: 0, engine: &stubEngine{}, currentWeight: 100},
 		},
 	}
 
-	// C is in a lower layer, so the affinity hint is ignored while A is available.
+	// C sits in a lower layer and has a lower currentWeight than D, yet the hint wins while A is available.
 	sel := lb.selectNextEngine(context.Background(), "C", nil)
-	require.NotNil(t, sel.sharedKeyRoundRobinBackend)
-	assert.Equal(t, "A", sel.sharedKeyRoundRobinBackend.name)
+	require.NotNil(t, sel.shardKeyRoundRobinBackend)
+	assert.Equal(t, "C", sel.shardKeyRoundRobinBackend.name)
 
-	// Once layer 1 is exhausted, the hint applies and wins over D's higher currentWeight.
-	sel = lb.selectNextEngine(context.Background(), "C", map[string]bool{"A": true})
-	require.NotNil(t, sel.sharedKeyRoundRobinBackend)
-	assert.Equal(t, "C", sel.sharedKeyRoundRobinBackend.name)
+	// The WRR update runs in C's layer only: C pays layer 0's total weight, A is untouched.
+	assert.Equal(t, 0, lb.backends[0].currentWeight)
+	assert.Equal(t, -5-2+1, lb.backends[1].currentWeight)
+	assert.Equal(t, 101, lb.backends[2].currentWeight)
 }
 
 func TestShardKeyWeightedRoundRobin_Process_LayerFailover(t *testing.T) {
@@ -139,7 +139,7 @@ func TestShardKeyWeightedRoundRobin_Process_LayerFailover(t *testing.T) {
 			{Name: "A", Weight: 1, Layer: 1, Engine: stubA},
 			{Name: "B", Weight: 1, Layer: 1, Engine: stubB},
 		}),
-		time.Second, 5, 0, nil, nil, newTestRedis(t),
+		time.Second, 5, nil, nil, newTestRedis(t),
 	)
 	require.NoError(t, err)
 
@@ -163,7 +163,7 @@ func TestShardKeyWeightedRoundRobin_Process_LayerAdmissionDenyFallsToNextLayer(t
 			{Name: "A", Weight: 1, Layer: 1, Engine: stubA},
 			{Name: "C", Weight: 1, Layer: 0, Engine: stubC},
 		}),
-		time.Second, 1, 0, nil, hook, newTestRedis(t),
+		time.Second, 1, nil, hook, newTestRedis(t),
 	)
 	require.NoError(t, err)
 
@@ -188,24 +188,25 @@ func TestShardKeyWeightedRoundRobin_Process_LayerWithAffinity(t *testing.T) {
 	})
 	getter := func(req *octollm.Request) []string { return []string{"k1", "k2"} }
 	provider := newPrimaryShardKeyProvider(t, getter, rd, "layer-test", time.Minute, lbItems)
-	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, 0, provider, nil, rd)
+	lb, err := NewShardKeyWeightedRoundRobin(lbItems, time.Second, 5, provider, nil, rd)
 	require.NoError(t, err)
 
 	ctx := context.Background()
 	_, err = rd.ZAdd(ctx, "layer-test:k2", redis.Z{Score: 1, Member: "C"}).Result()
 	require.NoError(t, err)
 
-	t.Run("higher layer wins over lower-layer affinity", func(t *testing.T) {
+	t.Run("lower-layer affinity wins over higher layer", func(t *testing.T) {
 		_, err := lb.Process(testhelper.CreateTestRequest())
 		require.NoError(t, err)
-		assert.Equal(t, 1, stubA.callCount)
-		assert.Equal(t, 0, stubC.callCount)
+		assert.Equal(t, 0, stubA.callCount)
+		assert.Equal(t, 1, stubC.callCount)
+		assert.Equal(t, 0, stubD.callCount)
 	})
 
-	t.Run("lower-layer affinity applies after higher layer fails", func(t *testing.T) {
-		stubA.reset()
-		stubA.err = errors.New("failure")
-		// Bias WRR toward D so a C pick can only come from affinity.
+	t.Run("failed affinity backend falls back to the highest layer", func(t *testing.T) {
+		stubC.reset()
+		stubC.err = errors.New("failure")
+		// Bias WRR toward D so an A pick can only come from layer priority.
 		for _, b := range lb.backends {
 			if b.name == "D" {
 				b.currentWeight = 1000
@@ -214,8 +215,9 @@ func TestShardKeyWeightedRoundRobin_Process_LayerWithAffinity(t *testing.T) {
 
 		_, err := lb.Process(testhelper.CreateTestRequest())
 		require.NoError(t, err)
-		assert.Equal(t, 1, stubA.callCount)
 		assert.Equal(t, 1, stubC.callCount)
+		assert.Equal(t, 1, stubA.callCount)
 		assert.Equal(t, 0, stubD.callCount)
+		assert.Greater(t, stubA.lastCalledTs, stubC.lastCalledTs)
 	})
 }

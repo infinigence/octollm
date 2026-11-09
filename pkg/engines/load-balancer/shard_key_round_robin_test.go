@@ -9,6 +9,7 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -57,7 +58,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 	backendEngine := &stubEngine{}
 
 	// empty backends
-	_, err := NewShardKeyWeightedRoundRobin(nil, time.Second, 1, 0, nil, nil, nil)
+	_, err := NewShardKeyWeightedRoundRobin(nil, time.Second, 1, nil, nil, nil)
 	assert.Error(t, err)
 
 	// concurrency key is unused by WRR selection
@@ -65,7 +66,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 		[]BackendItem{
 			{Name: "b1", Weight: 1, Engine: backendEngine},
 		},
-		time.Second, 1, 0, nil,
+		time.Second, 1, nil,
 		nil,
 		newTestRedis(t),
 	)
@@ -76,7 +77,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 		withTestConcurrencyKeys([]BackendItem{
 			{Name: "b1", Weight: -1, Engine: backendEngine},
 		}),
-		time.Second, 1, 0, nil,
+		time.Second, 1, nil,
 		nil,
 		newTestRedis(t),
 	)
@@ -87,7 +88,7 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 		withTestConcurrencyKeys([]BackendItem{
 			{Name: "b1", Weight: 1, Layer: -1, Engine: backendEngine},
 		}),
-		time.Second, 1, 0, nil,
+		time.Second, 1, nil,
 		nil,
 		newTestRedis(t),
 	)
@@ -101,30 +102,17 @@ func TestNewShardKeyWeightedRoundRobin_Validation(t *testing.T) {
 		}),
 		time.Second,
 		1,
-		0,
 		nil,
 		nil,
 		newTestRedis(t),
 	)
 	require.NoError(t, err)
-	assert.Equal(t, defaultMinWeightMultiple, lb.minWeightMultiple)
 	if assert.Len(t, lb.backends, 2) {
 		for i, b := range lb.backends {
 			assert.Equalf(t, 0, b.weight, "backend %d weight", i)
 			assert.Equalf(t, 0, b.currentWeight, "backend %d currentWeight", i)
 		}
 	}
-
-	lb, err = NewShardKeyWeightedRoundRobin(
-		withTestConcurrencyKeys([]BackendItem{
-			{Name: "b1", Weight: 1, Engine: backendEngine},
-		}),
-		time.Second, 1, 3, nil,
-		nil,
-		newTestRedis(t),
-	)
-	require.NoError(t, err)
-	assert.Equal(t, 3, lb.minWeightMultiple)
 }
 
 func TestResolveAffinity_NilProvider(t *testing.T) {
@@ -156,7 +144,7 @@ func TestResolveAffinity_WithRedisAndTrim(t *testing.T) {
 		5*time.Minute,
 		backends,
 	)
-	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(backends), 5*time.Second, 5, 0, provider, nil, client)
+	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(backends), 5*time.Second, 5, provider, nil, client)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -213,36 +201,32 @@ func TestResolveAffinity_OnlyStrongCacheHits(t *testing.T) {
 		5*time.Minute,
 		backends,
 	)
-	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(backends), 5*time.Second, 5, 0, provider, nil, client)
+	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(backends), 5*time.Second, 5, provider, nil, client)
 	require.NoError(t, err)
 
 	ctx := context.Background()
 	now := float64(time.Now().Unix())
 
-	t.Run("weak hit on first key is kept as a weak candidate", func(t *testing.T) {
+	t.Run("weak hit on first key is not prioritized", func(t *testing.T) {
 		_, zerr := client.ZAdd(ctx, "k1", redis.Z{Score: now, Member: "weak"}).Result()
 		require.NoError(t, zerr)
 
 		req := testhelper.CreateTestRequest()
 		prioritized, _, err := lb.resolveAffinity(req)
 		require.NoError(t, err)
-		require.Len(t, prioritized, 1)
-		assert.Equal(t, "weak", prioritized[0].backend.name)
-		assert.False(t, prioritized[0].strongCacheHit)
+		assert.Empty(t, prioritized)
 	})
 
-	t.Run("strong hits on last two keys are prioritized ahead of weak hits", func(t *testing.T) {
+	t.Run("strong hits on last two keys are prioritized and weak hits are dropped", func(t *testing.T) {
 		_, zerr := client.ZAdd(ctx, "k3", redis.Z{Score: now, Member: "strong"}).Result()
 		require.NoError(t, zerr)
 
 		req := testhelper.CreateTestRequest()
 		prioritized, _, err := lb.resolveAffinity(req)
 		require.NoError(t, err)
-		require.Len(t, prioritized, 2)
+		require.Len(t, prioritized, 1)
 		assert.Equal(t, "strong", prioritized[0].backend.name)
 		assert.True(t, prioritized[0].strongCacheHit)
-		assert.Equal(t, "weak", prioritized[1].backend.name)
-		assert.False(t, prioritized[1].strongCacheHit)
 	})
 }
 
@@ -251,7 +235,7 @@ func TestSelectNextEngine_PrioritizedHit(t *testing.T) {
 	e2 := &stubEngine{}
 
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "a", weight: 1, engine: e1, currentWeight: 0},
 			{name: "b", weight: 2, engine: e2, currentWeight: 0},
 		},
@@ -259,8 +243,8 @@ func TestSelectNextEngine_PrioritizedHit(t *testing.T) {
 
 	sel := lb.selectNextEngine(context.Background(), "b", nil)
 	require.NotNil(t, sel)
-	assert.Equal(t, "b", sel.sharedKeyRoundRobinBackend.name)
-	assert.Equal(t, e2, sel.sharedKeyRoundRobinBackend.engine)
+	assert.Equal(t, "b", sel.shardKeyRoundRobinBackend.name)
+	assert.Equal(t, e2, sel.shardKeyRoundRobinBackend.engine)
 
 	// We don't assert exact weights here because the initial currentWeight is randomized in constructor.
 	// Just ensure weights remain finite and have been updated.
@@ -270,7 +254,7 @@ func TestSelectNextEngine_PrioritizedHit(t *testing.T) {
 
 func TestSelectNextEngine_ZeroWeightBackendsNeverSelected(t *testing.T) {
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "a", weight: 0, engine: &stubEngine{}, currentWeight: 0},
 			{name: "b", weight: 0, engine: &stubEngine{}, currentWeight: 0},
 		},
@@ -278,67 +262,49 @@ func TestSelectNextEngine_ZeroWeightBackendsNeverSelected(t *testing.T) {
 
 	sel := lb.selectNextEngine(context.Background(), "a", nil)
 	require.NotNil(t, sel)
-	assert.Nil(t, sel.sharedKeyRoundRobinBackend)
+	assert.Nil(t, sel.shardKeyRoundRobinBackend)
 }
 
-func TestSelectNextEngine_HintBelowThresholdFallsBackToWRR(t *testing.T) {
+func TestSelectNextEngine_PrioritizedOverdrawnBackendStillSelected(t *testing.T) {
 	eA := &stubEngine{}
 	eB := &stubEngine{}
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
-			{name: "A", weight: 1, engine: eA, currentWeight: 0},
-			{name: "B", weight: 1, engine: eB, currentWeight: -11},
-		},
-	}
-	// totalWeight=2, threshold=-10. Hint B is below the floor; A is still eligible.
-	sel := lb.selectNextEngine(context.Background(), "B", nil)
-	require.NotNil(t, sel)
-	require.NotNil(t, sel.sharedKeyRoundRobinBackend)
-	assert.Equal(t, "A", sel.sharedKeyRoundRobinBackend.name)
-	assert.Equal(t, eA, sel.sharedKeyRoundRobinBackend.engine)
-}
-
-func TestSelectNextEngine_AllBelowThresholdPicksLeastOverdrawn(t *testing.T) {
-	eA := &stubEngine{}
-	eB := &stubEngine{}
-	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
-			{name: "A", weight: 1, engine: eA, currentWeight: -11},
-			{name: "B", weight: 1, engine: eB, currentWeight: -12},
-		},
-	}
-	// totalWeight=2, threshold=-10. Hint B is skipped; fallback still picks A (least overdrawn).
-	sel := lb.selectNextEngine(context.Background(), "B", nil)
-	require.NotNil(t, sel)
-	require.NotNil(t, sel.sharedKeyRoundRobinBackend)
-	assert.Equal(t, "A", sel.sharedKeyRoundRobinBackend.name)
-	assert.Equal(t, eA, sel.sharedKeyRoundRobinBackend.engine)
-}
-
-func TestSelectNextEngine_StickySmallWeightHitsThreshold(t *testing.T) {
-	eA := &stubEngine{}
-	eB := &stubEngine{}
-	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "A", weight: 10000, engine: eA, currentWeight: 0},
 			{name: "B", weight: 1, engine: eB, currentWeight: 0},
 		},
 	}
 
-	var stickyHits int
-	for i := 0; i < 8; i++ {
+	// There is no currentWeight floor: the hint wins however overdrawn its backend is.
+	for i := 0; i < 100; i++ {
 		sel := lb.selectNextEngine(context.Background(), "B", nil)
-		require.NotNil(t, sel)
-		require.NotNil(t, sel.sharedKeyRoundRobinBackend)
-		if sel.sharedKeyRoundRobinBackend.name != "B" {
-			assert.Equal(t, "A", sel.sharedKeyRoundRobinBackend.name)
-			assert.Greater(t, stickyHits, 0)
-			assert.LessOrEqual(t, stickyHits, 6)
-			return
-		}
-		stickyHits++
+		require.NotNil(t, sel.shardKeyRoundRobinBackend)
+		require.Equal(t, "B", sel.shardKeyRoundRobinBackend.name)
 	}
-	t.Fatalf("hint B stayed selected for %d picks; expected threshold to reject it", stickyHits)
+	assert.Less(t, lb.backends[1].currentWeight, -100*10000+100)
+
+	// Without the hint, smooth WRR sends traffic to the backend the hint did not drain.
+	sel := lb.selectNextEngine(context.Background(), "", nil)
+	require.NotNil(t, sel.shardKeyRoundRobinBackend)
+	assert.Equal(t, "A", sel.shardKeyRoundRobinBackend.name)
+}
+
+func TestSelectNextEngine_ExcludedOrZeroWeightHintIsIgnored(t *testing.T) {
+	lb := &ShardKeyWeightedRoundRobin{
+		backends: []*shardKeyRoundRobinBackend{
+			{name: "A", weight: 1, engine: &stubEngine{}},
+			{name: "B", weight: 1, engine: &stubEngine{}},
+			{name: "Z", weight: 0, engine: &stubEngine{}},
+		},
+	}
+
+	sel := lb.selectNextEngine(context.Background(), "B", map[string]bool{"B": true})
+	require.NotNil(t, sel.shardKeyRoundRobinBackend)
+	assert.Equal(t, "A", sel.shardKeyRoundRobinBackend.name)
+
+	sel = lb.selectNextEngine(context.Background(), "Z", nil)
+	require.NotNil(t, sel.shardKeyRoundRobinBackend)
+	assert.NotEqual(t, "Z", sel.shardKeyRoundRobinBackend.name)
 }
 
 type failingReader struct{}
@@ -351,7 +317,7 @@ func (f *failingReader) Close() error { return nil }
 
 func TestShardKeyWeightedRoundRobin_Process_BodyReadError(t *testing.T) {
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "a", weight: 1, engine: &stubEngine{}},
 		},
 	}
@@ -389,7 +355,7 @@ func TestShardKeyWeightedRoundRobin_Process_SuccessAndRedisUpdate(t *testing.T) 
 		time.Minute,
 		backends,
 	)
-	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(backends), time.Second, 3, 0, provider, nil, client)
+	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(backends), time.Second, 3, provider, nil, client)
 	require.NoError(t, err)
 
 	req := newTestRequest(t)
@@ -424,7 +390,7 @@ func TestShardKeyWeightedRoundRobin_Process_RetryTimeout(t *testing.T) {
 	}
 
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "backend1", weight: 1, engine: failEngine},
 		},
 		retryTimeout:  0,
@@ -447,7 +413,7 @@ func TestShardKeyWeightedRoundRobin_Process_RetryMaxCount(t *testing.T) {
 	}
 
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "backend1", weight: 1, engine: failEngine},
 		},
 		retryTimeout:  time.Hour,
@@ -469,7 +435,7 @@ func TestSelectNextEngine_SmoothWeightedRoundRobin_NoShard(t *testing.T) {
 	// For classic smooth WRR, in any window of length 10 we should see A,B,C chosen
 	// exactly 2,3,5 times respectively (ignoring randomness in initial currentWeight).
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "A", weight: 2, engine: &stubEngine{}, currentWeight: 0},
 			{name: "B", weight: 3, engine: &stubEngine{}, currentWeight: 0},
 			{name: "C", weight: 5, engine: &stubEngine{}, currentWeight: 0},
@@ -483,10 +449,10 @@ func TestSelectNextEngine_SmoothWeightedRoundRobin_NoShard(t *testing.T) {
 	for i := 0; i < totalPicks; i++ {
 		sel := lb.selectNextEngine(context.Background(), "", nil)
 		require.NotNil(t, sel)
-		assert.NotEmpty(t, sel.sharedKeyRoundRobinBackend.name)
-		assert.NotNil(t, sel.sharedKeyRoundRobinBackend.engine)
-		counts[sel.sharedKeyRoundRobinBackend.name]++
-		sequence = append(sequence, sel.sharedKeyRoundRobinBackend.name)
+		assert.NotEmpty(t, sel.shardKeyRoundRobinBackend.name)
+		assert.NotNil(t, sel.shardKeyRoundRobinBackend.engine)
+		counts[sel.shardKeyRoundRobinBackend.name]++
+		sequence = append(sequence, sel.shardKeyRoundRobinBackend.name)
 	}
 
 	assert.Equal(t, 2, counts["A"])
@@ -525,7 +491,7 @@ func TestShardKeyWeightedRoundRobin_Process_AllBackendExhausted(t *testing.T) {
 		return []string{"shard-key-1"}
 	}
 	provider := newPrimaryShardKeyProvider(t, shardKeyListFunc, rd, "shard-key:all-backend-exhausted", time.Minute, lbItems)
-	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, 0, provider, nil, rd)
+	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, provider, nil, rd)
 	require.NoError(t, err)
 
 	t.Run("all backends exhausted without shard key prioritization", func(t *testing.T) {
@@ -585,7 +551,7 @@ func TestShardKeyWeightedRoundRobin_Process_FailoverToLowerLayerBackend(t *testi
 		return []string{"shard-key-1"}
 	}
 	provider := newPrimaryShardKeyProvider(t, shardKeyListFunc, rd, "shard-key:failover-lower-layer", time.Minute, lbItems)
-	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, 0, provider, nil, rd)
+	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, provider, nil, rd)
 	require.NoError(t, err)
 
 	t.Run("higher-layer backends fail, lower-layer backend succeeds", func(t *testing.T) {
@@ -604,9 +570,9 @@ func TestShardKeyWeightedRoundRobin_Process_FailoverToLowerLayerBackend(t *testi
 	stubB.reset()
 	stubC.reset()
 
-	t.Run("shard-key prioritizes higher-layer backends, lower-layer backend succeeds as last resort", func(t *testing.T) {
+	t.Run("affinity order wins over layers", func(t *testing.T) {
 		ctx := context.Background()
-		// C is the most recent affinity hit but sits in layer 0, so the order is b -> a -> c
+		// Affinity candidates are tried by recency whatever their layer: C (layer 0) first and it succeeds.
 		_, err := rd.ZAdd(ctx, "shard-key:failover-lower-layer:shard-key-1",
 			redis.Z{Score: float64(time.Now().Unix() - 2), Member: "A"},
 			redis.Z{Score: float64(time.Now().Unix() - 1), Member: "B"},
@@ -619,12 +585,9 @@ func TestShardKeyWeightedRoundRobin_Process_FailoverToLowerLayerBackend(t *testi
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 
-		assert.Equal(t, 1, stubA.callCount, "stubA should be called once")
-		assert.Equal(t, 1, stubB.callCount, "stubB should be called once")
-		assert.Equal(t, 1, stubC.callCount, "stubC should be called once")
-
-		assert.Greater(t, stubA.lastCalledTs, stubB.lastCalledTs, "stubA and stubB should be called in order of prioritization")
-		assert.Greater(t, stubC.lastCalledTs, stubB.lastCalledTs, "stubC should be called for failover after stubB")
+		assert.Equal(t, 0, stubA.callCount, "stubA should not be called")
+		assert.Equal(t, 0, stubB.callCount, "stubB should not be called")
+		assert.Equal(t, 1, stubC.callCount, "stubC should be called first for affinity")
 	})
 }
 
@@ -639,7 +602,7 @@ func TestShardKeyWeightedRoundRobin_Process_LowerLayerEngineNotFirstChoice(t *te
 		{Name: "C", Weight: 100, Layer: 0, Engine: stubC},
 	}
 
-	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, 0, nil, nil, newTestRedis(t)) // skip shard-key prioritized routing
+	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, nil, nil, newTestRedis(t)) // skip shard-key prioritized routing
 	require.NoError(t, err)
 
 	t.Run("WRR prefers higher-layer backends; lower layer not called when healthy alternatives exist", func(t *testing.T) {
@@ -667,7 +630,7 @@ func TestShardKeyWeightedRoundRobin_Process_LowerLayerEnginesCanBeLoadBalanced(t
 		{Name: "D", Weight: 1, Layer: 0, Engine: stubD},
 	}
 
-	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, 0, nil, nil, newTestRedis(t)) // skip shard-key prioritized routing
+	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, nil, nil, newTestRedis(t)) // skip shard-key prioritized routing
 	require.NoError(t, err)
 
 	t.Run("WRR failover to lower-layer backends load-balanced when all higher-layer backends fail", func(t *testing.T) {
@@ -708,7 +671,7 @@ func TestShardKeyWeightedRoundRobin_Process_Priority(t *testing.T) {
 	ctxC := context.WithValue(context.Background(), "selected-backend", "C")
 
 	provider := newPrimaryShardKeyProvider(t, shardKeyListFunc, rd, "shard-key:select-by-ctx", time.Minute, lbItems)
-	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, 0, provider, nil, rd)
+	lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(lbItems), time.Second, 5, provider, nil, rd)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -737,7 +700,7 @@ func TestShardKeyWeightedRoundRobin_Process_Priority(t *testing.T) {
 	stubA.err = errors.New("failure")
 	stubB.err = errors.New("failure")
 
-	t.Run("redis score is updated after lower-layer affinity backend succeeds on failover", func(t *testing.T) {
+	t.Run("redis score is updated after lower-layer affinity backend succeeds", func(t *testing.T) {
 		initialScore := float64(time.Now().Unix() - 10)
 		_, err = rd.ZAdd(ctx, "shard-key:select-by-ctx:C",
 			redis.Z{Score: initialScore, Member: "C"},
@@ -748,13 +711,64 @@ func TestShardKeyWeightedRoundRobin_Process_Priority(t *testing.T) {
 		_, err = lb.Process(req)
 		require.NoError(t, err)
 
-		assert.Equal(t, 1, stubA.callCount)
-		assert.Equal(t, 1, stubB.callCount)
-		assert.Equal(t, 1, stubC.callCount, "stubC should be called for failover")
+		// C is tried first for affinity although A and B sit in a higher layer
+		assert.Equal(t, 0, stubA.callCount)
+		assert.Equal(t, 0, stubB.callCount)
+		assert.Equal(t, 1, stubC.callCount, "stubC should be called for affinity")
 
-		// A lower-layer backend is a regular WRR backend, so its affinity is committed on success
 		scoreAfter, err := rd.ZScore(ctx, "shard-key:select-by-ctx:C", "C").Result()
 		require.NoError(t, err)
 		assert.Greater(t, scoreAfter, initialScore, "Redis ZSET score for lower-layer backend C should be updated after processing")
 	})
+}
+
+func TestShardKeyWeightedRoundRobin_Process_RouteMetricRecordsLastAttemptOnce(t *testing.T) {
+	stubA := &stubEngine{err: errors.New("failure")}
+	stubB := &stubEngine{}
+	lb, err := NewShardKeyWeightedRoundRobin(
+		withTestConcurrencyKeys([]BackendItem{
+			{Name: "A", Weight: 1, Layer: 0, Engine: stubA},
+			{Name: "B", Weight: 1, Layer: 1, Engine: stubB},
+		}),
+		time.Second, 5,
+		affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
+			return []*PrioritizedBackend{{Name: "A", StrongCacheHit: true}}, nil, nil
+		}),
+		nil, newTestRedis(t),
+	)
+	require.NoError(t, err)
+
+	const model = "route-metric-test-model"
+	ctx := context.WithValue(context.Background(), octollm.ContextKeyModelName, model)
+	_, err = lb.Process(testhelper.CreateTestRequest(testhelper.WithContext(ctx)))
+	require.NoError(t, err)
+	// A (affinity, lower layer) fails first, B serves the request: only B's attempt is recorded.
+	assert.Equal(t, 1, stubA.callCount)
+	assert.Equal(t, 1, stubB.callCount)
+	assert.Equal(t, 0.0, routeCount(t, "strong", "strong", model, "A"))
+	assert.Equal(t, 1.0, routeCount(t, "strong", "miss", model, "B"))
+}
+
+func routeCount(t *testing.T, expect, actual, model, backend string) float64 {
+	t.Helper()
+	want := map[string]string{"expect": expect, "actual": actual, "model_name": model, "backend_name": backend}
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, family := range families {
+		if family.GetName() != "octollm_cache_aware_route_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			matched := true
+			for _, label := range metric.GetLabel() {
+				if want[label.GetName()] != label.GetValue() {
+					matched = false
+				}
+			}
+			if matched {
+				return metric.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
 }

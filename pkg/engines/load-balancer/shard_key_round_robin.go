@@ -14,7 +14,7 @@ import (
 	"github.com/infinigence/octollm/pkg/octollm"
 )
 
-type sharedKeyRoundRobinBackend struct {
+type shardKeyRoundRobinBackend struct {
 	name          string
 	weight        int
 	layer         int
@@ -23,32 +23,24 @@ type sharedKeyRoundRobinBackend struct {
 }
 
 type prioritizedWrrBackend struct {
-	backend        *sharedKeyRoundRobinBackend
+	backend        *shardKeyRoundRobinBackend
 	strongCacheHit bool
 }
 
-const defaultMinWeightMultiple = 5
-
 // ShardKeyWeightedRoundRobin implements layered weighted round-robin with optional backend affinity. It:
-//   - Restricts each pick to the highest layer that still has untried backends.
 //   - Uses AffinityProvider to resolve ordered backend candidates.
-//   - Tries eligible affinity candidates in that layer before normal WRR selection.
-//   - Falls back to smooth WRR within that layer after its affinity candidates are exhausted.
+//   - Tries every affinity candidate first, in provider order and whatever its layer.
+//   - Then falls back to smooth WRR in the highest layer that still has untried backends.
 //   - Writes CacheHitKind onto each attempt request; Color Limiter enforces headroom.
 type ShardKeyWeightedRoundRobin struct {
 	mu sync.Mutex
 
-	backends         []*sharedKeyRoundRobinBackend
+	backends         []*shardKeyRoundRobinBackend
 	affinityProvider AffinityProvider
 	retryTimeout     time.Duration
 	retryMaxCount    int
 	backendAdmission BackendAdmission
 	redisClient      *redis.Client
-	// minWeightMultiple is the floor for affinity hint only:
-	// a prioritized backend is skipped while currentWeight < -minWeightMultiple * totalWeight.
-	// Fallback WRR still picks the highest currentWeight among live candidates.
-	// Values <= 0 use defaultMinWeightMultiple.
-	minWeightMultiple int
 }
 
 var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
@@ -59,12 +51,10 @@ var _ octollm.Engine = (*ShardKeyWeightedRoundRobin)(nil)
 // normal WRR. A nil backendAdmission skips admission checks and preserves current balancer
 // behavior.
 // redisClient is required by the constructor for call-site compatibility.
-// minWeightMultiple <= 0 uses defaultMinWeightMultiple.
 func NewShardKeyWeightedRoundRobin(
 	backends []BackendItem,
 	retryTimeout time.Duration,
 	retryMaxCount int,
-	minWeightMultiple int,
 	affinityProvider AffinityProvider,
 	backendAdmission BackendAdmission,
 	redisClient *redis.Client,
@@ -86,9 +76,9 @@ func NewShardKeyWeightedRoundRobin(
 		}
 	}
 
-	wrrBackends := make([]*sharedKeyRoundRobinBackend, len(backends))
+	wrrBackends := make([]*shardKeyRoundRobinBackend, len(backends))
 	for i, backend := range backends {
-		wrrBackends[i] = &sharedKeyRoundRobinBackend{
+		wrrBackends[i] = &shardKeyRoundRobinBackend{
 			name:          backend.Name,
 			weight:        backend.Weight,
 			layer:         backend.Layer,
@@ -97,18 +87,13 @@ func NewShardKeyWeightedRoundRobin(
 		}
 	}
 
-	if minWeightMultiple <= 0 {
-		minWeightMultiple = defaultMinWeightMultiple
-	}
-
 	return &ShardKeyWeightedRoundRobin{
-		backends:          wrrBackends,
-		affinityProvider:  affinityProvider,
-		retryTimeout:      retryTimeout,
-		retryMaxCount:     retryMaxCount,
-		backendAdmission:  backendAdmission,
-		redisClient:       redisClient,
-		minWeightMultiple: minWeightMultiple,
+		backends:         wrrBackends,
+		affinityProvider: affinityProvider,
+		retryTimeout:     retryTimeout,
+		retryMaxCount:    retryMaxCount,
+		backendAdmission: backendAdmission,
+		redisClient:      redisClient,
 	}, nil
 }
 
@@ -124,7 +109,7 @@ func (l *ShardKeyWeightedRoundRobin) resolveAffinity(req *octollm.Request) ([]*p
 		return nil, nil, err
 	}
 
-	backendByName := make(map[string]*sharedKeyRoundRobinBackend, len(l.backends))
+	backendByName := make(map[string]*shardKeyRoundRobinBackend, len(l.backends))
 	for _, b := range l.backends {
 		if b != nil && b.name != "" {
 			backendByName[b.name] = b
@@ -133,7 +118,7 @@ func (l *ShardKeyWeightedRoundRobin) resolveAffinity(req *octollm.Request) ([]*p
 
 	prioritized := make([]*prioritizedWrrBackend, 0, len(providerBackends))
 	for _, pb := range providerBackends {
-		if pb == nil {
+		if pb == nil || !pb.StrongCacheHit {
 			continue
 		}
 		backend, ok := backendByName[pb.Name]
@@ -161,70 +146,64 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 		return nil, err
 	}
 
-	offeredPrioritized := make(map[string]bool)
 	excludeNames := make(map[string]bool)
 
 	start := time.Now()
 	retryCount := 0
 	expectKind := common.CacheMiss
+	// The route metric records the last backend actually attempted, once per request.
+	var routedName string
+	var routedKind common.CacheHitKind
+	defer func() {
+		if routedName != "" {
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(routedKind), modelName, routedName).Inc()
+		}
+	}()
 	var lastRealResp *octollm.Response
 	var lastRealErr error
-	var lastN string
-	var lastActualKind common.CacheHitKind
 	for {
-		// Offer each affinity candidate at most once, and only while its layer is the active one.
-		layer := l.activeLayer(excludeNames)
-		var prioritizedBackend *prioritizedWrrBackend
+		// Affinity candidates go first, in provider order and whatever their layer. A tried
+		// backend is always excluded, so each candidate is offered at most once.
+		var prioritized *prioritizedWrrBackend
 		for _, cand := range prioritizedBackends {
-			if cand == nil || cand.backend == nil || cand.backend.layer != layer ||
-				offeredPrioritized[cand.backend.name] || excludeNames[cand.backend.name] {
-				continue
+			if !excludeNames[cand.backend.name] {
+				prioritized = cand
+				break
 			}
-			offeredPrioritized[cand.backend.name] = true
-			prioritizedBackend = cand
-			break
 		}
 
 		prioritizedName := ""
-		strongCacheHit := false
-		if prioritizedBackend != nil {
-			prioritizedName = prioritizedBackend.backend.name
-			strongCacheHit = prioritizedBackend.strongCacheHit
-			if strongCacheHit {
+		if prioritized != nil {
+			prioritizedName = prioritized.backend.name
+			if prioritized.strongCacheHit {
 				expectKind = common.CacheHitStrong
 			} else if expectKind != common.CacheHitStrong {
 				expectKind = common.CacheHitWeak
 			}
 		}
 		selection := l.selectNextEngine(req.Context(), prioritizedName, excludeNames)
-		if selection == nil || selection.sharedKeyRoundRobinBackend == nil || selection.sharedKeyRoundRobinBackend.engine == nil {
-			if retryCount > 0 {
-				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] no backend engine available on failover, returning previous error: %v", lastRealErr))
-				cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(lastActualKind), modelName, lastN).Inc()
-			}
+		if selection == nil || selection.shardKeyRoundRobinBackend == nil || selection.shardKeyRoundRobinBackend.engine == nil {
 			if lastRealErr != nil {
+				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] no backend engine available on failover, returning previous error: %v", lastRealErr))
 				return lastRealResp, lastRealErr
 			}
 			return nil, fmt.Errorf("no backend engine available")
 		}
-		selected := selection.sharedKeyRoundRobinBackend
+		selected := selection.shardKeyRoundRobinBackend
 		n, eng := selected.name, selected.engine
-		isPrioritizedHit := prioritizedBackend != nil && n == prioritizedName
-		var actualKind common.CacheHitKind
-		if isPrioritizedHit {
-			if strongCacheHit {
+		actualKind := common.CacheMiss
+		if prioritized != nil {
+			actualKind = common.CacheHitWeak
+			if prioritized.strongCacheHit {
 				actualKind = common.CacheHitStrong
-			} else {
-				actualKind = common.CacheHitWeak
 			}
 			slog.InfoContext(req.Context(),
-				fmt.Sprintf("[ShardKey WRR load balancer] prioritized backend hit (strongCacheHit=%t): %s (layer %d, %d prioritized)", strongCacheHit, n, layer, len(prioritizedBackends)),
+				fmt.Sprintf("[ShardKey WRR load balancer] prioritized backend hit (strongCacheHit=%t): %s (layer %d, %d prioritized)", prioritized.strongCacheHit, n, selected.layer, len(prioritizedBackends)),
 				slog.String("backend_name", n),
 			)
 		} else {
-			actualKind = common.CacheMiss
 			slog.InfoContext(req.Context(),
-				fmt.Sprintf("[ShardKey WRR load balancer] no prioritized backend available in layer %d (%d prioritized), fallback to WRR: %s", layer, len(prioritizedBackends), n),
+				fmt.Sprintf("[ShardKey WRR load balancer] no prioritized backend left (%d prioritized), fallback to WRR: %s (layer %d)", len(prioritizedBackends), n, selected.layer),
 				slog.String("backend_name", n),
 			)
 		}
@@ -243,16 +222,15 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			}
 		}
 
+		routedName, routedKind = n, actualKind
 		attemptReq := req.WithContext(context.WithValue(req.Context(), common.ContextKeyCacheHitKind, actualKind))
 		attemptReq.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(attemptReq)
 		if done != nil {
 			if err == nil {
 				done(true)
-			} else {
-				if isBackendFailureError(err) {
-					done(false)
-				}
+			} else if isBackendFailureError(err) {
+				done(false)
 			}
 		}
 
@@ -262,43 +240,32 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] failed to commit shard key mapping: %v", commitErr))
 				}
 			}
-			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return resp, nil
 		}
 
-		// The following logic handles the case where err is non-nil.
 		if isNotRetriableError(err) {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] error is not retriable, return without retry: %v", err))
-			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return resp, err
 		}
 
 		lastRealResp, lastRealErr = resp, err
-		lastN, lastActualKind = n, actualKind
 		retryCount++
 		excludeNames[n] = true
 		if req.Context().Err() != nil {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] request context error: %v", req.Context().Err()))
-			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return lastRealResp, lastRealErr
 		}
 		if time.Since(start) >= l.retryTimeout {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] retry period %v reached, return last resp and err", l.retryTimeout))
-			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return lastRealResp, lastRealErr
 		}
 		if retryCount >= l.retryMaxCount {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] retry max count %d reached, return last resp and err", l.retryMaxCount))
-			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return lastRealResp, lastRealErr
 		}
 		if len(excludeNames) >= len(l.backends) {
 			slog.WarnContext(req.Context(), "[ShardKey WRR load balancer] all backends have been tried, return last resp and err")
-			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
-			if lastRealErr != nil {
-				return lastRealResp, lastRealErr
-			}
-			return nil, fmt.Errorf("no backend engine available")
+			return lastRealResp, lastRealErr
 		}
 		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] will retry, count %d, time %v", retryCount, time.Since(start)))
 		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
@@ -306,7 +273,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 }
 
 type wrrSelection struct {
-	sharedKeyRoundRobinBackend *sharedKeyRoundRobinBackend
+	shardKeyRoundRobinBackend *shardKeyRoundRobinBackend
 }
 
 // activeLayer returns the highest layer that still has a non-excluded positive-weight backend, or
@@ -325,16 +292,8 @@ func (l *ShardKeyWeightedRoundRobin) activeLayer(excludeNames map[string]bool) i
 	return layer
 }
 
-func (l *ShardKeyWeightedRoundRobin) weightThreshold(totalWeight int) int {
-	multiple := l.minWeightMultiple
-	if multiple <= 0 {
-		multiple = defaultMinWeightMultiple
-	}
-	return -multiple * totalWeight
-}
-
-func pickMaxCurrentWeight(candidates []*sharedKeyRoundRobinBackend) *sharedKeyRoundRobinBackend {
-	var selected *sharedKeyRoundRobinBackend
+func pickMaxCurrentWeight(candidates []*shardKeyRoundRobinBackend) *shardKeyRoundRobinBackend {
+	var selected *shardKeyRoundRobinBackend
 	for _, backend := range candidates {
 		if backend == nil || backend.weight <= 0 {
 			continue
@@ -346,31 +305,41 @@ func pickMaxCurrentWeight(candidates []*sharedKeyRoundRobinBackend) *sharedKeyRo
 	return selected
 }
 
-// selectNextEngine applies layered, affinity-aware smooth WRR selection.
+// selectNextEngine picks the next backend with layered smooth WRR.
 //
-// Per-pick algorithm:
-//  1. Pick the active layer: the highest layer that has a non-excluded positive-weight backend.
-//  2. Build non-excluded positive-weight candidates from that layer only and compute its
-//     totalWeight. Weight-0 backends are never selected.
-//  3. Compute threshold = -minWeightMultiple * totalWeight.
-//  4. Prefer the affinity backend if it is a candidate whose currentWeight is at least
-//     threshold; otherwise pick the candidate with the highest currentWeight, even if every
-//     candidate is below threshold.
-//  5. Penalize the selected backend by subtracting totalWeight.
-//  6. Add each candidate's weight to its currentWeight.
+// A non-empty prioritizedBackend that names a non-excluded positive-weight backend is selected
+// whatever its layer or currentWeight, and the WRR update below runs in its layer. Otherwise the
+// active layer is the highest layer that still has a non-excluded positive-weight backend, and its
+// candidate with the highest currentWeight is selected. Weight-0 backends are never selected.
 //
-// Steps 5–6 are applied immediately, touch only the active layer, and are never rolled back.
+// The selected backend loses its layer's totalWeight and every candidate in that layer gains its
+// own weight. The update touches that layer only, is applied immediately, and is never rolled back.
 func (l *ShardKeyWeightedRoundRobin) selectNextEngine(ctx context.Context, prioritizedBackend string, excludeNames map[string]bool) *wrrSelection {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	layer := l.activeLayer(excludeNames)
+	var selected *shardKeyRoundRobinBackend
+	if prioritizedBackend != "" && !excludeNames[prioritizedBackend] {
+		for _, backend := range l.backends {
+			if backend != nil && backend.weight > 0 && backend.name == prioritizedBackend {
+				selected = backend
+				break
+			}
+		}
+	}
+
+	var layer int
+	if selected != nil {
+		layer = selected.layer
+	} else {
+		layer = l.activeLayer(excludeNames)
+	}
 	if layer < 0 {
 		return &wrrSelection{}
 	}
 
 	totalWeight := 0
-	var candidates []*sharedKeyRoundRobinBackend
+	var candidates []*shardKeyRoundRobinBackend
 	for _, backend := range l.backends {
 		if backend == nil || backend.weight <= 0 || backend.layer != layer {
 			continue
@@ -382,36 +351,15 @@ func (l *ShardKeyWeightedRoundRobin) selectNextEngine(ctx context.Context, prior
 		candidates = append(candidates, backend)
 	}
 
-	threshold := l.weightThreshold(totalWeight)
-
-	var selected *sharedKeyRoundRobinBackend
-	if prioritizedBackend != "" {
-		for _, backend := range candidates {
-			if backend.name != prioritizedBackend {
-				continue
-			}
-			if backend.currentWeight >= threshold {
-				selected = backend
-			} else {
-				slog.InfoContext(ctx,
-					fmt.Sprintf("[ShardKey WRR load balancer] skip prioritized backend below threshold: %s (currentWeight=%d, threshold=%d)", backend.name, backend.currentWeight, threshold),
-					slog.String("backend_name", backend.name),
-				)
-			}
-			break
-		}
-	}
-
 	if selected == nil {
 		selected = pickMaxCurrentWeight(candidates)
 	}
-
 	if selected == nil {
 		return &wrrSelection{}
 	}
 
 	slog.InfoContext(ctx,
-		fmt.Sprintf("[ShardKey WRR load balancer] selected: %s (layer=%d, currentWeight=%d, threshold=%d), candidates: %v", selected.name, layer, selected.currentWeight, threshold, candidates),
+		fmt.Sprintf("[ShardKey WRR load balancer] selected: %s (layer=%d, currentWeight=%d, totalWeight=%d)", selected.name, layer, selected.currentWeight, totalWeight),
 		slog.String("backend_name", selected.name),
 	)
 
@@ -421,6 +369,6 @@ func (l *ShardKeyWeightedRoundRobin) selectNextEngine(ctx context.Context, prior
 	}
 
 	return &wrrSelection{
-		sharedKeyRoundRobinBackend: selected,
+		shardKeyRoundRobinBackend: selected,
 	}
 }

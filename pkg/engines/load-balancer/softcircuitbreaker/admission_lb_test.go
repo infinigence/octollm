@@ -91,7 +91,7 @@ func TestAdmission_WRR_DeniedBackendIsNotInvoked(t *testing.T) {
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 3, 0, prioritizeBackends{"A"}, hook, newHookLBRedis(t))
+		time.Second, 3, prioritizeBackends{"A"}, hook, newHookLBRedis(t))
 	require.NoError(t, err)
 
 	resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -114,7 +114,7 @@ func TestAdmission_WRR_AllDeniedReturnsNoBackendAvailable(t *testing.T) {
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 3, 0, nil, hook, newHookLBRedis(t))
+		time.Second, 3, nil, hook, newHookLBRedis(t))
 	require.NoError(t, err)
 
 	resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -137,7 +137,7 @@ func TestAdmission_WRR_PreservesRealErrorWhenRemainingDenied(t *testing.T) {
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 5, 0, nil, hook, newHookLBRedis(t))
+		time.Second, 5, nil, hook, newHookLBRedis(t))
 	require.NoError(t, err)
 
 	resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -210,7 +210,7 @@ func TestAdmission_WRR_ExcludedHTTPStatusIsNotRecorded(t *testing.T) {
 	engine := &countingEngine{err: &errutils.UpstreamRespError{StatusCode: http.StatusRequestEntityTooLarge}}
 	lb, err := loadbalancer.NewShardKeyWeightedRoundRobin(
 		withSoftCBKeys([]loadbalancer.BackendItem{{Name: "A", Weight: 1, Engine: engine}}),
-		time.Second, 3, 0, nil, hook, newHookLBRedis(t))
+		time.Second, 3, nil, hook, newHookLBRedis(t))
 	require.NoError(t, err)
 
 	_, err = lb.Process(testhelper.CreateTestRequest())
@@ -244,7 +244,7 @@ func TestAdmission_WRR_Upstream429IsRecorded(t *testing.T) {
 			engine := &countingEngine{err: tt.err}
 			lb, err := loadbalancer.NewShardKeyWeightedRoundRobin(
 				withSoftCBKeys([]loadbalancer.BackendItem{{Name: "A", Weight: 1, Engine: engine}}),
-				time.Second, 3, 0, nil, hook, newHookLBRedis(t))
+				time.Second, 3, nil, hook, newHookLBRedis(t))
 			require.NoError(t, err)
 
 			_, err = lb.Process(testhelper.CreateTestRequest())
