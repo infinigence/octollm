@@ -73,7 +73,7 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 	}
 	newWRR := func(t *testing.T, items []BackendItem, provider AffinityProvider, rd *redis.Client) *ShardKeyWeightedRoundRobin {
 		t.Helper()
-		lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(items), time.Second, 3, 0, provider, nil, rd)
+		lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(items), time.Second, 3, provider, nil, rd)
 		require.NoError(t, err)
 		return lb
 	}
@@ -104,7 +104,42 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 		assert.Empty(t, cool.kindsCopy())
 	})
 
-	t.Run("weak affinity limiter reject failovers and second attempt is not strong", func(t *testing.T) {
+	t.Run("weak affinity is ignored and WRR picks the backend", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		hot := &captureHitKindEngine{}
+		cool := &captureHitKindEngine{}
+		items := []BackendItem{
+			{Name: "hot", Weight: 10, Engine: hot},
+			{Name: "cool", Weight: 10, Engine: cool},
+		}
+
+		// Leaf policy without a leaf marker makes "hot" a weak hit only.
+		const keyPrefix = "wrr-hk-weak"
+		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
+		provider := newPrimaryShardKeyProviderWithPolicy(t, func(_ *octollm.Request) []string {
+			return []string{"sk0", "sk1", "sk2"}
+		}, rd, keyPrefix, time.Minute, items, StrongHitPolicyLeaf)
+
+		lb := newWRR(t, items, provider, rd)
+		for _, b := range lb.backends {
+			if b.name == "cool" {
+				b.currentWeight = 1000
+			} else {
+				b.currentWeight = 0
+			}
+		}
+
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, "cool", selectedBackend(t, req))
+		assert.Empty(t, hot.kindsCopy())
+		assert.Equal(t, []common.CacheHitKind{common.CacheMiss}, cool.kindsCopy())
+	})
+
+	t.Run("weak affinity backend picked by WRR is a cache miss", func(t *testing.T) {
 		mr := miniredis.RunT(t)
 		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 		hotCap := &captureHitKindEngine{}
@@ -114,18 +149,27 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 			{Name: "cool", Weight: 10, Engine: cool},
 		}
 
-		const keyPrefix = "wrr-hk-weak"
+		const keyPrefix = "wrr-hk-weak-miss"
 		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
 		provider := newPrimaryShardKeyProviderWithPolicy(t, func(_ *octollm.Request) []string {
 			return []string{"sk0", "sk1", "sk2"}
 		}, rd, keyPrefix, time.Minute, items, StrongHitPolicyLeaf)
 
+		lb := newWRR(t, items, provider, rd)
+		for _, b := range lb.backends {
+			if b.name == "hot" {
+				b.currentWeight = 1000
+			} else {
+				b.currentWeight = 0
+			}
+		}
+
 		req := testhelper.CreateTestRequest()
-		resp, err := newWRR(t, items, provider, rd).Process(req)
+		resp, err := lb.Process(req)
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 		assert.Equal(t, "cool", selectedBackend(t, req))
-		assert.Equal(t, []common.CacheHitKind{common.CacheHitWeak}, hotCap.kindsCopy())
+		assert.Equal(t, []common.CacheHitKind{common.CacheMiss}, hotCap.kindsCopy())
 		assert.Equal(t, []common.CacheHitKind{common.CacheMiss}, cool.kindsCopy())
 	})
 
@@ -215,7 +259,7 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 			{Name: "a", Weight: 10, Engine: eng},
 			{Name: "b", Weight: 10, Engine: eng},
 		}
-		lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(items), 5*time.Millisecond, 10, 0, nil, nil, rd)
+		lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(items), 5*time.Millisecond, 10, nil, nil, rd)
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -242,7 +286,7 @@ func TestShardKeyWRR_HitKindAndLimiterFailover(t *testing.T) {
 				return &octollm.Response{StatusCode: 200}, nil
 			})},
 		}
-		lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(items), 5*time.Millisecond, 10, 0, nil, nil, rd)
+		lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(items), 5*time.Millisecond, 10, nil, nil, rd)
 		require.NoError(t, err)
 		for _, backend := range lb.backends {
 			switch backend.name {
@@ -289,8 +333,16 @@ func TestShardKeyWRR_PLoadFailover(t *testing.T) {
 	}
 	newWRR := func(t *testing.T, items []BackendItem, provider AffinityProvider, rd *redis.Client) *ShardKeyWeightedRoundRobin {
 		t.Helper()
-		lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(items), time.Second, 3, 0, provider, nil, rd)
+		lb, err := NewShardKeyWeightedRoundRobin(withTestConcurrencyKeys(items), time.Second, 3, provider, nil, rd)
 		require.NoError(t, err)
+		// Weak hints are not prioritized, so pin A ahead of B in WRR to keep the attempt order fixed.
+		for _, b := range lb.backends {
+			if b.name == "a" {
+				b.currentWeight = 1000
+			} else {
+				b.currentWeight = 0
+			}
+		}
 		return lb
 	}
 	affinity := func(t *testing.T, rd *redis.Client, keyPrefix, policy string, items []BackendItem) AffinityProvider {

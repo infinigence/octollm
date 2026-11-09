@@ -610,7 +610,7 @@ func TestShardKeyWeightedRoundRobin_WithAffinityProvider(t *testing.T) {
 			{Name: "A", Weight: 10, Engine: engineA},
 			{Name: "B", Weight: 5, Engine: engineB},
 		}),
-		time.Second, 3, 0,
+		time.Second, 3,
 		provider,
 		nil, newTestRedis(t))
 	require.NoError(t, err)
@@ -656,7 +656,6 @@ func TestShardKeyWeightedRoundRobin_WithAffinityProvider_RequestFailureDoesNotCo
 		}}),
 		time.Second,
 		1,
-		0,
 		provider,
 		nil, newTestRedis(t))
 	require.NoError(t, err)
@@ -710,7 +709,6 @@ func TestShardKeyLoadBalancers_AffinityProviderErrors(t *testing.T) {
 			})}}),
 			time.Second,
 			1,
-			0,
 			affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
 				return nil, nil, providerErr
 			}),
@@ -757,7 +755,6 @@ func TestShardKeyLoadBalancers_AffinityCommitErrorDoesNotFailRequest(t *testing.
 			})}}),
 			time.Second,
 			1,
-			0,
 			provider,
 			nil, newTestRedis(t))
 		require.NoError(t, err)

@@ -54,7 +54,6 @@ func TestShardKeyWRR_Admission_SkipDoesNotConsumeRetry(t *testing.T) {
 		}),
 		time.Second,
 		1,
-		0,
 		nil,
 		hook, newTestRedis(t))
 	require.NoError(t, err)
@@ -78,7 +77,7 @@ func TestShardKeyWRR_Admission_AllDeniedReturnsNoBackendAvailable(t *testing.T) 
 			{Name: "A", Weight: 5, Engine: engineA},
 			{Name: "B", Weight: 5, Engine: engineB},
 		}),
-		time.Second, 3, 0, nil, hook, newTestRedis(t))
+		time.Second, 3, nil, hook, newTestRedis(t))
 	require.NoError(t, err)
 	before := snapshotCurrentWeights(lb)
 
@@ -103,7 +102,7 @@ func TestShardKeyWRR_Admission_PreservesRealErrorWhenRemainingDenied(t *testing.
 			{Name: "B", Weight: 1, Engine: engineB},
 			{Name: "C", Weight: 1, Engine: engineC},
 		}),
-		time.Second, 10, 0, nil, hook, newTestRedis(t))
+		time.Second, 10, nil, hook, newTestRedis(t))
 	require.NoError(t, err)
 	lb.backends[0].currentWeight = 1000
 	lb.backends[1].currentWeight = 0
@@ -126,7 +125,7 @@ func TestShardKeyWRR_Admission_RealFailureStillConsumesRetry(t *testing.T) {
 			{Name: "A", Weight: 100, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 2, 0, nil, nil, newTestRedis(t))
+		time.Second, 2, nil, nil, newTestRedis(t))
 	require.NoError(t, err)
 	lb.backends[0].currentWeight = 1000
 	lb.backends[1].currentWeight = 0
@@ -147,7 +146,7 @@ func TestShardKeyWRR_Admission_DoneCalledOncePerRealAttempt(t *testing.T) {
 			{Name: "A", Weight: 100, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 5, 0, nil, hook, newTestRedis(t))
+		time.Second, 5, nil, hook, newTestRedis(t))
 	require.NoError(t, err)
 	lb.backends[0].currentWeight = 1000
 	lb.backends[1].currentWeight = 0
@@ -161,7 +160,7 @@ func TestShardKeyWRR_Admission_NilAdmissionKeepsCurrentBehavior(t *testing.T) {
 	engineA := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	lb, err := NewShardKeyWeightedRoundRobin(
 		withTestConcurrencyKeys([]BackendItem{{Name: "A", Weight: 1, Engine: engineA}}),
-		time.Second, 1, 0, nil, nil, newTestRedis(t))
+		time.Second, 1, nil, nil, newTestRedis(t))
 	require.NoError(t, err)
 
 	resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -181,7 +180,7 @@ func TestShardKeyWRR_Admission_DenyKeepsAllCandidateWeightUpdates(t *testing.T) 
 			{Name: "B", Weight: 5, Engine: engineB},
 			{Name: "C", Weight: 5, Engine: engineC},
 		}),
-		time.Second, 3, 0, nil, hook, newTestRedis(t))
+		time.Second, 3, nil, hook, newTestRedis(t))
 	require.NoError(t, err)
 	lb.backends[0].currentWeight = 20
 	lb.backends[1].currentWeight = 3
@@ -212,7 +211,7 @@ func TestShardKeyWRR_Admission_AffinityDenyDoesNotRollback(t *testing.T) {
 			{Name: "B", Weight: 1, Engine: engineB},
 			{Name: "C", Weight: 1, Engine: engineC},
 		}),
-		time.Second, 3, 0, provider, hook, newTestRedis(t))
+		time.Second, 3, provider, hook, newTestRedis(t))
 	require.NoError(t, err)
 	before := snapshotCurrentWeights(lb)
 
@@ -233,7 +232,7 @@ func TestShardKeyWRR_Admission_AllowedSuccessDoesNotRollback(t *testing.T) {
 			{Name: "A", Weight: 7, Engine: engineA},
 			{Name: "B", Weight: 3, Engine: engineB},
 		}),
-		time.Second, 1, 0, nil, &denyNamesAdmission{}, newTestRedis(t))
+		time.Second, 1, nil, &denyNamesAdmission{}, newTestRedis(t))
 	require.NoError(t, err)
 	lb.backends[0].currentWeight = 4
 	lb.backends[1].currentWeight = 0
@@ -254,7 +253,7 @@ func TestShardKeyWRR_Admission_FailoverAfterAllowedDoesNotRollback(t *testing.T)
 			{Name: "A", Weight: 5, Engine: engineA},
 			{Name: "B", Weight: 5, Engine: engineB},
 		}),
-		time.Second, 5, 0, nil, hook, newTestRedis(t))
+		time.Second, 5, nil, hook, newTestRedis(t))
 	require.NoError(t, err)
 	lb.backends[0].currentWeight = 40
 	lb.backends[1].currentWeight = 0
@@ -276,7 +275,7 @@ func TestShardKeyWRR_Admission_DenyDoesNotRollback(t *testing.T) {
 			{Name: "A", Weight: 5, Engine: &stubEngine{}},
 			{Name: "B", Weight: 5, Engine: engineB},
 		}),
-		time.Second, 3, 0, nil, hook, newTestRedis(t))
+		time.Second, 3, nil, hook, newTestRedis(t))
 	require.NoError(t, err)
 	lb.backends[0].currentWeight = 40
 	lb.backends[1].currentWeight = 0
@@ -293,7 +292,7 @@ func TestShardKeyWRR_Admission_AllZeroRollbackIsNoop(t *testing.T) {
 	engineB := &stubEngine{}
 	hook := &denyNamesAdmission{denied: map[string]struct{}{"A": {}, "B": {}}}
 	lb := &ShardKeyWeightedRoundRobin{
-		backends: []*sharedKeyRoundRobinBackend{
+		backends: []*shardKeyRoundRobinBackend{
 			{name: "A", weight: 0, engine: engineA, currentWeight: 0},
 			{name: "B", weight: 0, engine: engineB, currentWeight: 0},
 		},
@@ -322,7 +321,7 @@ func TestShardKeyWRR_Admission_IgnoredHTTPStatusDoesNotCallDone(t *testing.T) {
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: &stubEngine{}},
 		}),
-		time.Second, 5, 0, nil, hook, newTestRedis(t))
+		time.Second, 5, nil, hook, newTestRedis(t))
 	require.NoError(t, err)
 	lb.backends[0].currentWeight = 100
 	lb.backends[1].currentWeight = 0
@@ -342,7 +341,7 @@ func TestShardKeyWRR_Admission_ConcurrentSelectRollback(t *testing.T) {
 			{Name: "A", Weight: 5, Engine: &stubEngine{}},
 			{Name: "B", Weight: 5, Engine: engine},
 		}),
-		time.Second, 3, 1000, nil, hook, newTestRedis(t))
+		time.Second, 3, nil, hook, newTestRedis(t))
 	require.NoError(t, err)
 
 	var wg sync.WaitGroup
