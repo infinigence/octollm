@@ -258,11 +258,9 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			}
 			selected := l.selectByConcurrency(req, excludeNames)
 			if selected == nil {
-				if retryCount > 0 {
+				if lastRealErr != nil {
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no backend engine available on failover, returning previous error: %v", lastRealErr))
 					cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(lastActualKind), modelName, lastN).Inc()
-				}
-				if lastRealErr != nil {
 					return lastRealResp, lastRealErr
 				}
 				return nil, fmt.Errorf("no backend engine available")
@@ -341,12 +339,12 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 		if len(excludeNames) >= len(l.backends) {
 			slog.WarnContext(req.Context(), "[ShardKey Concurrency load balancer] all backends have been tried, return last resp and err")
 			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
-			if lastRealErr != nil {
-				return lastRealResp, lastRealErr
-			}
-			return nil, fmt.Errorf("no backend engine available")
+			return lastRealResp, lastRealErr
 		}
-		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] will retry, count %d, time %v", retryCount, time.Since(start)))
+		slog.InfoContext(req.Context(),
+			fmt.Sprintf("[ShardKey Concurrency load balancer] backend %s failed, will retry, count %d, time %v", n, retryCount, time.Since(start)),
+			slog.String("backend_name", n),
+		)
 		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
 	}
 }
