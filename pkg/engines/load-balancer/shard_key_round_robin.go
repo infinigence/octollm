@@ -151,16 +151,10 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 	start := time.Now()
 	retryCount := 0
 	expectKind := common.CacheMiss
-	// The route metric records the last backend actually attempted, once per request.
-	var routedName string
-	var routedKind common.CacheHitKind
-	defer func() {
-		if routedName != "" {
-			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(routedKind), modelName, routedName).Inc()
-		}
-	}()
 	var lastRealResp *octollm.Response
 	var lastRealErr error
+	var lastN string
+	var lastActualKind common.CacheHitKind
 	for {
 		// Affinity candidates go first, in provider order and whatever their layer. A tried
 		// backend is always excluded, so each candidate is offered at most once.
@@ -185,6 +179,7 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 		if selection == nil || selection.shardKeyRoundRobinBackend == nil || selection.shardKeyRoundRobinBackend.engine == nil {
 			if lastRealErr != nil {
 				slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] no backend engine available on failover, returning previous error: %v", lastRealErr))
+				cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(lastActualKind), modelName, lastN).Inc()
 				return lastRealResp, lastRealErr
 			}
 			return nil, fmt.Errorf("no backend engine available")
@@ -222,7 +217,6 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			}
 		}
 
-		routedName, routedKind = n, actualKind
 		attemptReq := req.WithContext(context.WithValue(req.Context(), common.ContextKeyCacheHitKind, actualKind))
 		attemptReq.SetMetadataValue(backendName, n)
 		resp, err := eng.Process(attemptReq)
@@ -240,34 +234,44 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] failed to commit shard key mapping: %v", commitErr))
 				}
 			}
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return resp, nil
 		}
 
 		if isNotRetriableError(err) {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] error is not retriable, return without retry: %v", err))
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return resp, err
 		}
 
 		lastRealResp, lastRealErr = resp, err
+		lastN, lastActualKind = n, actualKind
 		retryCount++
 		excludeNames[n] = true
 		if req.Context().Err() != nil {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] request context error: %v", req.Context().Err()))
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return lastRealResp, lastRealErr
 		}
 		if time.Since(start) >= l.retryTimeout {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] retry period %v reached, return last resp and err", l.retryTimeout))
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return lastRealResp, lastRealErr
 		}
 		if retryCount >= l.retryMaxCount {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] retry max count %d reached, return last resp and err", l.retryMaxCount))
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return lastRealResp, lastRealErr
 		}
 		if len(excludeNames) >= len(l.backends) {
 			slog.WarnContext(req.Context(), "[ShardKey WRR load balancer] all backends have been tried, return last resp and err")
+			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return lastRealResp, lastRealErr
 		}
-		slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] will retry, count %d, time %v", retryCount, time.Since(start)))
+		slog.InfoContext(req.Context(),
+			fmt.Sprintf("[ShardKey WRR load balancer] backend %s failed, will retry, count %d, time %v", n, retryCount, time.Since(start)),
+			slog.String("backend_name", n),
+		)
 		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
 	}
 }
