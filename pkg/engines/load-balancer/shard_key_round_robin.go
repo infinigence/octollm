@@ -272,7 +272,9 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 			fmt.Sprintf("[ShardKey WRR load balancer] backend %s failed, will retry, count %d, time %v", n, retryCount, time.Since(start)),
 			slog.String("backend_name", n),
 		)
-		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
+		if !isLimiterRejectError(err) {
+			totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
+		}
 	}
 }
 
