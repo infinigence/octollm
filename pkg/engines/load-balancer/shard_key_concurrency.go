@@ -345,6 +345,8 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			fmt.Sprintf("[ShardKey Concurrency load balancer] backend %s failed, will retry, count %d, time %v", n, retryCount, time.Since(start)),
 			slog.String("backend_name", n),
 		)
-		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
+		if !isLimiterRejectError(err) {
+			totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
+		}
 	}
 }

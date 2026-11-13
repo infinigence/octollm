@@ -78,6 +78,12 @@ func isNotRetriableError(err error) bool {
 	return false
 }
 
+// isLimiterRejectError reports whether err is a local limiter reject rather
+// than an error returned by the upstream.
+func isLimiterRejectError(err error) bool {
+	return errors.Is(err, limiter.ErrRateLimitReached)
+}
+
 // isBackendFailureError reports whether err is recorded as a backend failure.
 // Client cancellation, limiter rejects, and upstream HTTP 413 are not. Upstream
 // 429 is, also when mapped to a HandlerError: a backend rejecting requests fast
@@ -87,7 +93,7 @@ func isBackendFailureError(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
-	if errors.Is(err, limiter.ErrRateLimitReached) {
+	if isLimiterRejectError(err) {
 		return false
 	}
 	var upstreamErr *errutils.UpstreamRespError
@@ -171,7 +177,9 @@ func (l *WeightedRoundRobin) Process(req *octollm.Request) (*octollm.Response, e
 			slog.String("backend_name", n),
 		)
 		modelName, _ := octollm.GetCtxValue[string](req, octollm.ContextKeyModelName)
-		totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
+		if !isLimiterRejectError(err) {
+			totalFailoverRequestsCounter.WithLabelValues(modelName, n).Inc()
+		}
 	}
 }
 
