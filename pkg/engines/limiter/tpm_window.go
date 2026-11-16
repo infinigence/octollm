@@ -170,6 +170,14 @@ var (
 	tpmRecordScript  = redis.NewScript(tpmRecordLuaScript)
 )
 
+// ReadTPM returns the TPM of the last 60 seconds for each key, in key order,
+// using the same window semantics as admission: slices that rolled out of the
+// window are cleared by the Redis server's clock, and a key's TTL is not
+// extended, so reads cannot keep an idle key alive.
+func ReadTPM(ctx context.Context, client *redis.Client, keys []string) ([]int64, error) {
+	return readTPM(ctx, client, keys)
+}
+
 // readTPM returns the TPM of the last 60 seconds for each key, in key order.
 func readTPM(ctx context.Context, client *redis.Client, keys []string) ([]int64, error) {
 	result, err := tpmReadScript.Run(ctx, client, keys).Result()
