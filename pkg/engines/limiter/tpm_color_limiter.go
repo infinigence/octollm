@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/infinigence/octollm/pkg/engines/load-balancer/common"
@@ -38,9 +40,36 @@ type TPMColorLimiterEngine struct {
 	nameSpace   string
 	estimate    TokenEstimateFunc
 	next        octollm.Engine
+
+	// windowGauge, when non-nil, receives the TPM windows each admission
+	// read; set by WithTPMWindowGauge before the engine serves requests.
+	windowGauge PriorityGauge
 }
 
 var _ octollm.Engine = (*TPMColorLimiterEngine)(nil)
+
+// PriorityGauge receives the TPM windows a TPMColorLimiterEngine reads at
+// admission, one gauge per priority label. The limiter only knows the
+// "priority" dimension: the band the request was evaluated at, or
+// TPMWindowPriorityPublic for the window every band shares. Every other label
+// (model, backend, ...) and the gauge's lifecycle belong to the host, which
+// typically binds them per limiter at composing time, e.g. by currying a vec
+// down to the priority label.
+//
+// WithPriority is called on the request path and must not panic or block.
+type PriorityGauge interface {
+	WithPriority(priority string) prometheus.Gauge
+}
+
+// TPMWindowPriorityPublic is the priority label value of the public window,
+// which all bands share.
+const TPMWindowPriorityPublic = "public"
+
+// tpmWindowBandPriority clamps a request priority onto the bands: the own
+// window it was evaluated against is owned by band min(max(priority, 0), n-1).
+func tpmWindowBandPriority(priority, n int) int {
+	return n - 1 - qosIndex(priority, n)
+}
 
 // NewTPMColorLimiterEngine creates a limiter with static QoSLimits, in TPM.
 // limits must be non-nil, and both limit arrays must be non-empty.
@@ -83,6 +112,31 @@ func (e *TPMColorLimiterEngine) WithTokenEstimate(fn TokenEstimateFunc) *TPMColo
 	return e
 }
 
+// WithTPMWindowGauge makes the limiter report, at every admission, its band's
+// own window and the public window to g, the current request's reservation
+// included when it was admitted. Without it the limiter records nothing. It
+// must be called before the engine serves requests.
+func (e *TPMColorLimiterEngine) WithTPMWindowGauge(g PriorityGauge) *TPMColorLimiterEngine {
+	e.windowGauge = g
+	return e
+}
+
+// recordTPMWindows observes the two windows a request's admission read: its
+// band's own window and the public window, each with this request's
+// reservation already added when admitted. bandPriority is the request's
+// priority clamped to the bands, i.e. the band that owns the own window.
+func (e *TPMColorLimiterEngine) recordTPMWindows(bandPriority int, ownTPM, publicTPM, reserved int64, admitted bool) {
+	if e.windowGauge == nil {
+		return
+	}
+	if admitted {
+		ownTPM += reserved
+		publicTPM += reserved
+	}
+	e.windowGauge.WithPriority(strconv.Itoa(bandPriority)).Set(float64(ownTPM))
+	e.windowGauge.WithPriority(TPMWindowPriorityPublic).Set(float64(publicTPM))
+}
+
 const tpmLimiterLogPrefix = "[TPMColorLimiterEngine]"
 
 // allow admits the request and returns what it reserved in the backend windows.
@@ -115,6 +169,10 @@ func (e *TPMColorLimiterEngine) allow(req *octollm.Request) (res *tpmReservation
 		return nil, 0, err
 	}
 	ownTPM, publicTPM := tpm[0], tpm[1]
+
+	// Observe the windows this admission read, reservation included. Never
+	// fails the request.
+	e.recordTPMWindows(tpmWindowBandPriority(priority, len(limits.AvailableTotalMax)), ownTPM, publicTPM, tokens, res != nil)
 
 	if res == nil {
 		slog.WarnContext(ctx, fmt.Sprintf("%s tpm limit reached for priority %d (qosIndex %d), ownTPM: %d/%d, publicTPM: %d/%d, hitKind: %s",

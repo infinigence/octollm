@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -144,6 +145,61 @@ func TestTPMColorLimiter_Admission(t *testing.T) {
 				assert.Equal(t, 0, next.callCount)
 				assert.Equal(t, ColorActionDeny, la)
 			}
+		})
+	}
+}
+
+// recordedGauges is a PriorityGauge that keeps the last value Set per
+// priority. Gauge methods other than Set are not used by the limiter.
+type recordedGauges map[string]float64
+
+func (r recordedGauges) WithPriority(priority string) prometheus.Gauge {
+	return recordedGauge{set: func(v float64) { r[priority] = v }}
+}
+
+type recordedGauge struct {
+	prometheus.Gauge
+	set func(float64)
+}
+
+func (g recordedGauge) Set(v float64) { g.set(v) }
+
+func TestTPMColorLimiter_WindowGauge(t *testing.T) {
+	// own caps [300 300 300], public caps [400 380 360] for priority 2, 1, 0.
+	limits := staticQoS([]int{300, 300, 300}, []int{400, 380, 360}, 0)
+
+	tests := []struct {
+		name       string
+		priority   *int
+		own        map[string]int64
+		public     int64
+		wantBand   string
+		wantOwn    float64
+		wantPublic float64
+	}{
+		{"admitted adds the reservation", intPtr(1), map[string]int64{"svc:own_2": 100}, 200, "1", 150, 250},
+		{"rejected reports the windows as read", intPtr(1), map[string]int64{"svc:own_2": 100}, 380, "1", 100, 380},
+		{"missing priority reports the lowest band", nil, nil, 0, "0", 50, 50},
+		{"priority above bands reports the highest", intPtr(9), nil, 0, "2", 50, 50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, client := newTPMTestRedis(t)
+			for k, v := range tt.own {
+				mustRecordTPM(t, client, k, v)
+			}
+			if tt.public > 0 {
+				mustRecordTPM(t, client, "svc:public", tt.public)
+			}
+
+			gauges := recordedGauges{}
+			e, err := NewTPMColorLimiterEngine(client, "svc", limits, "ns", &nextStubEngine{})
+			require.NoError(t, err)
+			e.WithTokenEstimate(estimateOf(50)).WithTPMWindowGauge(gauges)
+
+			_, _ = e.Process(newConcurrencyColorLimiterTestRequest(t, "ns", tt.priority))
+			assert.Equal(t, recordedGauges{tt.wantBand: tt.wantOwn, TPMWindowPriorityPublic: tt.wantPublic}, gauges,
+				"own band and public only")
 		})
 	}
 }
