@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/infinigence/octollm/pkg/errutils"
 	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/openai"
@@ -60,9 +62,13 @@ type mockParams struct {
 	outputRunes  []rune
 	finishReason string
 	usage        *openai.Usage
+	// continuousUsageStats mirrors the request's
+	// stream_options.continuous_usage_stats: when true, every stream chunk
+	// carries cumulative usage instead of only the final one.
+	continuousUsageStats bool
 }
 
-func (e *MockEndpoint) newMockParams(v *openai.ChatCompletionRequest) *mockParams {
+func (e *MockEndpoint) newMockParams(rawReq []byte, v *openai.ChatCompletionRequest) *mockParams {
 	messages := v.Messages
 	maxTokens := v.MaxTokens
 	p := &mockParams{
@@ -173,7 +179,25 @@ func (e *MockEndpoint) newMockParams(v *openai.ChatCompletionRequest) *mockParam
 		}
 	}
 
+	p.continuousUsageStats = gjson.GetBytes(rawReq, "stream_options.continuous_usage_stats").Bool()
+
 	return p
+}
+
+// cumulativeUsage returns the running usage after n output runes have been
+// emitted: prompt tokens stay fixed, completion tokens grow with the stream.
+func (p *mockParams) cumulativeUsage(n int) *openai.Usage {
+	if !p.continuousUsageStats {
+		return nil
+	}
+	u := *p.usage
+	u.CompletionTokens = n
+	u.TotalTokens = u.PromptTokens + n
+	if p.usage.PromptTokensDetails != nil {
+		details := *p.usage.PromptTokensDetails
+		u.PromptTokensDetails = &details
+	}
+	return &u
 }
 
 func (p *mockParams) String() string {
@@ -188,7 +212,11 @@ func (e *MockEndpoint) Process(req *octollm.Request) (*octollm.Response, error) 
 
 	switch v := reqBody.(type) {
 	case *openai.ChatCompletionRequest:
-		p := e.newMockParams(v)
+		rawReq, err := req.Body.Bytes()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read raw request body: %w", err)
+		}
+		p := e.newMockParams(rawReq, v)
 		slog.InfoContext(req.Context(), "[mock-endpoint] params: "+p.String())
 		if p.httpStatus != 200 {
 			time.Sleep(p.ttft)
@@ -246,7 +274,7 @@ func (e *MockEndpoint) openAIStreamResponse(req *octollm.Request, v *openai.Chat
 	octollm.SafeGo(req, func() {
 		defer close(ch)
 		time.Sleep(p.ttft)
-		for _, c := range p.outputRunes {
+		for i, c := range p.outputRunes {
 			bodyVal := &openai.ChatCompletionStreamChunk{
 				ID:      "mock-id",
 				Object:  "chat.completion.chunk",
@@ -261,6 +289,7 @@ func (e *MockEndpoint) openAIStreamResponse(req *octollm.Request, v *openai.Chat
 						},
 					},
 				},
+				Usage: p.cumulativeUsage(i + 1),
 			}
 			select {
 			case ch <- &octollm.StreamChunk{
