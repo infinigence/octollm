@@ -14,9 +14,15 @@ var (
 		Name: "octollm_cache_aware_route_total",
 		Help: "cache-aware LB outbound attempts by hit kind",
 	}, []string{"expect", "actual", "model_name", "backend_name"})
+
+	backoffWaitingRequestsGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "octollm_backoff_waiting_requests",
+		Help: "on-the-fly backoff waiting requests",
+	}, []string{"model_name"})
 )
 
 func init() {
 	prometheus.MustRegister(totalFailoverRequestsCounter)
 	prometheus.MustRegister(cacheAwareRouteCounter)
+	prometheus.MustRegister(backoffWaitingRequestsGauge)
 }

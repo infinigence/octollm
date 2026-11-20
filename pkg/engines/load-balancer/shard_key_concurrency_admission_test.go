@@ -44,7 +44,8 @@ func TestShardKeyConcurrency_Admission_SkipDoesNotConsumeRetry(t *testing.T) {
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 1, nil, rd, hook,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 1},
+		nil, rd, hook,
 	)
 	require.NoError(t, err)
 
@@ -65,7 +66,8 @@ func TestShardKeyConcurrency_Admission_AllDeniedReturnsNoBackendAvailable(t *tes
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 3, nil, newHookTestRedis(t), hook,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+		nil, newHookTestRedis(t), hook,
 	)
 	require.NoError(t, err)
 
@@ -92,7 +94,8 @@ func TestShardKeyConcurrency_Admission_PreservesRealErrorWhenRemainingDenied(t *
 			{Name: "B", Weight: 1, Engine: engineB},
 			{Name: "C", Weight: 1, Engine: engineC},
 		}),
-		time.Second, 10, nil, rd, hook,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 10},
+		nil, rd, hook,
 	)
 	require.NoError(t, err)
 
@@ -116,7 +119,8 @@ func TestShardKeyConcurrency_Admission_DoneCalledOncePerRealAttempt(t *testing.T
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 5, nil, rd, hook,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 5},
+		nil, rd, hook,
 	)
 	require.NoError(t, err)
 
@@ -139,7 +143,8 @@ func TestShardKeyConcurrency_Admission_PrioritizedDenyFallsBack(t *testing.T) {
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 3, provider, newHookTestRedis(t), hook,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+		provider, newHookTestRedis(t), hook,
 	)
 	require.NoError(t, err)
 
@@ -162,7 +167,8 @@ func TestShardKeyConcurrency_Admission_RealFailureStillConsumesRetry(t *testing.
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 2, nil, rd, nil,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 2},
+		nil, rd, nil,
 	)
 	require.NoError(t, err)
 
@@ -177,7 +183,8 @@ func TestShardKeyConcurrency_Admission_NilAdmissionKeepsCurrentBehavior(t *testi
 	engineA := &stubEngine{resp: &octollm.Response{StatusCode: 200}}
 	lb, err := NewShardKeyConcurrency(
 		withGPT4ConcurrencyKeys([]BackendItem{{Name: "A", Weight: 1, Engine: engineA}}),
-		time.Second, 1, nil, newHookTestRedis(t), nil,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 1},
+		nil, newHookTestRedis(t), nil,
 	)
 	require.NoError(t, err)
 
