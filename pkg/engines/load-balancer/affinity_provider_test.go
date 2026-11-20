@@ -508,7 +508,7 @@ func TestShardKeyConcurrency_WithAffinityProvider(t *testing.T) {
 
 	lb, err := NewShardKeyConcurrency(
 		withTestConcurrencyKeys(items),
-		time.Second, 3,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
 		provider,
 		rd,
 		nil,
@@ -556,8 +556,7 @@ func TestShardKeyConcurrency_WithAffinityProvider_RequestFailureDoesNotCommit(t 
 	})
 	lb, err := NewShardKeyConcurrency(
 		withTestConcurrencyKeys([]BackendItem{{Name: "svc-a", Weight: 1, Engine: failingEngine}}),
-		time.Second,
-		1,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 1},
 		provider,
 		rd,
 		nil,
@@ -685,8 +684,7 @@ func TestShardKeyLoadBalancers_AffinityProviderErrors(t *testing.T) {
 				calls++
 				return &octollm.Response{StatusCode: 200}, nil
 			})}}),
-			time.Second,
-			1,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 1},
 			affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
 				return nil, nil, providerErr
 			}),
@@ -735,8 +733,7 @@ func TestShardKeyLoadBalancers_AffinityCommitErrorDoesNotFailRequest(t *testing.
 			withTestConcurrencyKeys([]BackendItem{{Name: "svc-a", Weight: 1, Engine: octollm.EngineFunc(func(_ *octollm.Request) (*octollm.Response, error) {
 				return &octollm.Response{StatusCode: 200}, nil
 			})}}),
-			time.Second,
-			1,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 1},
 			provider,
 			rd,
 			nil,

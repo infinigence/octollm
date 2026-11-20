@@ -30,6 +30,13 @@ func (pb *prioritizedBackend) isStrongCacheHit() bool {
 	return pb.strongCacheHit
 }
 
+type RetryConfig struct {
+	RetryTimeout  time.Duration // no default, must be set
+	RetryMaxCount int           // defaults to len(backends)
+	BackoffBase   time.Duration // defaults to retryTimeout+1, meaning backoff retry is disabled
+	BackoffMax    time.Duration // defaults to backoffBase
+}
+
 // ShardKeyConcurrency implements a load balancer that:
 //   - When affinityProvider is set: prioritizes backends resolved by the provider,
 //     falling back to concurrency-based selection once all prioritized backends are exhausted.
@@ -40,8 +47,7 @@ type ShardKeyConcurrency struct {
 	backends         []*concurrencyBackend
 	affinityProvider AffinityProvider
 	redisClient      *redis.Client
-	retryTimeout     time.Duration
-	retryMaxCount    int
+	rc               *RetryConfig
 	backendAdmission BackendAdmission
 }
 
@@ -57,14 +63,16 @@ var _ octollm.Engine = (*ShardKeyConcurrency)(nil)
 // and preserves current balancer behavior.
 func NewShardKeyConcurrency(
 	backends []BackendItem,
-	retryTimeout time.Duration,
-	retryMaxCount int,
+	retryConf *RetryConfig,
 	affinityProvider AffinityProvider,
 	redisClient *redis.Client,
 	backendAdmission BackendAdmission,
 ) (*ShardKeyConcurrency, error) {
 	if redisClient == nil {
 		return nil, fmt.Errorf("redisClient must be provided")
+	}
+	if retryConf == nil {
+		return nil, fmt.Errorf("retryConf must be provided")
 	}
 
 	cb := make([]*concurrencyBackend, 0, len(backends))
@@ -92,12 +100,25 @@ func NewShardKeyConcurrency(
 		return nil, fmt.Errorf("backends must have at least one item")
 	}
 
+	rc := *retryConf
+	if rc.RetryTimeout <= 0 {
+		return nil, fmt.Errorf("retryConf.RetryTimeout must be > 0")
+	}
+	if rc.RetryMaxCount <= 0 {
+		rc.RetryMaxCount = len(cb)
+	}
+	if rc.BackoffBase <= 0 {
+		rc.BackoffBase = rc.RetryTimeout + time.Nanosecond
+	}
+	if rc.BackoffMax < rc.BackoffBase {
+		rc.BackoffMax = rc.BackoffBase
+	}
+
 	return &ShardKeyConcurrency{
 		backends:         cb,
 		affinityProvider: affinityProvider,
 		redisClient:      redisClient,
-		retryTimeout:     retryTimeout,
-		retryMaxCount:    retryMaxCount,
+		rc:               &rc,
 		backendAdmission: backendAdmission,
 	}, nil
 }
@@ -213,6 +234,7 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 
 	start := time.Now()
 	retryCount := 0
+	backoffCount := 0
 	expectKind := common.CacheMiss
 	var lastRealResp *octollm.Response
 	var lastRealErr error
@@ -258,6 +280,42 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			}
 			selected := l.selectByConcurrency(req, excludeNames)
 			if selected == nil {
+				// no candidate backend available, backoff and retry if within limits
+				if backoffCount > 30 {
+					backoffCount = 30 // cap backoff to avoid overflow
+				}
+				backoff := l.rc.BackoffBase * time.Duration(1<<backoffCount)
+				if backoff > l.rc.BackoffMax {
+					backoff = l.rc.BackoffMax
+				} else {
+					backoffCount++
+				}
+				backoff += time.Duration(rand.Int63n(int64(l.rc.BackoffBase)))
+				if time.Since(start)+backoff < l.rc.RetryTimeout {
+					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no backend engine available, will backoff %v and retry (count %d)", backoff, retryCount))
+					if backoffCount == 1 {
+						backoffWaitingRequestsGauge.WithLabelValues(modelName).Inc()
+						defer backoffWaitingRequestsGauge.WithLabelValues(modelName).Dec()
+					}
+					select {
+					case <-req.Context().Done():
+						slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] request context error: %v", req.Context().Err()))
+						return nil, fmt.Errorf("request context error during LB backoff: %w", req.Context().Err())
+					case <-time.After(backoff):
+						// re-calculate prioritized backends on retry, in case the affinity provider has changed.
+						// and empty the excludeNames to allow all backends to be retried.
+						prioritized, commitAffinity, err = l.resolveAffinity(req)
+						if err != nil {
+							return nil, err
+						}
+						prioritizedIndex = 0
+						excludeNames = make(map[string]bool)
+						continue
+					}
+				}
+
+				// If we have a last real error, return it instead of "no backend engine available"
+				// to avoid losing the original error context.
 				if lastRealErr != nil {
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] no backend engine available on failover, returning previous error: %v", lastRealErr))
 					cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(lastActualKind), modelName, lastN).Inc()
@@ -326,18 +384,13 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return lastRealResp, lastRealErr
 		}
-		if time.Since(start) >= l.retryTimeout {
-			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] retry period %v reached, return last resp and err", l.retryTimeout))
+		if time.Since(start) >= l.rc.RetryTimeout {
+			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] retry period %v reached, return last resp and err", l.rc.RetryTimeout))
 			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return lastRealResp, lastRealErr
 		}
-		if retryCount >= l.retryMaxCount {
-			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] retry max count %d reached, return last resp and err", l.retryMaxCount))
-			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
-			return lastRealResp, lastRealErr
-		}
-		if len(excludeNames) >= len(l.backends) {
-			slog.WarnContext(req.Context(), "[ShardKey Concurrency load balancer] all backends have been tried, return last resp and err")
+		if retryCount >= l.rc.RetryMaxCount {
+			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] retry max count %d reached, return last resp and err", l.rc.RetryMaxCount))
 			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return lastRealResp, lastRealErr
 		}

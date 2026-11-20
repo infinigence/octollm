@@ -1,6 +1,8 @@
 package loadbalancer
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -106,7 +108,8 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 	t.Run("no shard keys results in round robin behavior", func(t *testing.T) {
 		lb, err := NewShardKeyConcurrency(
 			withGPT4ConcurrencyKeys(items),
-			time.Second, 3, nil, rd,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+			nil, rd,
 			nil,
 		)
 		require.NoError(t, err)
@@ -142,14 +145,16 @@ func TestShardKeyConcurrency_No_ShardKey(t *testing.T) {
 	t.Run("two lbs interleaved", func(t *testing.T) {
 		lb1, err := NewShardKeyConcurrency(
 			withGPT4ConcurrencyKeys(items),
-			time.Second, 3, nil, rd,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+			nil, rd,
 			nil,
 		)
 		require.NoError(t, err)
 
 		lb2, err := NewShardKeyConcurrency(
 			withGPT4ConcurrencyKeys(items[1:]),
-			time.Second, 3, nil, rd,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+			nil, rd,
 			nil,
 		)
 		require.NoError(t, err)
@@ -208,7 +213,8 @@ func TestShardKeyConcurrency_Failover(t *testing.T) {
 
 	lb, err := NewShardKeyConcurrency(
 		withGPT4ConcurrencyKeys(items),
-		time.Second, 3, nil, rd,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+		nil, rd,
 		nil,
 	)
 	require.NoError(t, err)
@@ -241,7 +247,8 @@ func TestShardKeyConcurrency_NotRetriableError(t *testing.T) {
 
 	lb, err := NewShardKeyConcurrency(
 		withGPT4ConcurrencyKeys(items),
-		time.Second, 3, nil, rd,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+		nil, rd,
 		nil,
 	)
 	require.NoError(t, err)
@@ -276,7 +283,8 @@ func TestShardKeyConcurrency_ShardKey(t *testing.T) {
 	provider := newPrimaryShardKeyProvider(t, shardKeyListGetter, rd, "", time.Minute, items)
 	lb, err := NewShardKeyConcurrency(
 		withGPT4ConcurrencyKeys(items),
-		time.Second, 3, provider, rd,
+		&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+		provider, rd,
 		nil,
 	)
 	require.NoError(t, err)
@@ -374,7 +382,8 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 		}}
 		lb, err := NewShardKeyConcurrency(
 			withTestConcurrencyKeys(items),
-			time.Second, 3, nil, rd,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+			nil, rd,
 			nil,
 		)
 		require.NoError(t, err)
@@ -393,7 +402,8 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 		}}
 		lb, err := NewShardKeyConcurrency(
 			withTestConcurrencyKeys(items),
-			time.Second, 3, nil, rd,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+			nil, rd,
 			nil,
 		)
 		require.NoError(t, err)
@@ -416,7 +426,8 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 		}}
 		lb, err := NewShardKeyConcurrency(
 			withTestConcurrencyKeys(items),
-			time.Second, 3, nil, rd,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+			nil, rd,
 			nil,
 		)
 		require.NoError(t, err)
@@ -438,7 +449,8 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 		}
 		lb, err := NewShardKeyConcurrency(
 			withTestConcurrencyKeys(items),
-			time.Second, 3, nil, rd,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+			nil, rd,
 			nil,
 		)
 		require.NoError(t, err)
@@ -482,7 +494,8 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 		)
 		lb, err := NewShardKeyConcurrency(
 			withTestConcurrencyKeys(items),
-			time.Second, 3, provider, rd,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+			provider, rd,
 			nil,
 		)
 		require.NoError(t, err)
@@ -508,7 +521,8 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 		}}
 		lb, err := NewShardKeyConcurrency(
 			withTestConcurrencyKeys(items),
-			time.Second, 3, nil, rd,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+			nil, rd,
 			nil,
 		)
 		require.NoError(t, err)
@@ -527,7 +541,8 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 		}}
 		lb, err := NewShardKeyConcurrency(
 			withTestConcurrencyKeys(items),
-			time.Second, 3, nil, rd,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+			nil, rd,
 			nil,
 		)
 		require.NoError(t, err)
@@ -543,7 +558,8 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 		}}
 		_, err := NewShardKeyConcurrency(
 			items,
-			time.Second, 3, nil, rd,
+			&RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+			nil, rd,
 			nil,
 		)
 		require.Error(t, err)
@@ -555,7 +571,7 @@ func TestShardKeyConcurrency_maxConcurrencyFn(t *testing.T) {
 			Weight: 10,
 			Engine: next,
 		}}
-		_, err := NewShardKeyConcurrency(items, time.Second, 3, nil, rd, nil)
+		_, err := NewShardKeyConcurrency(items, &RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3}, nil, rd, nil)
 		require.Error(t, err)
 	})
 }
@@ -599,7 +615,7 @@ func TestShardKeyConcurrency_HitKindAndLimiterFailover(t *testing.T) {
 		const keyPrefix = "hk-strong"
 		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk2", redis.Z{Score: 1, Member: "hot"}).Err())
 		provider := newPrimaryShardKeyProvider(t, func(_ *octollm.Request) []string { return []string{"sk0", "sk1", "sk2"} }, rd, keyPrefix, time.Minute, items)
-		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), time.Second, 3, provider, rd, nil)
+		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), &RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3}, provider, rd, nil)
 		require.NoError(t, err)
 
 		req := testhelper.CreateTestRequest()
@@ -627,7 +643,7 @@ func TestShardKeyConcurrency_HitKindAndLimiterFailover(t *testing.T) {
 		provider := newPrimaryShardKeyProviderWithPolicy(t, func(_ *octollm.Request) []string {
 			return []string{"sk0", "sk1", "sk2"}
 		}, rd, keyPrefix, time.Minute, items, StrongHitPolicyLeaf)
-		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), time.Second, 3, provider, rd, nil)
+		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), &RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3}, provider, rd, nil)
 		require.NoError(t, err)
 
 		req := testhelper.CreateTestRequest()
@@ -650,7 +666,7 @@ func TestShardKeyConcurrency_HitKindAndLimiterFailover(t *testing.T) {
 			{Name: "a", Weight: 10, Engine: reject},
 			{Name: "b", Weight: 10, Engine: reject},
 		}
-		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), time.Second, 3, nil, rd, nil)
+		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), &RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3}, nil, rd, nil)
 		require.NoError(t, err)
 		resp, err := lb.Process(testhelper.CreateTestRequest())
 		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
@@ -673,7 +689,7 @@ func TestShardKeyConcurrency_HitKindAndLimiterFailover(t *testing.T) {
 			{Name: "a", Weight: 10, Engine: eng},
 			{Name: "b", Weight: 10, Engine: eng},
 		}
-		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), 5*time.Millisecond, 10, nil, rd, nil)
+		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), &RetryConfig{RetryTimeout: 5 * time.Millisecond, RetryMaxCount: 10}, nil, rd, nil)
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -703,7 +719,7 @@ func TestShardKeyConcurrency_HitKindAndLimiterFailover(t *testing.T) {
 		}
 		seedConcurrency(t, rd, "b", 1)
 		seedConcurrency(t, rd, "c", 100)
-		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), 5*time.Millisecond, 10, nil, rd, nil)
+		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), &RetryConfig{RetryTimeout: 5 * time.Millisecond, RetryMaxCount: 10}, nil, rd, nil)
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
@@ -735,12 +751,243 @@ func TestShardKeyConcurrency_HitKindAndLimiterFailover(t *testing.T) {
 		require.NoError(t, rd.ZAdd(t.Context(), keyPrefix+":sk0",
 			redis.Z{Score: 1, Member: "weak1"}, redis.Z{Score: 2, Member: "weak2"}).Err())
 		provider := newPrimaryShardKeyProvider(t, func(_ *octollm.Request) []string { return []string{"sk0", "sk1", "sk2"} }, rd, keyPrefix, time.Minute, items)
-		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), time.Second, 3, provider, rd, nil)
+		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), &RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3}, provider, rd, nil)
 		require.NoError(t, err)
 
 		resp, err := lb.Process(testhelper.CreateTestRequest())
 		require.ErrorIs(t, err, limiter.ErrRateLimitReached)
 		require.NotErrorIs(t, err, upstreamErr)
 		assert.Nil(t, resp)
+	})
+}
+
+// TestShardKeyConcurrency_Backoff covers the backoff retry path taken when
+// selectByConcurrency finds no selectable backend: the balancer may wait
+// BackoffBase (growing up to BackoffMax) and retry within RetryTimeout, then
+// re-resolve affinity and clear exclusions before trying again.
+func TestShardKeyConcurrency_Backoff(t *testing.T) {
+	newLB := func(t *testing.T, rd *redis.Client, items []BackendItem, rc *RetryConfig, provider AffinityProvider) *ShardKeyConcurrency {
+		t.Helper()
+		lb, err := NewShardKeyConcurrency(withTestConcurrencyKeys(items), rc, provider, rd, nil)
+		require.NoError(t, err)
+		return lb
+	}
+	okEngine := func(calls *atomic.Int32) octollm.Engine {
+		return octollm.EngineFunc(func(*octollm.Request) (*octollm.Response, error) {
+			calls.Add(1)
+			return &octollm.Response{StatusCode: 200}, nil
+		})
+	}
+
+	t.Run("backoff retries until a backend becomes selectable", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		var maxCalls, engineCalls atomic.Int32
+		items := []BackendItem{{
+			Name:   "only",
+			Weight: 0, // allowed because MaxConcurrencyFn is set
+			Engine: okEngine(&engineCalls),
+			MaxConcurrencyFn: func(*octollm.Request) int {
+				if maxCalls.Add(1) == 1 {
+					return 0 // not selectable on the first attempt, forcing a backoff
+				}
+				return 10
+			},
+		}}
+		lb := newLB(t, rd, items, &RetryConfig{
+			RetryTimeout:  time.Second,
+			RetryMaxCount: 3,
+			BackoffBase:   5 * time.Millisecond,
+			BackoffMax:    5 * time.Millisecond,
+		}, nil)
+
+		start := time.Now()
+		resp, err := lb.Process(testhelper.CreateTestRequest())
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, int32(1), engineCalls.Load())
+		assert.GreaterOrEqual(t, maxCalls.Load(), int32(2), "expected selection to be retried after backoff")
+		assert.GreaterOrEqual(t, time.Since(start), 5*time.Millisecond, "expected at least one backoff wait")
+	})
+
+	t.Run("default backoff is disabled and returns immediately", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		var calls atomic.Int32
+		items := []BackendItem{{
+			Name:             "only",
+			Weight:           1,
+			Engine:           okEngine(new(atomic.Int32)),
+			MaxConcurrencyFn: func(*octollm.Request) int { calls.Add(1); return 0 },
+		}}
+		// BackoffBase defaults to RetryTimeout+1ns, which disables the backoff retry.
+		lb := newLB(t, rd, items, &RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3}, nil)
+
+		start := time.Now()
+		resp, err := lb.Process(testhelper.CreateTestRequest())
+		require.Error(t, err)
+		assert.Nil(t, resp)
+		assert.Contains(t, err.Error(), "no backend engine available")
+		assert.Equal(t, int32(1), calls.Load(), "expected no selection retry when backoff is disabled")
+		assert.Less(t, time.Since(start), 200*time.Millisecond, "expected no backoff wait")
+	})
+
+	t.Run("backoff grows and is capped by BackoffMax, bounded by RetryTimeout", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		var calls atomic.Int32
+		items := []BackendItem{{
+			Name:             "only",
+			Weight:           1,
+			Engine:           okEngine(new(atomic.Int32)),
+			MaxConcurrencyFn: func(*octollm.Request) int { calls.Add(1); return 0 }, // never selectable
+		}}
+		lb := newLB(t, rd, items, &RetryConfig{
+			RetryTimeout:  60 * time.Millisecond,
+			RetryMaxCount: 3,
+			BackoffBase:   5 * time.Millisecond, // 5, 10, then capped at 10ms
+			BackoffMax:    10 * time.Millisecond,
+		}, nil)
+
+		start := time.Now()
+		_, err := lb.Process(testhelper.CreateTestRequest())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no backend engine available")
+		elapsed := time.Since(start)
+		assert.GreaterOrEqual(t, elapsed, 40*time.Millisecond, "expected backoff waits to fill most of the retry timeout")
+		assert.Less(t, elapsed, 100*time.Millisecond, "expected the backoff loop to stop near the retry timeout")
+		assert.GreaterOrEqual(t, calls.Load(), int32(3), "expected multiple capped backoff retries")
+	})
+
+	t.Run("backoff clears exclusions and retries a failed backend", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		engineErr := errors.New("backend down")
+		var calls atomic.Int32
+		items := []BackendItem{{
+			Name:   "only",
+			Weight: 1,
+			Engine: octollm.EngineFunc(func(*octollm.Request) (*octollm.Response, error) {
+				calls.Add(1)
+				return nil, engineErr
+			}),
+		}}
+		lb := newLB(t, rd, items, &RetryConfig{
+			RetryTimeout:  time.Second,
+			RetryMaxCount: 3,
+			BackoffBase:   3 * time.Millisecond,
+			BackoffMax:    3 * time.Millisecond,
+		}, nil)
+
+		_, err := lb.Process(testhelper.CreateTestRequest())
+		require.ErrorIs(t, err, engineErr)
+		// The only backend is excluded after each failure; the backoff path clears
+		// exclusions so it is retried up to RetryMaxCount times.
+		assert.Equal(t, int32(3), calls.Load())
+	})
+
+	t.Run("context cancellation interrupts the backoff wait", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		items := []BackendItem{{
+			Name:             "only",
+			Weight:           1,
+			Engine:           okEngine(new(atomic.Int32)),
+			MaxConcurrencyFn: func(*octollm.Request) int { return 0 },
+		}}
+		lb := newLB(t, rd, items, &RetryConfig{
+			RetryTimeout:  5 * time.Second,
+			RetryMaxCount: 3,
+			BackoffBase:   2 * time.Second, // long enough that cancellation, not the timer, must win
+			BackoffMax:    2 * time.Second,
+		}, nil)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		time.AfterFunc(20*time.Millisecond, cancel)
+
+		start := time.Now()
+		resp, err := lb.Process(testhelper.CreateTestRequest(testhelper.WithContext(ctx)))
+		require.Error(t, err)
+		assert.Nil(t, resp)
+		require.ErrorIs(t, err, context.Canceled, "expected the context error to be surfaced instead of being swallowed")
+		assert.Less(t, time.Since(start), time.Second, "expected the cancelled context to interrupt the backoff wait")
+	})
+
+	t.Run("backoff re-resolves affinity and uses the newly prioritized backend", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		var resolveCalls, engineACalls, engineBCalls atomic.Int32
+		provider := affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
+			if resolveCalls.Add(1) == 1 {
+				return nil, nil, nil // no prioritized backend yet, forcing a backoff
+			}
+			return []*PrioritizedBackend{{Name: "b"}}, nil, nil
+		})
+		items := []BackendItem{
+			{Name: "a", Weight: 1, Engine: okEngine(&engineACalls), MaxConcurrencyFn: func(*octollm.Request) int { return 0 }},
+			{Name: "b", Weight: 1, Engine: okEngine(&engineBCalls), MaxConcurrencyFn: func(*octollm.Request) int { return 0 }},
+		}
+		lb := newLB(t, rd, items, &RetryConfig{
+			RetryTimeout:  time.Second,
+			RetryMaxCount: 3,
+			BackoffBase:   3 * time.Millisecond,
+			BackoffMax:    3 * time.Millisecond,
+		}, provider)
+
+		req := testhelper.CreateTestRequest()
+		resp, err := lb.Process(req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.Equal(t, int32(2), resolveCalls.Load(), "expected affinity to be re-resolved after the backoff")
+		assert.Equal(t, int32(0), engineACalls.Load())
+		assert.Equal(t, int32(1), engineBCalls.Load())
+		mv, ok := req.GetMetadataValue(backendName)
+		require.True(t, ok)
+		assert.Equal(t, "b", mv)
+	})
+
+	t.Run("affinity resolve error during backoff retry is returned", func(t *testing.T) {
+		mr := miniredis.RunT(t)
+		defer mr.Close()
+		rd := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+		resolveErr := errors.New("affinity resolve failed")
+		var resolveCalls, engineCalls atomic.Int32
+		provider := affinityProviderFunc(func(*octollm.Request) ([]*PrioritizedBackend, AffinityCommitFunc, error) {
+			if resolveCalls.Add(1) == 1 {
+				return nil, nil, nil // no prioritized backend, forcing a backoff
+			}
+			return nil, nil, resolveErr
+		})
+		items := []BackendItem{{
+			Name:             "only",
+			Weight:           1,
+			Engine:           okEngine(&engineCalls),
+			MaxConcurrencyFn: func(*octollm.Request) int { return 0 },
+		}}
+		lb := newLB(t, rd, items, &RetryConfig{
+			RetryTimeout:  time.Second,
+			RetryMaxCount: 3,
+			BackoffBase:   3 * time.Millisecond,
+			BackoffMax:    3 * time.Millisecond,
+		}, provider)
+
+		_, err := lb.Process(testhelper.CreateTestRequest())
+		require.ErrorIs(t, err, resolveErr)
+		assert.Equal(t, int32(2), resolveCalls.Load())
+		assert.Zero(t, engineCalls.Load())
 	})
 }

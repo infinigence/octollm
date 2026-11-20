@@ -162,7 +162,8 @@ func TestAdmission_Concurrency_DeniedBackendIsNotInvoked(t *testing.T) {
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 3, nil, rd, hook,
+		&loadbalancer.RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+		nil, rd, hook,
 	)
 	require.NoError(t, err)
 
@@ -186,7 +187,8 @@ func TestAdmission_Concurrency_AllDeniedReturnsNoBackendAvailable(t *testing.T) 
 			{Name: "A", Weight: 1, Engine: engineA},
 			{Name: "B", Weight: 1, Engine: engineB},
 		}),
-		time.Second, 3, nil, newHookLBRedis(t), hook,
+		&loadbalancer.RetryConfig{RetryTimeout: time.Second, RetryMaxCount: 3},
+		nil, newHookLBRedis(t), hook,
 	)
 	require.NoError(t, err)
 
