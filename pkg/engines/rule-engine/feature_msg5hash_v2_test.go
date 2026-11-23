@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/infinigence/octollm/pkg/internal/testhelper"
+	"github.com/infinigence/octollm/pkg/octollm"
 	"github.com/infinigence/octollm/pkg/types/anthropic"
 	"github.com/infinigence/octollm/pkg/types/openai"
 	"github.com/stretchr/testify/assert"
@@ -299,6 +300,57 @@ func TestMessage5HashV2_Features(t *testing.T) {
 			})
 		}
 	})
+}
+
+func videoHashReq(content openai.MessageContent) *openai.ChatCompletionRequest {
+	return &openai.ChatCompletionRequest{
+		Model: "gpt-3.5-turbo",
+		Messages: []*openai.Message{
+			{Role: "system", Content: openai.MessageContentString("系统消息")},
+			{Role: "user", Content: content},
+		},
+	}
+}
+
+func videoHashContent(v openai.VideoURLContent) openai.MessageContentArray {
+	return openai.MessageContentArray{{Type: "video_url", VideoURL: v}}
+}
+
+// TestMessage5Hash_VideoURL verifies that a video_url part contributes to the message hashes the
+// way an image_url part does: through ExtractText, as "[video:<url>]".
+func TestMessage5Hash_VideoURL(t *testing.T) {
+	const u1 = "https://example.com/a.mp4"
+	const u2 = "https://example.com/b.mp4"
+
+	type extractor interface {
+		Features(req *octollm.Request) (any, error)
+	}
+	extractors := map[string]extractor{
+		"v1_array": &Message5HashArrayExtractor{},
+		"v2_array": &MessageNHashArrayV2Extractor{N: 5},
+	}
+
+	for name, ex := range extractors {
+		t.Run(name, func(t *testing.T) {
+			features := func(body *openai.ChatCompletionRequest) any {
+				req := testhelper.CreateTestRequest(testhelper.WithBody(body))
+				val, err := ex.Features(req)
+				require.NoError(t, err)
+				return val
+			}
+
+			objHash := features(videoHashReq(videoHashContent(&openai.MessageContentItemVideoURL{URL: u1})))
+			strHash := features(videoHashReq(videoHashContent(openai.MessageContentItemVideoURLString(u1))))
+			textHash := features(videoHashReq(openai.MessageContentString("[video:" + u1 + "]")))
+			otherHash := features(videoHashReq(videoHashContent(&openai.MessageContentItemVideoURL{URL: u2})))
+			nilHash := features(videoHashReq(videoHashContent(nil)))
+
+			assert.Equal(t, textHash, objHash, "object form should hash like its [video:url] text")
+			assert.Equal(t, textHash, strHash, "string form should hash like its [video:url] text")
+			assert.NotEqual(t, objHash, otherHash, "different video urls should hash differently")
+			assert.NotEqual(t, objHash, nilHash, "a video part must not hash like an empty message")
+		})
+	}
 }
 
 // TestMessage5HashV2_MessageTextPostProcessor verifies that setting

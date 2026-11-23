@@ -3,7 +3,7 @@
 // This file contains jlexer streaming parsers for the structs defined in:
 //   pkg/types/openai/chatcompletion_req.go
 //
-// Source file SHA-256: 8e524205801dba6b7ef79957c1e404bdff93e67403007ac956a737506a7be1e6
+// Source file SHA-256: 0703d15451992832f3524210b3a58e94594cbc093f869cf5d4cf2ee2dd992c91
 //
 // Generation guide: pkg/types/JLEXER_PARSER_GUIDE.md
 // Polymorphic field patterns: pkg/types/UNION_TYPES.md
@@ -791,13 +791,7 @@ func (item *MessageContentItem) ParseJLexer(in *jlexer.Lexer) {
 		case "image_url":
 			item.ImageURL = parseImageURLContentJLexer(in)
 		case "video_url":
-			if in.IsNull() {
-				in.Skip()
-				item.VideoURL = nil
-			} else {
-				item.VideoURL = &MessageContentItemVideoURL{}
-				item.VideoURL.ParseJLexer(in)
-			}
+			item.VideoURL = parseVideoURLContentJLexer(in)
 		case "audio_url":
 			if in.IsNull() {
 				in.Skip()
@@ -894,6 +888,30 @@ func (img *MessageContentItemImageURL) ParseJLexer(in *jlexer.Lexer) {
 	in.Delim('}')
 	if isTopLevel {
 		in.Consumed()
+	}
+}
+
+// parseVideoURLContentJLexer handles the Kind 2 polymorphic dispatch for VideoURLContent:
+// the value can be a string (URL only), an object with a url field, or null.
+// Unlike image_url, null yields nil to match videoURLField, which leaves the value unset.
+func parseVideoURLContentJLexer(in *jlexer.Lexer) VideoURLContent {
+	switch in.CurrentToken() {
+	case jlexer.TokenString:
+		return MessageContentItemVideoURLString(in.String())
+	case jlexer.TokenNull:
+		in.Skip()
+		return nil
+	case jlexer.TokenDelim:
+		if in.IsDelim('{') {
+			obj := &MessageContentItemVideoURL{}
+			obj.ParseJLexer(in)
+			return obj
+		}
+		in.SkipRecursive()
+		return nil
+	default:
+		in.SkipRecursive()
+		return nil
 	}
 }
 
