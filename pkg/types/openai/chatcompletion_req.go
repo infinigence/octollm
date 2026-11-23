@@ -131,6 +131,10 @@ func (m MessageContentArray) ExtractText() string {
 			if item.ImageURL != nil {
 				text += fmt.Sprintf("[img:%s]", item.ImageURL.GetImageUrl())
 			}
+		case "video_url":
+			if item.VideoURL != nil {
+				text += fmt.Sprintf("[video:%s]", item.VideoURL.GetVideoUrl())
+			}
 		case "file":
 			if item.File != nil {
 				text += fmt.Sprintf("[file:%s]", item.File.FileURI)
@@ -144,7 +148,7 @@ type MessageContentItem struct {
 	Type       string                        `json:"type" binding:"required"`
 	Text       string                        `json:"text,omitempty"`
 	ImageURL   ImageURLContent               `json:"image_url,omitempty"`
-	VideoURL   *MessageContentItemVideoURL   `json:"video_url,omitempty"`
+	VideoURL   VideoURLContent               `json:"video_url,omitempty"`
 	AudioURL   *MessageContentItemAudioURL   `json:"audio_url,omitempty"`
 	InputAudio *MessageContentItemInputAudio `json:"input_audio,omitempty"`
 	File       *MessageContentItemFile       `json:"file,omitempty"` // Added for Gemini file support
@@ -154,6 +158,7 @@ func (m *MessageContentItem) UnmarshalJSON(data []byte) error {
 	type Alias MessageContentItem
 	aux := struct {
 		ImageURL imageURLField `json:"image_url,omitempty"`
+		VideoURL videoURLField `json:"video_url,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(m),
@@ -162,6 +167,7 @@ func (m *MessageContentItem) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	m.ImageURL = aux.ImageURL.Value
+	m.VideoURL = aux.VideoURL.Value
 	return nil
 }
 
@@ -222,8 +228,49 @@ func (i MessageContentItemImageURLString) GetImageUrl() string {
 	return string(i)
 }
 
+// VideoURLContent is the video_url value of a content item. The documented form is an object
+// with a url field (e.g. Zhipu); a bare URL string is also accepted, mirroring ImageURLContent.
+type VideoURLContent interface {
+	GetVideoUrl() string
+}
+
+type videoURLField struct {
+	Value VideoURLContent
+}
+
+func (v *videoURLField) UnmarshalJSON(data []byte) error {
+	// A null video_url stays nil so the content item does not carry an empty video part.
+	if string(data) == "null" {
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		v.Value = MessageContentItemVideoURLString(str)
+		return nil
+	}
+	var obj MessageContentItemVideoURL
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	v.Value = &obj
+	return nil
+}
+
+// MessageContentItemVideoURL is the object form of video_url. Zhipu documents url as the only
+// field; it accepts a video URL (mp4, mkv, mov), not base64.
 type MessageContentItemVideoURL struct {
 	URL string `json:"url" binding:"required"`
+}
+
+func (v *MessageContentItemVideoURL) GetVideoUrl() string {
+	return v.URL
+}
+
+// MessageContentItemVideoURLString is the form where video_url is a plain string.
+type MessageContentItemVideoURLString string
+
+func (v MessageContentItemVideoURLString) GetVideoUrl() string {
+	return string(v)
 }
 
 type MessageContentItemAudioURL struct {

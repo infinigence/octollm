@@ -147,6 +147,18 @@ func TestChatCompletionRequest_ParseJLexer(t *testing.T) {
 			JSON: `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"video_url","video_url":{"url":null}}]}]}`,
 		},
 		{
+			Name: "video_url as string",
+			JSON: `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"video_url","video_url":"https://example.com/video.mp4"}]}]}`,
+		},
+		{
+			Name: "video_url as empty string",
+			JSON: `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"video_url","video_url":""}]}]}`,
+		},
+		{
+			Name: "video_url before type",
+			JSON: `{"model":"gpt-4","messages":[{"role":"user","content":[{"video_url":{"url":"https://example.com/video.mov"},"type":"video_url"}]}]}`,
+		},
+		{
 			Name: "null url in audio_url",
 			JSON: `{"model":"gpt-4","messages":[{"role":"user","content":[{"type":"audio_url","audio_url":{"url":null}}]}]}`,
 		},

@@ -38,7 +38,7 @@ func (m Message) String() string {
 					if item.VideoURL == nil {
 						fmt.Fprintf(w, "video_url(nil), ")
 					} else {
-						fmt.Fprintf(w, "video_url(len=%d), ", len(item.VideoURL.URL))
+						fmt.Fprintf(w, "video_url(len=%d), ", len(item.VideoURL.GetVideoUrl()))
 					}
 				case "audio_url":
 					if item.AudioURL == nil {
