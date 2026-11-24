@@ -3,9 +3,11 @@ package client
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
@@ -147,6 +149,69 @@ func TestGeneralEndpoint_RequestCompression_Zstd(t *testing.T) {
 	assert.Equal(t, "zstd", captured.header.Get("Content-Encoding"))
 	assert.JSONEq(t, string(originalBody), string(captured.bodyUnzstd),
 		"decompressed body should match original")
+}
+
+// The zstd compressor is backed by one process-wide encoder shared by every
+// request, so EncodeAll must stay concurrency-safe. Corruption from sharing
+// would surface as decompression failures or cross-request body mixups.
+func TestGeneralEndpoint_RequestCompression_Zstd_Concurrent(t *testing.T) {
+	const goroutines = 8
+	const perGoroutine = 16
+
+	var mu sync.Mutex
+	got := make(map[string]bool)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		dec, err := zstd.NewReader(bytes.NewReader(body))
+		require.NoError(t, err)
+		uncompressed, err := io.ReadAll(dec)
+		require.NoError(t, err)
+		dec.Close()
+
+		mu.Lock()
+		got[string(uncompressed)] = true
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer srv.Close()
+
+	endpoint := NewGeneralEndpoint(GeneralEndpointConfig{
+		BaseURL: srv.URL,
+		Endpoints: map[octollm.APIFormat]string{
+			octollm.APIFormatChatCompletions: "/v1/chat/completions",
+		},
+		RequestCompression: "zstd",
+	})
+	// Set the client explicitly: Process lazily defaults to http.DefaultClient
+	// with an unsynchronized first write, which would race under -race and
+	// drown out the encoder race this test is after.
+	endpoint.WithClient(http.DefaultClient)
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < perGoroutine; i++ {
+				// Distinct valid ChatCompletionRequest bodies: if frames of two
+				// requests interleaved on the shared encoder, the server side
+				// fails to decode or a body arrives wrong.
+				body := fmt.Sprintf(`{"model":"concurrent-%d-%d","messages":[{"role":"user","content":"hi"}]}`, g, i)
+				req := testhelper.CreateTestRequest(testhelper.WithBody(body))
+				_, err := endpoint.Process(req)
+				assert.NoError(t, err)
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	assert.Len(t, got, goroutines*perGoroutine,
+		"every concurrent request body should arrive decoded and distinct")
 }
 
 func TestGeneralEndpoint_DecisionFormats_DefaultPathAndParser(t *testing.T) {
