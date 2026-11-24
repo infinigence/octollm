@@ -68,14 +68,21 @@ func GetSelectedBackendName(req *octollm.Request) (string, bool) {
 	return name, ok
 }
 
-func isNotRetriableError(err error) bool {
+func isRetriableError(err error) bool {
+	if err == nil {
+		return false
+	}
 	var upstreamErr *errutils.UpstreamRespError
 	if errors.As(err, &upstreamErr) {
-		if upstreamErr.StatusCode == http.StatusRequestEntityTooLarge {
-			return true
+		if upstreamErr.StatusCode == http.StatusRequestEntityTooLarge ||
+			upstreamErr.StatusCode == http.StatusBadRequest ||
+			upstreamErr.StatusCode == http.StatusUnauthorized ||
+			upstreamErr.StatusCode == http.StatusForbidden ||
+			upstreamErr.StatusCode == http.StatusUnsupportedMediaType {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // isLimiterRejectError reports whether err is a local limiter reject rather
@@ -88,9 +95,12 @@ func isLimiterRejectError(err error) bool {
 // Client cancellation, limiter rejects, and upstream HTTP 413 are not. Upstream
 // 429 is, also when mapped to a HandlerError: a backend rejecting requests fast
 // holds few in-flight slots, so concurrency-based selection keeps preferring it
-// unless admission limits it. Failover still uses isNotRetriableError.
+// unless admission limits it. Failover still uses isRetriableError.
 func isBackendFailureError(err error) bool {
-	if errors.Is(err, context.Canceled) {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	if isLimiterRejectError(err) {
@@ -155,7 +165,7 @@ func (l *WeightedRoundRobin) Process(req *octollm.Request) (*octollm.Response, e
 		if err == nil {
 			return resp, nil
 		}
-		if isNotRetriableError(err) {
+		if !isRetriableError(err) {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[WRR load balancer] error is not retriable, return without retry: %v", err))
 			return resp, err
 		}
