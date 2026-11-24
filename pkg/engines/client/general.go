@@ -52,6 +52,16 @@ var DefaultURLPathResponses = "/v1/responses"
 var DefaultURLPathSystemOne = "/v1/systemone"
 var DefaultURLPathDecisions = "/v1/decisions"
 
+// zstdEncoder is a process-wide encoder for one-shot compression of outbound
+// request bodies. EncodeAll is safe for concurrent use — each call borrows an
+// encoder from an internal pool and returns it when done — and reuses the
+// encoder's state across requests. A per-request zstd.NewWriter instead
+// reallocates multi-megabyte hash tables and history buffers on every call,
+// plus goroutine and buffering overhead for multi-block bodies. EncodeAll
+// emits one self-contained frame per call and never touches the
+// streaming-writer state, so the encoder is never Closed or Reset.
+var zstdEncoder, _ = zstd.NewWriter(nil)
+
 func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 	apiKey := conf.APIKey
 	if apiKey == "" {
@@ -190,15 +200,13 @@ func NewGeneralEndpoint(conf GeneralEndpointConfig) *GeneralEndpoint {
 				slog.WarnContext(req.Context(), fmt.Sprintf("[general-endpoint] failed to read body for zstd compression: %v", err))
 				return httpReq
 			}
-			var buf bytes.Buffer
-			enc, err := zstd.NewWriter(&buf)
-			if err != nil {
-				slog.WarnContext(req.Context(), fmt.Sprintf("[general-endpoint] failed to create zstd writer: %v", err))
+			if zstdEncoder == nil {
+				// Cannot happen with no options; kept so future option changes
+				// degrade to uncompressed bodies instead of panicking.
+				slog.WarnContext(req.Context(), "[general-endpoint] shared zstd encoder unavailable, sending body uncompressed")
 				return httpReq
 			}
-			enc.Write(bodyBytes)
-			enc.Close()
-			compressed := buf.Bytes()
+			compressed := zstdEncoder.EncodeAll(bodyBytes, nil)
 			httpReq.Body = io.NopCloser(bytes.NewReader(compressed))
 			httpReq.ContentLength = int64(len(compressed))
 			// net/http re-sends the body through GetBody (retry on a fresh connection,
