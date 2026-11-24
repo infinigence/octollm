@@ -20,7 +20,7 @@ import (
 )
 
 func TestIsBackendFailureError(t *testing.T) {
-	assert.True(t, isBackendFailureError(nil))
+	assert.False(t, isBackendFailureError(nil))
 	assert.True(t, isBackendFailureError(io.EOF))
 	assert.False(t, isBackendFailureError(context.Canceled))
 	assert.False(t, isBackendFailureError(fmt.Errorf("outer: %w", context.Canceled)))

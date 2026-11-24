@@ -364,12 +364,15 @@ func (l *ShardKeyConcurrency) Process(req *octollm.Request) (*octollm.Response, 
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] failed to commit shard key mapping: %v", commitErr))
 				}
 			}
+			if retryCount > 0 {
+				slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] succeeded after %d retries, total time %v", retryCount, time.Since(start)))
+			}
 			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return resp, nil
 		}
 
 		// The following logic handles the case where err is non-nil.
-		if isNotRetriableError(err) {
+		if !isRetriableError(err) {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey Concurrency load balancer] error is not retriable, return without retry: %v", err))
 			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return resp, err

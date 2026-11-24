@@ -234,11 +234,14 @@ func (l *ShardKeyWeightedRoundRobin) Process(req *octollm.Request) (*octollm.Res
 					slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] failed to commit shard key mapping: %v", commitErr))
 				}
 			}
+			if retryCount > 0 {
+				slog.InfoContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] succeeded after %d retries, total time %v", retryCount, time.Since(start)))
+			}
 			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return resp, nil
 		}
 
-		if isNotRetriableError(err) {
+		if !isRetriableError(err) {
 			slog.WarnContext(req.Context(), fmt.Sprintf("[ShardKey WRR load balancer] error is not retriable, return without retry: %v", err))
 			cacheAwareRouteCounter.WithLabelValues(string(expectKind), string(actualKind), modelName, n).Inc()
 			return resp, err
